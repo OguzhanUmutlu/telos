@@ -2080,6 +2080,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vx-mesh"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "glam",
+ "proptest",
+ "tracing",
+ "vx-core",
+ "vx-voxel",
+]
+
+[[package]]
 name = "vx-voxel"
 version = "0.1.0"
 dependencies = [
