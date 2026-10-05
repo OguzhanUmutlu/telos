@@ -11,17 +11,12 @@ use glam::Vec3;
 use mimalloc::MiMalloc;
 use tracing::info;
 use vx_assets::{ResourcePackStack, TextureArrayBuilder};
-use vx_core::{TelemetryConfig, coords::ChunkPos, ident::Identifier, init_telemetry};
+use vx_core::{TelemetryConfig, coords::ChunkPos, init_telemetry};
 use vx_gpu::{
     DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline, ShaderModule,
     TextureMipRegion, vk,
 };
-use vx_voxel::{
-    chunk::Chunk,
-    coords::LocalIdx,
-    registry::BlockRegistry,
-    state::{BlockStateId, StateFlags},
-};
+use vx_voxel::registry::BlockRegistry;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
@@ -693,6 +688,7 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
         stack.load_block_texture("grass_block_side")?,
     );
     builder.insert("bedrock", stack.load_block_texture("bedrock")?);
+    builder.insert("sand", stack.load_block_texture("sand")?);
 
     let baked = builder.bake();
     info!(
@@ -726,112 +722,92 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
 }
 
 fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
-    const GRID_SIZE: i32 = 8;
+    const GRID_XZ: i32 = 8;
+    const GRID_Y: i32 = 2;
 
-    let mut reg = BlockRegistry::new();
-    let _stone = reg.register(Identifier::classic("stone")?, StateFlags::OPAQUE_FULL);
-    let _dirt = reg.register(Identifier::classic("dirt")?, StateFlags::OPAQUE_FULL);
-    let _grass = reg.register(
-        Identifier::classic("grass_block")?,
-        StateFlags::OPAQUE_FULL,
-    );
-    let _bedrock = reg.register(Identifier::classic("bedrock")?, StateFlags::OPAQUE_FULL);
-    reg.freeze();
+    let reg = BlockRegistry::standard();
+    let generator = vx_worldgen::WorldGenerator::new(0x5EED_C0DE_1234_5678, &reg);
 
-    let mut snapshots = Vec::with_capacity(GRID_SIZE as usize);
+    // snapshots[cz][cy][cx]
+    let mut snapshots = Vec::with_capacity(GRID_XZ as usize);
 
-    for cz in 0..GRID_SIZE {
-        let mut row = Vec::with_capacity(GRID_SIZE as usize);
-        for cx in 0..GRID_SIZE {
-            let mut chunk = Chunk::new_uniform(ChunkPos::new(cx, 0, cz), BlockStateId::AIR, false);
-            for z in 0..32 {
-                for x in 0..32 {
-                    #[allow(clippy::cast_precision_loss)]
-                    let wx = (cx * 32 + x) as f32;
-                    #[allow(clippy::cast_precision_loss)]
-                    let wz = (cz * 32 + z) as f32;
-
-                    // Smooth rolling hills landscape
-                    #[allow(clippy::cast_possible_truncation)]
-                    let height =
-                        (14.0 + 8.0 * (wx * 0.04).sin() * (wz * 0.04).cos()).round() as i32;
-                    let height = height.clamp(1, 31);
-
-                    for y in 0..=height {
-                        let state = if y == 0 {
-                            BlockStateId::new(4) // Bedrock
-                        } else if y < height - 3 {
-                            BlockStateId::new(1) // Stone
-                        } else if y < height {
-                            BlockStateId::new(2) // Dirt
-                        } else {
-                            BlockStateId::new(3) // Grass
-                        };
-
-                        #[allow(clippy::cast_sign_loss)]
-                        chunk.set(
-                            LocalIdx::from_coords_unchecked(x as u32, y as u32, z as u32),
-                            state,
-                            StateFlags::empty(),
-                            StateFlags::OPAQUE_FULL,
-                            0,
-                        );
-                    }
-                }
+    for cz in 0..GRID_XZ {
+        let mut y_plane = Vec::with_capacity(GRID_Y as usize);
+        for cy in 0..GRID_Y {
+            let mut row = Vec::with_capacity(GRID_XZ as usize);
+            for cx in 0..GRID_XZ {
+                let mut chunk = generator.generate_chunk(ChunkPos::new(cx, cy, cz));
+                row.push(chunk.publish_snapshot());
             }
-            row.push(chunk.publish_snapshot());
+            y_plane.push(row);
         }
-        snapshots.push(row);
+        snapshots.push(y_plane);
     }
 
     let mut meshes = Vec::new();
-    for cz in 0..GRID_SIZE {
-        for cx in 0..GRID_SIZE {
-            let chunk = &snapshots[cz as usize][cx as usize];
-            let pos_x = if cx + 1 < GRID_SIZE {
-                Some(snapshots[cz as usize][(cx + 1) as usize].as_ref())
-            } else {
-                None
-            };
-            let neg_x = if cx > 0 {
-                Some(snapshots[cz as usize][(cx - 1) as usize].as_ref())
-            } else {
-                None
-            };
-            let pos_z = if cz + 1 < GRID_SIZE {
-                Some(snapshots[(cz + 1) as usize][cx as usize].as_ref())
-            } else {
-                None
-            };
-            let neg_z = if cz > 0 {
-                Some(snapshots[(cz - 1) as usize][cx as usize].as_ref())
-            } else {
-                None
-            };
+    for cz in 0..GRID_XZ {
+        for cy in 0..GRID_Y {
+            for cx in 0..GRID_XZ {
+                let chunk = &snapshots[cz as usize][cy as usize][cx as usize];
+                let pos_x = if cx + 1 < GRID_XZ {
+                    Some(snapshots[cz as usize][cy as usize][(cx + 1) as usize].as_ref())
+                } else {
+                    None
+                };
+                let neg_x = if cx > 0 {
+                    Some(snapshots[cz as usize][cy as usize][(cx - 1) as usize].as_ref())
+                } else {
+                    None
+                };
+                let pos_y = if cy + 1 < GRID_Y {
+                    Some(snapshots[cz as usize][(cy + 1) as usize][cx as usize].as_ref())
+                } else {
+                    None
+                };
+                let neg_y = if cy > 0 {
+                    Some(snapshots[cz as usize][(cy - 1) as usize][cx as usize].as_ref())
+                } else {
+                    None
+                };
+                let pos_z = if cz + 1 < GRID_XZ {
+                    Some(snapshots[(cz + 1) as usize][cy as usize][cx as usize].as_ref())
+                } else {
+                    None
+                };
+                let neg_z = if cz > 0 {
+                    Some(snapshots[(cz - 1) as usize][cy as usize][cx as usize].as_ref())
+                } else {
+                    None
+                };
 
-            let neighbors = [pos_x, neg_x, None, None, pos_z, neg_z];
-            let mesh = vx_mesh::mesher::mesh_chunk_t0(chunk, &neighbors);
+                let neighbors = [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z];
+                let mesh = vx_mesh::mesher::mesh_chunk_t0(chunk, &neighbors);
 
-            if !mesh.is_empty() {
-                let buffer = gpu_context.create_buffer_with_data(
-                    "chunk_mesh",
-                    &mesh.quads,
-                    vk::BufferUsageFlags::empty(),
-                )?;
+                if !mesh.is_empty() {
+                    let buffer = gpu_context.create_buffer_with_data(
+                        "chunk_mesh",
+                        &mesh.quads,
+                        vk::BufferUsageFlags::empty(),
+                    )?;
 
-                #[allow(clippy::cast_precision_loss)]
-                let min_aabb = Vec3::new((cx * 32) as f32, 0.0, (cz * 32) as f32);
-                #[allow(clippy::cast_precision_loss)]
-                let max_aabb = Vec3::new(((cx + 1) * 32) as f32, 32.0, ((cz + 1) * 32) as f32);
+                    #[allow(clippy::cast_precision_loss)]
+                    let min_aabb = Vec3::new((cx * 32) as f32, (cy * 32) as f32, (cz * 32) as f32);
+                    #[allow(clippy::cast_precision_loss)]
+                    let max_aabb = Vec3::new(
+                        ((cx + 1) * 32) as f32,
+                        ((cy + 1) * 32) as f32,
+                        ((cz + 1) * 32) as f32,
+                    );
 
-                #[allow(clippy::cast_possible_truncation)]
-                meshes.push(GpuChunkMesh {
-                    pos: [cx * 32, 0, cz * 32],
-                    buffer,
-                    quad_count: mesh.quads.len() as u32,
-                    min_aabb,
-                    max_aabb,
-                });
+                    #[allow(clippy::cast_possible_truncation)]
+                    meshes.push(GpuChunkMesh {
+                        pos: [cx * 32, cy * 32, cz * 32],
+                        buffer,
+                        quad_count: mesh.quads.len() as u32,
+                        min_aabb,
+                        max_aabb,
+                    });
+                }
             }
         }
     }

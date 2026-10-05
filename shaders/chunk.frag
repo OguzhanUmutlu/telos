@@ -22,6 +22,8 @@ uint get_texture_layer(uint mat, uint dir) {
             return 3u;                // Side faces -> grass_block_side
         case 4u: // Bedrock
             return 4u;
+        case 5u: // Sand
+            return 5u;
         default:
             return 0u;
     }

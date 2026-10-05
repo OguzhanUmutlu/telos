@@ -157,6 +157,9 @@ impl BlockRegistry {
         let bedrock_id = Identifier::new("voxel", "bedrock").unwrap();
         reg.register(bedrock_id, StateFlags::OPAQUE_CUBE);
 
+        let sand_id = Identifier::new("voxel", "sand").unwrap();
+        reg.register(sand_id, StateFlags::OPAQUE_CUBE);
+
         let water_id = Identifier::new("voxel", "water").unwrap();
         reg.register(
             water_id,

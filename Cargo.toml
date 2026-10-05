@@ -6,6 +6,7 @@ members = [
     "crates/vx-voxel",
     "crates/vx-mesh",
     "crates/vx-assets",
+    "crates/vx-worldgen",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -26,6 +27,7 @@ vx-gpu = { version = "0.1.0", path = "crates/vx-gpu" }
 vx-voxel = { version = "0.1.0", path = "crates/vx-voxel" }
 vx-mesh = { version = "0.1.0", path = "crates/vx-mesh" }
 vx-assets = { version = "0.1.0", path = "crates/vx-assets" }
+vx-worldgen = { version = "0.1.0", path = "crates/vx-worldgen" }
 
 # Assets & image decoding
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -62,6 +64,7 @@ ctrlc = { version = "3.4", features = ["termination"] }
 # Testing & benches
 proptest = "1.6"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+crc32fast = "1.4"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

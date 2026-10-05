@@ -2151,6 +2151,7 @@ dependencies = [
  "vx-gpu",
  "vx-mesh",
  "vx-voxel",
+ "vx-worldgen",
  "winit",
 ]
 
@@ -2226,6 +2227,19 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "vx-core",
+]
+
+[[package]]
+name = "vx-worldgen"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "criterion",
+ "proptest",
+ "thiserror 2.0.21",
+ "tracing",
+ "vx-core",
+ "vx-voxel",
 ]
 
 [[package]]

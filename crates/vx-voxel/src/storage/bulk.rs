@@ -58,24 +58,41 @@ pub fn from_dense(dense: &[BlockStateId; CHUNK_VOLUME]) -> Blocks {
     // Pass 2: Pack entries directly into 64-bit words without intermediate memory passes
     let entries_per_word = 64 >> min_log2;
     let bits = 1usize << min_log2;
+    let max_state = palette.iter().map(|s| s.0).max().unwrap_or(0);
 
-    last_state = BlockStateId(u32::MAX);
-    let mut last_slot = 0usize;
-
-    for (word_idx, chunk) in dense.chunks_exact(entries_per_word).enumerate() {
-        let mut word = 0u64;
-        for (sub_idx, &state) in chunk.iter().enumerate() {
-            let slot = if state == last_state {
-                last_slot
-            } else {
-                let s = state_to_slot[&state];
-                last_state = state;
-                last_slot = s;
-                s
-            };
-            word |= (slot as u64) << (sub_idx * bits);
+    if max_state < 256 {
+        let mut lut = [0u8; 256];
+        for (slot, &state) in palette.iter().enumerate() {
+            lut[state.0 as usize] = slot as u8;
         }
-        words[word_idx] = word;
+
+        for (word_idx, chunk) in dense.chunks_exact(entries_per_word).enumerate() {
+            let mut word = 0u64;
+            for (sub_idx, &state) in chunk.iter().enumerate() {
+                let slot = u64::from(lut[state.0 as usize]);
+                word |= slot << (sub_idx * bits);
+            }
+            words[word_idx] = word;
+        }
+    } else {
+        last_state = BlockStateId(u32::MAX);
+        let mut last_slot = 0usize;
+
+        for (word_idx, chunk) in dense.chunks_exact(entries_per_word).enumerate() {
+            let mut word = 0u64;
+            for (sub_idx, &state) in chunk.iter().enumerate() {
+                let slot = if state == last_state {
+                    last_slot
+                } else {
+                    let s = state_to_slot[&state];
+                    last_state = state;
+                    last_slot = s;
+                    s
+                };
+                word |= (slot as u64) << (sub_idx * bits);
+            }
+            words[word_idx] = word;
+        }
     }
 
     let packed = Packed {
