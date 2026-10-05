@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/vx-core",
     "crates/vx-gpu",
+    "crates/vx-voxel",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -20,6 +21,7 @@ repository = "https://github.com/larvance/voxel"
 # Internal crates
 vx-core = { path = "crates/vx-core" }
 vx-gpu = { path = "crates/vx-gpu" }
+vx-voxel = { path = "crates/vx-voxel" }
 
 # Graphics & windowing (Vulkan 1.3)
 ash = "0.38"
@@ -30,6 +32,11 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 
 # Math & primitives
 glam = { version = "0.29", default-features = false, features = ["std"] }
+
+# Data structures & concurrency
+bitflags = "2.8"
+arc-swap = "1.7"
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 
 # Logging & telemetry
 tracing = "0.1"

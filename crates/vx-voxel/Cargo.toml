@@ -1,0 +1,28 @@
+[package]
+name = "vx-voxel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Canonical in-memory voxel data model: 32³ paletted chunks, occupancy bitmasks, and registries"
+
+[dependencies]
+vx-core = { workspace = true }
+bitflags = { workspace = true }
+arc-swap = { workspace = true }
+hashbrown = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "storage"
+harness = false
+
+[lints]
+workspace = true
