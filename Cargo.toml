@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/vx-core",
+    "crates/vx-gpu",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -18,6 +19,14 @@ repository = "https://github.com/larvance/voxel"
 [workspace.dependencies]
 # Internal crates
 vx-core = { path = "crates/vx-core" }
+vx-gpu = { path = "crates/vx-gpu" }
+
+# Graphics & windowing (Vulkan 1.3)
+ash = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
 
 # Math & primitives
 glam = { version = "0.29", default-features = false, features = ["std"] }

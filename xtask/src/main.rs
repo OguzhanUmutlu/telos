@@ -24,6 +24,8 @@ enum Commands {
     Ci,
     /// Inspect the local environment, drivers, compilers, and required tools
     Doctor,
+    /// Compile and validate all GLSL shaders in shaders/ to SPIR-V
+    Shaders,
 }
 
 fn main() -> Result<()> {
@@ -32,6 +34,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Ci => run_ci()?,
         Commands::Doctor => run_doctor(),
+        Commands::Shaders => compile_shaders()?,
     }
 
     Ok(())
@@ -42,7 +45,7 @@ fn run_ci() -> Result<()> {
     println!("            VOXEL CI QUALITY ASSURANCE PIPELINE             ");
     println!("============================================================");
 
-    let steps: [(&str, &[&str]); 5] = [
+    let steps: [(&str, &[&str]); 6] = [
         (
             "Checking formatting (cargo fmt --check)",
             &["cargo", "fmt", "--all", "--", "--check"],
@@ -60,6 +63,10 @@ fn run_ci() -> Result<()> {
             ],
         ),
         ("Running workspace tests", &["cargo", "test", "--workspace"]),
+        (
+            "Compiling and validating shaders",
+            &["cargo", "xtask", "shaders"],
+        ),
         (
             "Building documentation (cargo doc --no-deps)",
             &["cargo", "doc", "--workspace", "--no-deps"],
@@ -172,6 +179,70 @@ fn run_doctor() {
     }
 
     println!("============================================================");
+}
+
+fn compile_shaders() -> Result<()> {
+    let shaders_dir = Path::new("shaders");
+    if !shaders_dir.exists() {
+        println!("No shaders directory found.");
+        return Ok(());
+    }
+
+    let out_dir = Path::new("target/shaders");
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("Failed to create output directory: {}", out_dir.display()))?;
+
+    let entries = std::fs::read_dir(shaders_dir)
+        .with_context(|| format!("Failed to read directory: {}", shaders_dir.display()))?;
+
+    let mut count = 0;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if !matches!(ext, "vert" | "frag" | "comp" | "geom" | "mesh" | "task") {
+            continue;
+        }
+
+        let file_name = path
+            .file_name()
+            .context("Missing filename")?
+            .to_string_lossy();
+        let spv_file = out_dir.join(format!("{file_name}.spv"));
+
+        println!("Compiling: {} -> {}", path.display(), spv_file.display());
+
+        let glslc_status = Command::new("glslc")
+            .arg(&path)
+            .arg("-o")
+            .arg(&spv_file)
+            .status()
+            .with_context(|| "Failed to execute 'glslc'. Is shaderc/glslc installed?")?;
+
+        if !glslc_status.success() {
+            bail!("Shader compilation failed for {}", path.display());
+        }
+
+        if is_command_available("spirv-val") {
+            let val_status = Command::new("spirv-val")
+                .arg(&spv_file)
+                .status()
+                .with_context(|| "Failed to execute 'spirv-val'")?;
+
+            if !val_status.success() {
+                bail!("SPIR-V validation failed for {}", spv_file.display());
+            }
+        }
+
+        count += 1;
+    }
+
+    println!("✓ Successfully compiled and validated {count} shader(s)");
+    Ok(())
 }
 
 fn is_command_available(cmd: &str) -> bool {
