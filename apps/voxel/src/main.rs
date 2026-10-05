@@ -10,8 +10,12 @@ use clap::Parser;
 use glam::Vec3;
 use mimalloc::MiMalloc;
 use tracing::info;
+use vx_assets::{ResourcePackStack, TextureArrayBuilder};
 use vx_core::{TelemetryConfig, coords::ChunkPos, ident::Identifier, init_telemetry};
-use vx_gpu::{DepthBuffer, GpuBuffer, GpuContext, GraphicsPipeline, ShaderModule, vk};
+use vx_gpu::{
+    DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline, ShaderModule,
+    TextureMipRegion, vk,
+};
 use vx_voxel::{
     chunk::Chunk,
     coords::LocalIdx,
@@ -64,6 +68,10 @@ struct App {
     window: Option<Window>,
     gpu_context: Option<GpuContext>,
     depth_buffer: Option<DepthBuffer>,
+    texture_array: Option<GpuTextureArray>,
+    descriptor_pool: Option<vk::DescriptorPool>,
+    descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    descriptor_set: Option<vk::DescriptorSet>,
     pipeline: Option<GraphicsPipeline>,
     vert_shader: Option<ShaderModule>,
     frag_shader: Option<ShaderModule>,
@@ -86,6 +94,10 @@ impl App {
             window: None,
             gpu_context: None,
             depth_buffer: None,
+            texture_array: None,
+            descriptor_pool: None,
+            descriptor_set_layout: None,
+            descriptor_set: None,
             pipeline: None,
             vert_shader: None,
             frag_shader: None,
@@ -121,10 +133,11 @@ impl App {
             );
         }
 
-        let (Some(gpu_context), Some(pipeline), Some(depth_buffer)) = (
+        let (Some(gpu_context), Some(pipeline), Some(depth_buffer), Some(descriptor_set)) = (
             &mut self.gpu_context,
             &self.pipeline,
             &mut self.depth_buffer,
+            self.descriptor_set,
         ) else {
             return;
         };
@@ -211,6 +224,15 @@ impl App {
             device.cmd_begin_rendering(cmd, &rendering_info);
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
 
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.layout(),
+                0,
+                &[descriptor_set],
+                &[],
+            );
+
             // Negative-height viewport: Vulkan clip space (+Y down) maps CCW to CCW
             #[allow(clippy::cast_precision_loss)]
             let viewport = vk::Viewport::default()
@@ -273,13 +295,14 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    #[allow(clippy::too_many_lines)]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
 
         let attributes = Window::default_attributes()
-            .with_title("Voxel Engine - Vulkan 1.3 Chunk Renderer")
+            .with_title("Voxel Engine - Textured Chunk Renderer")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
 
         let window = match event_loop.create_window(attributes) {
@@ -309,6 +332,103 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+
+        let texture_array = match load_and_upload_textures(&gpu_context) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::error!("Failed to load and upload texture array: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Create Descriptor Set Layout for binding 0 (sampler2DArray)
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = [binding];
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+
+        let descriptor_set_layout = match unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&layout_info, None)
+        } {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::error!("Failed to create descriptor set layout: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Create Descriptor Pool
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1);
+        let pool_sizes = [pool_size];
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes);
+
+        let descriptor_pool = match unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&pool_info, None)
+        } {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create descriptor pool: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Allocate and write descriptor set
+        let set_layouts = [descriptor_set_layout];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&set_layouts);
+
+        let descriptor_set = match unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&alloc_info)
+        } {
+            Ok(sets) => sets[0],
+            Err(err) => {
+                tracing::error!("Failed to allocate descriptor set: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let image_info = vk::DescriptorImageInfo::default()
+            .sampler(texture_array.sampler())
+            .image_view(texture_array.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let image_infos = [image_info];
+
+        let descriptor_write = vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&image_infos);
+
+        let descriptor_writes = [descriptor_write];
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&descriptor_writes, &[]);
+        }
 
         // Load SPIR-V bytecode generated by build script / xtask
         let vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/chunk.vert.spv"));
@@ -346,6 +466,7 @@ impl ApplicationHandler for App {
             Some(vk::Format::D32_SFLOAT),
             vk::CullModeFlags::BACK,
             vk::FrontFace::COUNTER_CLOCKWISE,
+            &[descriptor_set_layout],
             &[push_constant_range],
         ) {
             Ok(p) => p,
@@ -376,6 +497,10 @@ impl ApplicationHandler for App {
         self.vert_shader = Some(vert_module);
         self.frag_shader = Some(frag_module);
         self.depth_buffer = Some(depth_buffer);
+        self.texture_array = Some(texture_array);
+        self.descriptor_pool = Some(descriptor_pool);
+        self.descriptor_set_layout = Some(descriptor_set_layout);
+        self.descriptor_set = Some(descriptor_set);
         self.chunk_meshes = chunk_meshes;
         self.gpu_context = Some(gpu_context);
         self.window = Some(window);
@@ -487,14 +612,7 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(gpu_context) = &mut self.gpu_context {
             let _ = gpu_context.wait_idle();
-            for mesh in &mut self.chunk_meshes {
-                mesh.buffer
-                    .destroy(gpu_context.device().raw(), gpu_context.allocator());
-            }
-            self.chunk_meshes.clear();
-            if let Some(mut depth) = self.depth_buffer.take() {
-                depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
-            }
+
             if let Some(mut pipeline) = self.pipeline.take() {
                 pipeline.destroy(gpu_context.device().raw());
             }
@@ -504,8 +622,107 @@ impl ApplicationHandler for App {
             if let Some(mut frag) = self.frag_shader.take() {
                 frag.destroy(gpu_context.device().raw());
             }
+
+            if let Some(pool) = self.descriptor_pool.take() {
+                // SAFETY: Destroying descriptor pool on valid device
+                unsafe {
+                    gpu_context
+                        .device()
+                        .raw()
+                        .destroy_descriptor_pool(pool, None);
+                }
+            }
+
+            if let Some(layout) = self.descriptor_set_layout.take() {
+                // SAFETY: Destroying descriptor set layout on valid device
+                unsafe {
+                    gpu_context
+                        .device()
+                        .raw()
+                        .destroy_descriptor_set_layout(layout, None);
+                }
+            }
+
+            if let Some(mut tex) = self.texture_array.take() {
+                tex.destroy(gpu_context.device().raw(), gpu_context.allocator());
+            }
+
+            for mesh in &mut self.chunk_meshes {
+                mesh.buffer
+                    .destroy(gpu_context.device().raw(), gpu_context.allocator());
+            }
+            self.chunk_meshes.clear();
+
+            if let Some(mut depth) = self.depth_buffer.take() {
+                depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
+            }
         }
     }
+}
+
+fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    let mut stack = ResourcePackStack::new();
+    stack.add_root("dev-assets/faithful-32x");
+    stack.add_root("dev-assets/classic-26.2");
+    stack.add_root("assets/voxel");
+
+    let is_faithful = stack
+        .find_block_texture("stone")
+        .is_some_and(|p| p.to_string_lossy().contains("faithful"));
+    let target_res = if is_faithful { 32 } else { 16 };
+
+    info!(
+        target_resolution = target_res,
+        pack = if is_faithful {
+            "Faithful 32x"
+        } else {
+            "Default 16x"
+        },
+        "Loading and baking block textures into 2D texture array"
+    );
+
+    let mut builder = TextureArrayBuilder::new(target_res);
+    builder.insert("stone", stack.load_block_texture("stone")?);
+    builder.insert("dirt", stack.load_block_texture("dirt")?);
+    builder.insert(
+        "grass_block_top",
+        stack.load_block_texture("grass_block_top")?,
+    );
+    builder.insert(
+        "grass_block_side",
+        stack.load_block_texture("grass_block_side")?,
+    );
+    builder.insert("bedrock", stack.load_block_texture("bedrock")?);
+
+    let baked = builder.bake();
+    info!(
+        resolution = baked.resolution,
+        layers = baked.layer_count,
+        mips = baked.mip_levels,
+        "Texture array baked with full mip chains"
+    );
+
+    let regions: Vec<TextureMipRegion> = baked
+        .copy_regions
+        .iter()
+        .map(|r| TextureMipRegion {
+            buffer_offset: r.buffer_offset,
+            layer: r.layer,
+            mip_level: r.mip_level,
+            width: r.width,
+            height: r.height,
+        })
+        .collect();
+
+    let texture_array = gpu_context.create_texture_array(
+        baked.resolution,
+        baked.layer_count,
+        baked.mip_levels,
+        &baked.pixel_data,
+        &regions,
+    )?;
+
+    Ok(texture_array)
 }
 
 fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {

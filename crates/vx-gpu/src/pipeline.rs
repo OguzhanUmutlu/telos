@@ -65,6 +65,7 @@ impl GraphicsPipeline {
         depth_format: Option<vk::Format>,
         cull_mode: vk::CullModeFlags,
         front_face: vk::FrontFace,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
         push_constant_ranges: &[vk::PushConstantRange],
     ) -> Result<Self, GpuError> {
         let entry_point = c"main";
@@ -123,8 +124,9 @@ impl GraphicsPipeline {
         let dynamic_state_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let layout_info =
-            vk::PipelineLayoutCreateInfo::default().push_constant_ranges(push_constant_ranges);
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(push_constant_ranges);
 
         // SAFETY: Creating pipeline layout
         let layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };

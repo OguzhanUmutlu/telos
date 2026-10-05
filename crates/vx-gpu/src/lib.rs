@@ -14,6 +14,7 @@ pub mod frame;
 pub mod instance;
 pub mod pipeline;
 pub mod swapchain;
+pub mod texture;
 
 pub use allocator::GpuAllocator;
 pub use buffer::GpuBuffer;
@@ -25,6 +26,7 @@ pub use frame::{FRAMES_IN_FLIGHT, FrameManager, FrameResources};
 pub use instance::Instance;
 pub use pipeline::{GraphicsPipeline, ShaderModule};
 pub use swapchain::Swapchain;
+pub use texture::{GpuTextureArray, TextureMipRegion};
 
 // Re-export ash vk for shader/command ergonomics
 pub use ash::vk;

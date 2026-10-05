@@ -13,15 +13,16 @@ use crate::{
     frame::FrameManager,
     instance::Instance,
     swapchain::Swapchain,
+    texture::{GpuTextureArray, TextureMipRegion},
 };
 
 /// The primary Vulkan rendering context.
 pub struct GpuContext {
-    instance: Instance,
-    device: Device,
+    frame_manager: FrameManager,
     swapchain: Swapchain,
     allocator: GpuAllocator,
-    frame_manager: FrameManager,
+    device: Device,
+    instance: Instance,
     current_extent: vk::Extent2D,
 }
 
@@ -83,11 +84,11 @@ impl GpuContext {
         info!("GpuContext successfully initialized");
 
         Ok(Self {
-            instance,
-            device,
+            frame_manager,
             swapchain,
             allocator,
-            frame_manager,
+            device,
+            instance,
             current_extent,
         })
     }
@@ -275,6 +276,42 @@ impl GpuContext {
     /// Creates a 2D depth attachment buffer matching the current swapchain extent.
     pub fn create_depth_buffer(&self) -> Result<DepthBuffer, GpuError> {
         DepthBuffer::new(self.device.raw(), &self.allocator, self.current_extent)
+    }
+
+    /// Creates a GPU 2D texture array and uploads raw mip slices via a staging transfer buffer.
+    pub fn create_texture_array(
+        &self,
+        resolution: u32,
+        layer_count: u32,
+        mip_levels: u32,
+        pixel_data: &[u8],
+        copy_regions: &[TextureMipRegion],
+    ) -> Result<GpuTextureArray, GpuError> {
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.device.queue_families().graphics_family)
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+
+        // SAFETY: Creating transient command pool for one-time copy submission
+        let pool = unsafe { self.device.raw().create_command_pool(&pool_info, None)? };
+
+        let res = GpuTextureArray::from_raw_mips(
+            self.device.raw(),
+            &self.allocator,
+            self.device.graphics_queue(),
+            pool,
+            resolution,
+            layer_count,
+            mip_levels,
+            pixel_data,
+            copy_regions,
+        );
+
+        // SAFETY: Destroying transient command pool
+        unsafe {
+            self.device.raw().destroy_command_pool(pool, None);
+        }
+
+        res
     }
 
     /// Waits for all GPU queues to finish operations.

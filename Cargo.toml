@@ -5,6 +5,7 @@ members = [
     "crates/vx-gpu",
     "crates/vx-voxel",
     "crates/vx-mesh",
+    "crates/vx-assets",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -20,10 +21,14 @@ repository = "https://github.com/larvance/voxel"
 
 [workspace.dependencies]
 # Internal crates
-vx-core = { path = "crates/vx-core" }
-vx-gpu = { path = "crates/vx-gpu" }
-vx-voxel = { path = "crates/vx-voxel" }
-vx-mesh = { path = "crates/vx-mesh" }
+vx-core = { version = "0.1.0", path = "crates/vx-core" }
+vx-gpu = { version = "0.1.0", path = "crates/vx-gpu" }
+vx-voxel = { version = "0.1.0", path = "crates/vx-voxel" }
+vx-mesh = { version = "0.1.0", path = "crates/vx-mesh" }
+vx-assets = { version = "0.1.0", path = "crates/vx-assets" }
+
+# Assets & image decoding
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Graphics & windowing (Vulkan 1.3)
 ash = "0.38"

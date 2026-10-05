@@ -17,9 +17,7 @@ wildcards = "deny"
 highlight = "all"
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-notice = "warn"
+unmaintained = "all"
 
 [sources]
 unknown-registry = "deny"

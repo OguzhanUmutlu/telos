@@ -22,6 +22,8 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_world_pos;
 layout(location = 2) flat out uint v_material;
+layout(location = 3) flat out uint v_dir;
+layout(location = 4) out vec2 v_uv;
 
 const uint CORNER_INDICES[6] = uint[](0, 1, 2, 2, 3, 0);
 
@@ -98,4 +100,6 @@ void main() {
     v_normal = NORMALS[dir];
     v_world_pos = world_pos;
     v_material = material;
+    v_dir = dir;
+    v_uv = corner_uv;
 }

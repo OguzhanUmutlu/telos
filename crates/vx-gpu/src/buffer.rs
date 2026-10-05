@@ -185,6 +185,31 @@ impl GpuBuffer {
         self.size
     }
 
+    /// Copies a byte slice into a host-mapped buffer allocation (CPU-to-GPU).
+    pub fn write_bytes(&mut self, data: &[u8]) -> Result<(), GpuError> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .ok_or_else(|| GpuError::Allocation("Buffer has no allocation".into()))?;
+
+        let ptr = alloc
+            .mapped_ptr()
+            .ok_or_else(|| GpuError::Allocation("Buffer is not host-mapped".into()))?
+            .as_ptr()
+            .cast::<u8>();
+
+        if data.len() as vk::DeviceSize > self.size {
+            return Err(GpuError::Allocation("Data exceeds buffer capacity".into()));
+        }
+
+        // SAFETY: ptr is valid for at least data.len() bytes
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        }
+
+        Ok(())
+    }
+
     /// Destroys the buffer and releases memory back to `GpuAllocator`.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &GpuAllocator) {
         if self.buffer != vk::Buffer::null() {
