@@ -56,11 +56,15 @@ pub struct GraphicsPipeline {
 
 impl GraphicsPipeline {
     /// Builds a dynamic rendering graphics pipeline using `VkPipelineRenderingCreateInfo`.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_dynamic(
         device: &ash::Device,
         vert_shader: vk::ShaderModule,
         frag_shader: vk::ShaderModule,
         color_format: vk::Format,
+        depth_format: Option<vk::Format>,
+        cull_mode: vk::CullModeFlags,
+        front_face: vk::FrontFace,
         push_constant_ranges: &[vk::PushConstantRange],
     ) -> Result<Self, GpuError> {
         let entry_point = c"main";
@@ -93,8 +97,15 @@ impl GraphicsPipeline {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::CLOCKWISE);
+            .cull_mode(cull_mode)
+            .front_face(front_face);
+
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(depth_format.is_some())
+            .depth_write_enable(depth_format.is_some())
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
@@ -122,8 +133,11 @@ impl GraphicsPipeline {
         let color_formats = [color_format];
         let mut rendering_info =
             vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        if let Some(depth_fmt) = depth_format {
+            rendering_info = rendering_info.depth_attachment_format(depth_fmt);
+        }
 
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+        let mut pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
@@ -134,6 +148,10 @@ impl GraphicsPipeline {
             .dynamic_state(&dynamic_state_info)
             .layout(layout)
             .push_next(&mut rendering_info);
+
+        if depth_format.is_some() {
+            pipeline_info = pipeline_info.depth_stencil_state(&depth_stencil);
+        }
 
         // SAFETY: Creating graphics pipeline with dynamic rendering extension chain
         let pipelines = unsafe {

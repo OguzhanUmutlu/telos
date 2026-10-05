@@ -6,6 +6,8 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=../../shaders/debug_triangle.vert");
     println!("cargo:rerun-if-changed=../../shaders/debug_triangle.frag");
+    println!("cargo:rerun-if-changed=../../shaders/chunk.vert");
+    println!("cargo:rerun-if-changed=../../shaders/chunk.frag");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -19,6 +21,8 @@ fn main() {
             "../../shaders/debug_triangle.frag",
             "debug_triangle.frag.spv",
         ),
+        ("../../shaders/chunk.vert", "chunk.vert.spv"),
+        ("../../shaders/chunk.frag", "chunk.frag.spv"),
     ];
 
     for (src, dst) in shaders {

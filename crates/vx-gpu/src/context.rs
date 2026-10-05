@@ -6,6 +6,8 @@ use tracing::info;
 
 use crate::{
     allocator::GpuAllocator,
+    buffer::GpuBuffer,
+    depth::DepthBuffer,
     device::{Device, create_device},
     error::GpuError,
     frame::FrameManager,
@@ -236,6 +238,43 @@ impl GpuContext {
     /// Current swapchain extent.
     pub fn extent(&self) -> vk::Extent2D {
         self.current_extent
+    }
+
+    /// Creates a GPU-local storage buffer and uploads initial data via a staging transfer buffer.
+    pub fn create_buffer_with_data<T: Copy>(
+        &self,
+        name: &'static str,
+        data: &[T],
+        extra_usage: vk::BufferUsageFlags,
+    ) -> Result<GpuBuffer, GpuError> {
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.device.queue_families().graphics_family)
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+
+        // SAFETY: Creating transient command pool for one-time copy submission
+        let pool = unsafe { self.device.raw().create_command_pool(&pool_info, None)? };
+
+        let res = GpuBuffer::from_data(
+            self.device.raw(),
+            &self.allocator,
+            self.device.graphics_queue(),
+            pool,
+            name,
+            data,
+            extra_usage,
+        );
+
+        // SAFETY: Destroying transient transfer command pool
+        unsafe {
+            self.device.raw().destroy_command_pool(pool, None);
+        }
+
+        res
+    }
+
+    /// Creates a 2D depth attachment buffer matching the current swapchain extent.
+    pub fn create_depth_buffer(&self) -> Result<DepthBuffer, GpuError> {
+        DepthBuffer::new(self.device.raw(), &self.allocator, self.current_extent)
     }
 
     /// Waits for all GPU queues to finish operations.
