@@ -1,0 +1,20 @@
+[package]
+name = "voxel-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Authoritative headless server binary for voxel"
+
+[dependencies]
+vx-core = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+mimalloc = { workspace = true }
+ctrlc = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

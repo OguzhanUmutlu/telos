@@ -1,0 +1,19 @@
+[package]
+name = "voxel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Voxel engine client executable"
+
+[dependencies]
+vx-core = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+mimalloc = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

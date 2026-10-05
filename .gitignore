@@ -1,0 +1,26 @@
+# Build outputs
+/target
+Cargo.lock.d
+
+# Placeholder and copyrighted assets (ADR-22)
+/dev-assets
+
+# World saves and runtime data
+/worlds
+*.vxr
+*.vxm
+
+# Profiling and diagnostics
+*.profraw
+perf.data*
+tracy.log
+*.tracy
+
+# IDEs and OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -1,0 +1,4 @@
+[alias]
+xtask = "run --package xtask --"
+ci = "run --package xtask -- ci"
+doctor = "run --package xtask -- doctor"

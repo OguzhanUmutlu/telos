@@ -1,0 +1,4 @@
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250
+single-char-binding-names-threshold = 5
+msrv = "1.98.0"
