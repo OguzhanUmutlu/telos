@@ -11,6 +11,7 @@ members = [
     "crates/vx-protocol",
     "crates/vx-net",
     "crates/vx-server",
+    "crates/vx-lod",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -36,6 +37,7 @@ vx-storage = { version = "0.1.0", path = "crates/vx-storage" }
 vx-protocol = { version = "0.1.0", path = "crates/vx-protocol" }
 vx-net = { version = "0.1.0", path = "crates/vx-net" }
 vx-server = { version = "0.1.0", path = "crates/vx-server" }
+vx-lod = { version = "0.1.0", path = "crates/vx-lod" }
 
 # Assets & image decoding
 image = { version = "0.25", default-features = false, features = ["png"] }

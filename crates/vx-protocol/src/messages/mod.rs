@@ -13,9 +13,9 @@ pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
-    C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload, S2cChatMessage, S2cChunkData,
-    S2cChunkUnload, S2cJoinGame, S2cKeepAlive, S2cUniformChunk, decode_chunk_snapshot,
-    encode_chunk_snapshot,
+    C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload, LodPayload, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cUniformChunk, decode_chunk_snapshot, encode_chunk_snapshot,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -142,6 +142,10 @@ pub enum S2cMessage {
     UniformChunk(S2cUniformChunk),
     /// Play phase chunk unload notification.
     ChunkUnload(S2cChunkUnload),
+    /// Play phase LOD node mesh and palette data.
+    LodNodeData(S2cLodNodeData),
+    /// Play phase LOD node unload notification.
+    LodNodeUnload(S2cLodNodeUnload),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -161,7 +165,9 @@ impl S2cMessage {
             | Self::JoinGame(_)
             | Self::ChunkData(_)
             | Self::UniformChunk(_)
-            | Self::ChunkUnload(_) => Some(ConnectionPhase::Play),
+            | Self::ChunkUnload(_)
+            | Self::LodNodeData(_)
+            | Self::LodNodeUnload(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -179,6 +185,8 @@ impl S2cMessage {
             Self::ChunkData(_) => 3,
             Self::UniformChunk(_) => 4,
             Self::ChunkUnload(_) => 5,
+            Self::LodNodeData(_) => 6,
+            Self::LodNodeUnload(_) => 7,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -196,6 +204,8 @@ impl S2cMessage {
             Self::ChunkData(m) => m.encode(buf),
             Self::UniformChunk(m) => m.encode(buf),
             Self::ChunkUnload(m) => m.encode(buf),
+            Self::LodNodeData(m) => m.encode(buf),
+            Self::LodNodeUnload(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

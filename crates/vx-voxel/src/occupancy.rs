@@ -114,11 +114,26 @@ impl Occupancy {
         self.col_z[((y << 5) | x) as usize] ^= 1 << z;
     }
 
+    /// Sets or clears the occupancy bit for voxel `(x, y, z)`.
+    #[inline]
+    pub fn set_solid(&mut self, x: u32, y: u32, z: u32, solid: bool) {
+        if self.is_solid(x, y, z) != solid {
+            self.toggle(x, y, z);
+        }
+    }
+
     /// Returns `true` if voxel `(x, y, z)` is solid.
     #[inline]
     #[must_use]
     pub fn is_solid(&self, x: u32, y: u32, z: u32) -> bool {
         (self.col_y[((z << 5) | x) as usize] & (1 << y)) != 0
+    }
+
+    /// Returns `true` if the container contains zero solid voxels.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.col_y.iter().all(|&c| c == 0)
     }
 }
 

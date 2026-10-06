@@ -705,3 +705,158 @@ impl S2cChunkUnload {
         })
     }
 }
+
+/// LOD node payload carrier supporting zero-copy in-memory buffers and bounded wire bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LodPayload {
+    /// Zero-copy buffer reference for in-process singleplayer transport.
+    Memory(Arc<Vec<u32>>),
+    /// Serialized byte buffer for network transport.
+    Wire(BoundedVec<u8, 262_144>),
+}
+
+impl LodPayload {
+    /// Extracts the underlying `u32` words from the payload.
+    #[must_use]
+    pub fn to_words(&self) -> Vec<u32> {
+        match self {
+            Self::Memory(vec) => (**vec).clone(),
+            Self::Wire(wire) => {
+                let bytes = wire.as_slice();
+                let (chunks, _) = bytes.as_chunks::<4>();
+                let mut words = Vec::with_capacity(chunks.len());
+                for chunk in chunks {
+                    words.push(u32::from_le_bytes(*chunk));
+                }
+                words
+            }
+        }
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Memory(vec) => {
+                let byte_len = vec.len() * 4;
+                let mut wire_bytes = Vec::with_capacity(byte_len);
+                for w in vec.iter() {
+                    wire_bytes.extend_from_slice(&w.to_le_bytes());
+                }
+                let bounded = BoundedVec::<u8, 262_144>::new(wire_bytes)
+                    .expect("LOD mesh serialization exceeded 262 KiB limit");
+                bounded.encode(buf);
+            }
+            Self::Wire(wire) => {
+                wire.encode(buf);
+            }
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let wire = BoundedVec::<u8, 262_144>::decode(cursor)?;
+        Ok(Self::Wire(wire))
+    }
+}
+
+/// Server sends greedy-meshed LOD node geometry and palette to client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cLodNodeData {
+    /// Clipmap hierarchy level (L >= 1).
+    pub level: u8,
+    /// Node coordinate X in level-L grid.
+    pub node_x: i32,
+    /// Node coordinate Y in level-L grid.
+    pub node_y: i32,
+    /// Node coordinate Z in level-L grid.
+    pub node_z: i32,
+    /// Content version for eviction/replacement tracking.
+    pub version: u64,
+    /// Number of 8-byte quads packed in payload.
+    pub quad_count: u32,
+    /// Number of RGBA8 palette entries trailing quads in payload.
+    pub palette_count: u32,
+    /// LOD payload (quads + palette as u32 words).
+    pub payload: LodPayload,
+}
+
+impl S2cLodNodeData {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.level);
+        encode_varint(zigzag_i32(self.node_x), buf);
+        encode_varint(zigzag_i32(self.node_y), buf);
+        encode_varint(zigzag_i32(self.node_z), buf);
+        encode_varlong(self.version, buf);
+        encode_varint(self.quad_count, buf);
+        encode_varint(self.palette_count, buf);
+        self.payload.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let level = cursor[0];
+        *cursor = &cursor[1..];
+        let node_x = unzigzag_i32(decode_varint(cursor)?);
+        let node_y = unzigzag_i32(decode_varint(cursor)?);
+        let node_z = unzigzag_i32(decode_varint(cursor)?);
+        let version = decode_varlong(cursor)?;
+        let quad_count = decode_varint(cursor)?;
+        let palette_count = decode_varint(cursor)?;
+        let payload = LodPayload::decode(cursor)?;
+        Ok(Self {
+            level,
+            node_x,
+            node_y,
+            node_z,
+            version,
+            quad_count,
+            palette_count,
+            payload,
+        })
+    }
+}
+
+/// Server instructs client to evict LOD node outside view distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct S2cLodNodeUnload {
+    /// Clipmap hierarchy level (L >= 1).
+    pub level: u8,
+    /// Node coordinate X in level-L grid.
+    pub node_x: i32,
+    /// Node coordinate Y in level-L grid.
+    pub node_y: i32,
+    /// Node coordinate Z in level-L grid.
+    pub node_z: i32,
+}
+
+impl S2cLodNodeUnload {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.level);
+        encode_varint(zigzag_i32(self.node_x), buf);
+        encode_varint(zigzag_i32(self.node_y), buf);
+        encode_varint(zigzag_i32(self.node_z), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let level = cursor[0];
+        *cursor = &cursor[1..];
+        let node_x = unzigzag_i32(decode_varint(cursor)?);
+        let node_y = unzigzag_i32(decode_varint(cursor)?);
+        let node_z = unzigzag_i32(decode_varint(cursor)?);
+        Ok(Self {
+            level,
+            node_x,
+            node_y,
+            node_z,
+        })
+    }
+}

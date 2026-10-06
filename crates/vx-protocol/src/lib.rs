@@ -26,7 +26,10 @@ pub use messages::{
     disconnect::{Disconnect, DisconnectReason},
     hello::{C2sHello, S2cHelloReply},
     login::{AuthMode, C2sLoginStart, S2cLoginSuccess},
-    play::{C2sChatMessage, C2sKeepAlive, S2cChatMessage, S2cKeepAlive},
+    play::{
+        C2sChatMessage, C2sKeepAlive, LodPayload, S2cChatMessage, S2cKeepAlive, S2cLodNodeData,
+        S2cLodNodeUnload,
+    },
 };
 
 /// The protocol revision implemented by this build of `vx-protocol`.

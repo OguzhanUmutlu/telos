@@ -16,6 +16,7 @@ fn test_server_handshake_and_chunk_streaming() {
         view_distance: 3,
         vertical_view_distance: 2,
         chunks_per_tick_per_player: 10,
+        ..Default::default()
     };
     let mut server = Server::new(12345, config);
 
@@ -103,6 +104,7 @@ fn test_server_handshake_and_chunk_streaming() {
     server.tick();
 
     let mut received_chunks = 0;
+    let mut received_lod_nodes = 0;
     while let Ok(Some(incoming)) = client_conn.try_recv() {
         match incoming.into_msg().unwrap() {
             S2cMessage::ChunkData(chunk) => {
@@ -112,6 +114,10 @@ fn test_server_handshake_and_chunk_streaming() {
             S2cMessage::UniformChunk(_) => {
                 received_chunks += 1;
             }
+            S2cMessage::LodNodeData(lod) => {
+                received_lod_nodes += 1;
+                assert!(lod.level >= 1);
+            }
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }
     }
@@ -119,6 +125,10 @@ fn test_server_handshake_and_chunk_streaming() {
     assert!(
         received_chunks > 0,
         "Expected server to deliver initial chunks"
+    );
+    assert!(
+        received_lod_nodes > 0,
+        "Expected server to deliver initial far-field LOD nodes"
     );
 }
 
@@ -129,6 +139,7 @@ fn test_player_movement_and_chunk_eviction() {
         view_distance: 2,
         vertical_view_distance: 2,
         chunks_per_tick_per_player: 100,
+        ..Default::default()
     };
     let mut server = Server::new(42, config);
 

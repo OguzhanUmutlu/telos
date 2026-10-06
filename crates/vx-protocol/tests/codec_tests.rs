@@ -11,9 +11,9 @@ use vx_protocol::error::ProtocolError;
 use vx_protocol::messages::{
     AuthMode, C2sChatMessage, C2sClientSettings, C2sConfigAck, C2sHello, C2sKeepAlive,
     C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload,
-    ConnectionPhase, Disconnect, DisconnectReason, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLoginSuccess, S2cMessage,
-    S2cRegistryData, S2cUniformChunk,
+    ConnectionPhase, Disconnect, DisconnectReason, LodPayload, S2cChatMessage, S2cChunkData,
+    S2cChunkUnload, S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cUniformChunk,
 };
 use vx_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -210,6 +210,22 @@ fn test_s2c_messages_roundtrip() {
             chunk_y: -2,
             chunk_z: 30,
         }),
+        S2cMessage::LodNodeData(S2cLodNodeData {
+            level: 2,
+            node_x: -5,
+            node_y: 1,
+            node_z: 12,
+            version: 7,
+            quad_count: 14,
+            palette_count: 3,
+            payload: LodPayload::Wire(BoundedVec::new(vec![0x44, 0x33, 0x22, 0x11]).unwrap()),
+        }),
+        S2cMessage::LodNodeUnload(S2cLodNodeUnload {
+            level: 2,
+            node_x: -5,
+            node_y: 1,
+            node_z: 12,
+        }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,
             message: BoundedString::new("Server is full").unwrap(),
@@ -225,6 +241,40 @@ fn test_s2c_messages_roundtrip() {
         let decoded = decode_s2c(phase, &mut cursor).expect("failed to decode S2C message");
         assert_eq!(decoded, msg);
         assert!(cursor.is_empty());
+    }
+}
+
+#[test]
+fn test_lod_node_data_memory_and_wire_roundtrip() {
+    let words = vec![0x1122_3344, 0x5566_7788];
+    let msg = S2cMessage::LodNodeData(S2cLodNodeData {
+        level: 2,
+        node_x: -10,
+        node_y: 4,
+        node_z: 25,
+        version: 3,
+        quad_count: 1,
+        palette_count: 2,
+        payload: LodPayload::Memory(Arc::new(words.clone())),
+    });
+
+    let mut buf = Vec::new();
+    encode_s2c(&msg, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded = decode_s2c(ConnectionPhase::Play, &mut cursor).unwrap();
+    match decoded {
+        S2cMessage::LodNodeData(data) => {
+            assert_eq!(data.level, 2);
+            assert_eq!(data.node_x, -10);
+            assert_eq!(data.node_y, 4);
+            assert_eq!(data.node_z, 25);
+            assert_eq!(data.version, 3);
+            assert_eq!(data.quad_count, 1);
+            assert_eq!(data.palette_count, 2);
+            assert_eq!(data.payload.to_words(), words);
+        }
+        other => panic!("Unexpected decoded message: {other:?}"),
     }
 }
 

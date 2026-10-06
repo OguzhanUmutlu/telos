@@ -2,11 +2,13 @@
 
 use glam::DVec3;
 use hashbrown::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 use vx_net::{Connection, Lane, Payload};
 use vx_protocol::messages::{
-    C2sMessage, ChunkPayload, ConnectionPhase, S2cChunkData, S2cChunkUnload, S2cHelloReply,
-    S2cJoinGame, S2cLoginSuccess, S2cMessage, S2cUniformChunk,
+    C2sMessage, ChunkPayload, ConnectionPhase, LodPayload, S2cChunkData, S2cChunkUnload,
+    S2cHelloReply, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cUniformChunk,
 };
 use vx_voxel::registry::BlockRegistry;
 use vx_voxel::storage::Blocks;
@@ -182,12 +184,23 @@ impl Server {
 
             // Recompute subscriptions if player moved chunk or rotated view significantly
             if session.should_recompute_subscriptions() {
-                let unloads = session.recompute_subscriptions();
+                let (unloads, lod_unloads) = session.recompute_subscriptions();
                 for pos in unloads {
                     let unload_msg = S2cMessage::ChunkUnload(S2cChunkUnload {
                         chunk_x: pos.x(),
                         chunk_y: pos.y(),
                         chunk_z: pos.z(),
+                    });
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(unload_msg));
+                }
+                for key in lod_unloads {
+                    let unload_msg = S2cMessage::LodNodeUnload(S2cLodNodeUnload {
+                        level: key.level,
+                        node_x: key.x,
+                        node_y: key.y,
+                        node_z: key.z,
                     });
                     let _ = session
                         .connection
@@ -234,6 +247,34 @@ impl Server {
                         .connection
                         .send(Lane::Chunk { priority: 0 }, Payload::Msg(data_msg));
                 }
+            }
+
+            // Deliver up to lod_quota LOD nodes
+            let lod_quota = self.config.lod_nodes_per_tick_per_player;
+            for _ in 0..lod_quota {
+                let Some(key) = session.pop_next_lod_node() else {
+                    break;
+                };
+
+                let mesh = self.world.get_or_mesh_lod_node(key);
+                session.mark_lod_node_sent(key);
+
+                let mut words = Vec::new();
+                mesh.write_to_u32_buffer(&mut words);
+
+                let data_msg = S2cMessage::LodNodeData(S2cLodNodeData {
+                    level: key.level,
+                    node_x: key.x,
+                    node_y: key.y,
+                    node_z: key.z,
+                    version: 1,
+                    quad_count: mesh.quads.len() as u32,
+                    palette_count: mesh.palette.len() as u32,
+                    payload: LodPayload::Memory(Arc::new(words)),
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Chunk { priority: 1 }, Payload::Msg(data_msg));
             }
         }
     }

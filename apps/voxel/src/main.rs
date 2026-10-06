@@ -71,11 +71,32 @@ struct ChunkPushConstants {
     quad_buffer_address: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LodPushConstants {
+    view_proj: glam::Mat4,
+    node_pos: [i32; 3],
+    level: u32,
+    quad_count: u32,
+    buffer_address: u64,
+    camera_pos: Vec3,
+    max_distance: f32,
+}
+
 struct GpuChunkMesh {
     pos: [i32; 3],
     buffer: GpuBuffer,
     quad_count: u32,
     pattern_offset: u32,
+    min_aabb: Vec3,
+    max_aabb: Vec3,
+}
+
+struct GpuLodMesh {
+    node_pos: [i32; 3],
+    level: u8,
+    buffer: GpuBuffer,
+    quad_count: u32,
     min_aabb: Vec3,
     max_aabb: Vec3,
 }
@@ -94,6 +115,10 @@ struct App {
     vert_shader: Option<ShaderModule>,
     frag_shader: Option<ShaderModule>,
 
+    lod_pipeline: Option<GraphicsPipeline>,
+    lod_vert_shader: Option<ShaderModule>,
+    lod_frag_shader: Option<ShaderModule>,
+
     server_running: Arc<AtomicBool>,
     server_handle: Option<std::thread::JoinHandle<()>>,
     client_conn: Box<dyn Connection<C2sMessage, S2cMessage>>,
@@ -104,6 +129,9 @@ struct App {
     chunk_meshes: HashMap<ChunkPos, GpuChunkMesh>,
     dirty_chunks: HashSet<ChunkPos>,
 
+    lod_meshes: HashMap<vx_lod::coords::LodNodeKey, GpuLodMesh>,
+    pending_lod_uploads: HashMap<vx_lod::coords::LodNodeKey, (u32, Vec<u32>)>,
+
     camera: Camera,
     controller: FlyController,
     last_sent_pos: Vec3,
@@ -112,6 +140,7 @@ struct App {
     last_fps_time: Instant,
     frame_counter: u32,
     visible_chunks_last: usize,
+    visible_lod_nodes_last: usize,
 }
 
 impl App {
@@ -135,6 +164,7 @@ impl App {
                     view_distance,
                     vertical_view_distance: 2,
                     chunks_per_tick_per_player: 16,
+                    ..Default::default()
                 };
                 let mut server = vx_server::Server::new(seed, config);
                 server.add_connection(server_conn);
@@ -173,6 +203,10 @@ impl App {
             vert_shader: None,
             frag_shader: None,
 
+            lod_pipeline: None,
+            lod_vert_shader: None,
+            lod_frag_shader: None,
+
             server_running,
             server_handle: Some(server_handle),
             client_conn,
@@ -183,6 +217,9 @@ impl App {
             chunk_meshes: HashMap::new(),
             dirty_chunks: HashSet::new(),
 
+            lod_meshes: HashMap::new(),
+            pending_lod_uploads: HashMap::new(),
+
             camera,
             controller: FlyController::default(),
             last_sent_pos: spawn_pos,
@@ -191,6 +228,7 @@ impl App {
             last_fps_time: Instant::now(),
             frame_counter: 0,
             visible_chunks_last: 0,
+            visible_lod_nodes_last: 0,
         }
     }
 
@@ -295,6 +333,34 @@ impl App {
                             mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
                         }
                         self.mark_dirty_neighbors(pos);
+                    }
+                    S2cMessage::LodNodeData(lod) => {
+                        let key = vx_lod::coords::LodNodeKey::new(
+                            lod.level, lod.node_x, lod.node_y, lod.node_z,
+                        );
+                        let words = lod.payload.to_words();
+                        if !words.is_empty() {
+                            self.pending_lod_uploads
+                                .insert(key, (lod.quad_count, words));
+                        } else if let (Some(mut mesh), Some(ctx)) =
+                            (self.lod_meshes.remove(&key), &self.gpu_context)
+                        {
+                            mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
+                        }
+                    }
+                    S2cMessage::LodNodeUnload(unload) => {
+                        let key = vx_lod::coords::LodNodeKey::new(
+                            unload.level,
+                            unload.node_x,
+                            unload.node_y,
+                            unload.node_z,
+                        );
+                        self.pending_lod_uploads.remove(&key);
+                        if let (Some(mut mesh), Some(ctx)) =
+                            (self.lod_meshes.remove(&key), &self.gpu_context)
+                        {
+                            mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
+                        }
                     }
                     _ => {}
                 },
@@ -467,11 +533,67 @@ impl App {
         }
     }
 
+    fn upload_pending_lod_meshes(&mut self) {
+        let Some(gpu_context) = &mut self.gpu_context else {
+            return;
+        };
+        if self.pending_lod_uploads.is_empty() {
+            return;
+        }
+
+        let device = gpu_context.device().raw();
+        let allocator = gpu_context.allocator();
+
+        let pending: Vec<_> = self.pending_lod_uploads.drain().collect();
+        for (key, (quad_count, words)) in pending {
+            if quad_count == 0 || words.is_empty() {
+                if let Some(mut old_mesh) = self.lod_meshes.remove(&key) {
+                    old_mesh.buffer.destroy(device, allocator);
+                }
+                continue;
+            }
+
+            match gpu_context.create_buffer_with_data(
+                "lod_mesh",
+                &words,
+                vk::BufferUsageFlags::empty(),
+            ) {
+                Ok(buffer) => {
+                    let shift = 5 + i32::from(key.level);
+                    let node_size = (1 << shift) as f32;
+                    let min_aabb = Vec3::new(
+                        (key.x << shift) as f32,
+                        (key.y << shift) as f32,
+                        (key.z << shift) as f32,
+                    );
+                    let max_aabb = min_aabb + Vec3::splat(node_size);
+
+                    let new_mesh = GpuLodMesh {
+                        node_pos: [key.x, key.y, key.z],
+                        level: key.level,
+                        buffer,
+                        quad_count,
+                        min_aabb,
+                        max_aabb,
+                    };
+
+                    if let Some(mut old_mesh) = self.lod_meshes.insert(key, new_mesh) {
+                        old_mesh.buffer.destroy(device, allocator);
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("Failed to create GPU buffer for LOD node {key:?}: {err}");
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn render(&mut self) {
         self.poll_network();
         self.send_player_position_if_needed();
         self.rebuild_dirty_meshes(16);
+        self.upload_pending_lod_meshes();
 
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
@@ -487,7 +609,9 @@ impl App {
             info!(
                 fps,
                 visible = self.visible_chunks_last,
+                visible_lods = self.visible_lod_nodes_last,
                 loaded_chunks = self.chunks.len(),
+                lod_meshes = self.lod_meshes.len(),
                 gpu_meshes = self.chunk_meshes.len(),
                 dirty_queue = self.dirty_chunks.len(),
                 pos = ?self.camera.position,
@@ -646,6 +770,48 @@ impl App {
             }
 
             self.visible_chunks_last = visible_chunks;
+
+            // Far-field LOD draws
+            if let Some(lod_pipeline) = &self.lod_pipeline {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
+                let mut visible_lods = 0;
+                let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
+
+                for mesh in self.lod_meshes.values() {
+                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
+                        continue;
+                    }
+
+                    visible_lods += 1;
+
+                    let pc = LodPushConstants {
+                        view_proj,
+                        node_pos: mesh.node_pos,
+                        level: u32::from(mesh.level),
+                        quad_count: mesh.quad_count,
+                        buffer_address: mesh.buffer.device_address(),
+                        camera_pos: self.camera.position,
+                        max_distance: max_dist,
+                    };
+
+                    let pc_bytes = std::slice::from_raw_parts(
+                        std::ptr::from_ref(&pc).cast::<u8>(),
+                        size_of::<LodPushConstants>(),
+                    );
+
+                    device.cmd_push_constants(
+                        cmd,
+                        lod_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        pc_bytes,
+                    );
+
+                    device.cmd_draw(cmd, mesh.quad_count * 6, 1, 0, 0);
+                }
+
+                self.visible_lod_nodes_last = visible_lods;
+            }
 
             device.cmd_end_rendering(cmd);
         }
@@ -839,11 +1005,63 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Load LOD SPIR-V bytecode
+        let lod_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/lod.vert.spv"));
+        let lod_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/lod.frag.spv"));
+
+        let lod_vert_module = match ShaderModule::from_spv(gpu_context.device().raw(), lod_vert_spv)
+        {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create LOD vertex shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let lod_frag_module = match ShaderModule::from_spv(gpu_context.device().raw(), lod_frag_spv)
+        {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create LOD fragment shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let lod_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<LodPushConstants>() as u32);
+
+        let lod_pipeline = match GraphicsPipeline::create_dynamic(
+            gpu_context.device().raw(),
+            lod_vert_module.raw(),
+            lod_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::BACK,
+            vk::FrontFace::COUNTER_CLOCKWISE,
+            &[],
+            &[lod_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic LOD graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
         self.pipeline = Some(pipeline);
         self.vert_shader = Some(vert_module);
         self.frag_shader = Some(frag_module);
+        self.lod_pipeline = Some(lod_pipeline);
+        self.lod_vert_shader = Some(lod_vert_module);
+        self.lod_frag_shader = Some(lod_frag_module);
         self.depth_buffer = Some(depth_buffer);
         self.texture_array = Some(texture_array);
         self.descriptor_pool = Some(descriptor_pool);
@@ -975,6 +1193,16 @@ impl ApplicationHandler for App {
                 frag.destroy(gpu_context.device().raw());
             }
 
+            if let Some(mut pipeline) = self.lod_pipeline.take() {
+                pipeline.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut vert) = self.lod_vert_shader.take() {
+                vert.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut frag) = self.lod_frag_shader.take() {
+                frag.destroy(gpu_context.device().raw());
+            }
+
             if let Some(pool) = self.descriptor_pool.take() {
                 // SAFETY: Destroying descriptor pool on valid device
                 unsafe {
@@ -1000,6 +1228,11 @@ impl ApplicationHandler for App {
             }
 
             for (_, mut mesh) in self.chunk_meshes.drain() {
+                mesh.buffer
+                    .destroy(gpu_context.device().raw(), gpu_context.allocator());
+            }
+
+            for (_, mut mesh) in self.lod_meshes.drain() {
                 mesh.buffer
                     .destroy(gpu_context.device().raw(), gpu_context.allocator());
             }

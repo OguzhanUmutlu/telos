@@ -4,6 +4,8 @@ use glam::{DVec3, Vec3};
 use hashbrown::HashSet;
 use std::collections::BinaryHeap;
 use vx_core::coords::{BlockPos, ChunkPos};
+use vx_lod::coords::LodNodeKey;
+use vx_lod::selection::{LodClipmap, LodClipmapConfig};
 use vx_net::Connection;
 use vx_protocol::messages::{C2sMessage, ConnectionPhase, S2cMessage};
 
@@ -38,6 +40,14 @@ pub struct PlayerSession {
     pub queued_chunks: BinaryHeap<QueuedChunk>,
     /// Set of chunks currently in the queue to prevent duplicate insertion.
     pub queued_set: HashSet<ChunkPos>,
+    /// Clipmap selector for far-field LOD nodes.
+    pub clipmap: LodClipmap,
+    /// Set of LOD node keys currently delivered to client.
+    pub sent_lod_nodes: HashSet<LodNodeKey>,
+    /// Queue of LOD node keys awaiting generation and delivery.
+    pub queued_lod_nodes: Vec<LodNodeKey>,
+    /// Set of LOD node keys currently in the queue.
+    pub queued_lod_set: HashSet<LodNodeKey>,
     /// Chunk position when subscriptions were last recomputed.
     pub last_subscription_chunk: ChunkPos,
     /// Yaw angle when subscriptions were last recomputed.
@@ -54,6 +64,13 @@ impl PlayerSession {
         config: &ServerConfig,
     ) -> Self {
         let spawn_pos = DVec3::new(128.0, 45.0, 160.0);
+        #[allow(clippy::cast_possible_wrap)]
+        let clipmap_config = LodClipmapConfig {
+            r0: (config.view_distance as f32) * 32.0,
+            max_level: config.max_lod_level,
+            hysteresis: 0.12,
+            vertical_span: config.vertical_view_distance as i32,
+        };
 
         Self {
             session_id,
@@ -69,6 +86,10 @@ impl PlayerSession {
             sent_chunks: HashSet::new(),
             queued_chunks: BinaryHeap::new(),
             queued_set: HashSet::new(),
+            clipmap: LodClipmap::new(clipmap_config),
+            sent_lod_nodes: HashSet::new(),
+            queued_lod_nodes: Vec::new(),
+            queued_lod_set: HashSet::new(),
             last_subscription_chunk: ChunkPos::new(i32::MAX, i32::MAX, i32::MAX),
             last_subscription_yaw: -90.0,
         }
@@ -115,9 +136,9 @@ impl PlayerSession {
         (self.yaw - self.last_subscription_yaw).abs() >= 30.0
     }
 
-    /// Recomputes desired chunk subscriptions and returns chunks to be unloaded.
+    /// Recomputes desired chunk and LOD subscriptions and returns items to be unloaded.
     #[allow(clippy::cast_possible_wrap)]
-    pub fn recompute_subscriptions(&mut self) -> Vec<ChunkPos> {
+    pub fn recompute_subscriptions(&mut self) -> (Vec<ChunkPos>, Vec<LodNodeKey>) {
         let player_chunk = self.player_chunk();
         let look_dir = self.look_direction();
         self.last_subscription_chunk = player_chunk;
@@ -170,7 +191,32 @@ impl PlayerSession {
             }
         });
 
-        to_unload
+        // 3. Enqueue desired far-field LOD clipmap nodes
+        let cam_pos = Vec3::new(
+            self.position.x as f32,
+            self.position.y as f32,
+            self.position.z as f32,
+        );
+        let desired_lod_nodes = self.clipmap.compute_desired_nodes(cam_pos);
+
+        for key in &desired_lod_nodes {
+            if !self.sent_lod_nodes.contains(key) && self.queued_lod_set.insert(*key) {
+                self.queued_lod_nodes.push(*key);
+            }
+        }
+
+        // 4. Identify and remove LOD nodes outside desired clipmap rings
+        let mut lod_unloads = Vec::new();
+        self.sent_lod_nodes.retain(|key| {
+            if desired_lod_nodes.contains(key) {
+                true
+            } else {
+                lod_unloads.push(*key);
+                false
+            }
+        });
+
+        (to_unload, lod_unloads)
     }
 
     /// Pops the highest-priority chunk scheduled for delivery.
@@ -186,5 +232,21 @@ impl PlayerSession {
     /// Marks a chunk as delivered and active on the client.
     pub fn mark_chunk_sent(&mut self, pos: ChunkPos) {
         self.sent_chunks.insert(pos);
+    }
+
+    /// Pops the next LOD node scheduled for delivery.
+    pub fn pop_next_lod_node(&mut self) -> Option<LodNodeKey> {
+        while let Some(key) = self.queued_lod_nodes.pop() {
+            self.queued_lod_set.remove(&key);
+            if !self.sent_lod_nodes.contains(&key) {
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    /// Marks an LOD node as delivered and active on the client.
+    pub fn mark_lod_node_sent(&mut self, key: LodNodeKey) {
+        self.sent_lod_nodes.insert(key);
     }
 }
