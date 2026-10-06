@@ -1,0 +1,31 @@
+[package]
+name = "vx-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Persistent world save format and region container (.vxr) for the voxel engine"
+
+[dependencies]
+vx-core = { workspace = true }
+vx-voxel = { workspace = true }
+xxhash-rust = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+vx-worldgen = { workspace = true }
+
+[[bench]]
+name = "storage_bench"
+harness = false
+
+[lints]
+workspace = true

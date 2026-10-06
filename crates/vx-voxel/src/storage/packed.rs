@@ -40,6 +40,38 @@ impl Packed {
         }
     }
 
+    /// Creates a `Packed` bitboard directly from existing raw parts.
+    ///
+    /// # Panics
+    /// Panics if `log2 > 4`, palette length exceeds `1 << (1 << log2)`, or words length != `512 << log2`.
+    #[must_use]
+    pub fn from_raw_parts(log2: u8, palette: Box<[BlockStateId]>, words: Box<[u64]>) -> Self {
+        assert!(log2 <= 4, "log2 bit width must be <= 4 (max 16 bits)");
+        let bits = 1usize << log2;
+        let max_palette_len = 1usize << bits;
+        assert!(
+            palette.len() <= max_palette_len,
+            "Palette length {} exceeds maximum capacity {} for log2={}",
+            palette.len(),
+            max_palette_len,
+            log2
+        );
+        let expected_words = 512usize << log2;
+        assert_eq!(
+            words.len(),
+            expected_words,
+            "Words length {} does not match expected {}",
+            words.len(),
+            expected_words
+        );
+
+        Self {
+            log2,
+            palette,
+            words,
+        }
+    }
+
     /// Bit width exponent `log2` (0 => 1 bit, 1 => 2 bits, 2 => 4 bits, 3 => 8 bits, 4 => 16 bits).
     #[inline]
     #[must_use]

@@ -120,6 +120,12 @@ impl Chunk {
         self.position
     }
 
+    /// Returns the frozen immutable `Blocks` representation of this chunk.
+    #[must_use]
+    pub fn to_blocks(&self) -> Blocks {
+        Blocks::from_hot(&self.blocks)
+    }
+
     /// Reads voxel at `idx`.
     #[inline]
     #[must_use]
