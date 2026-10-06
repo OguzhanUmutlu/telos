@@ -79,12 +79,22 @@ impl RegionIo for FileRegionIo {
 
 #[cfg(not(unix))]
 impl RegionIo for FileRegionIo {
-    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<()> {
-        compile_error!("Non-unix platforms require platform-specific FileExt implementation");
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = &self.file;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(StorageError::Io)?;
+        file.read_exact(buf).map_err(StorageError::Io)?;
+        Ok(())
     }
 
-    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<()> {
-        compile_error!("Non-unix platforms require platform-specific FileExt implementation");
+    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = &self.file;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(StorageError::Io)?;
+        file.write_all(buf).map_err(StorageError::Io)?;
+        Ok(())
     }
 
     fn sync_data(&self) -> Result<()> {

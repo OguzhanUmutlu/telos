@@ -14,6 +14,7 @@ members = [
     "crates/vx-lod",
     "apps/voxel-server",
     "apps/voxel",
+    "apps/voxel-web",
     "xtask",
 ]
 
@@ -88,6 +89,12 @@ bytes = "1.10"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"
+
+# Web & WASM (apps/voxel-web)
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.70"
+web-sys = "0.3.70"
+console_error_panic_hook = "0.1.7"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

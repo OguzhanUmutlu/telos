@@ -1,5 +1,6 @@
 # Build outputs
 /target
+/web/dist
 Cargo.lock.d
 
 # Placeholder and copyrighted assets (ADR-22)

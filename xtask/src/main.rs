@@ -26,6 +26,8 @@ enum Commands {
     Doctor,
     /// Compile and validate all GLSL shaders in shaders/ to SPIR-V
     Shaders,
+    /// Compile voxel-web to WASM and bundle distribution files into web/dist
+    Web,
 }
 
 fn main() -> Result<()> {
@@ -35,6 +37,7 @@ fn main() -> Result<()> {
         Commands::Ci => run_ci()?,
         Commands::Doctor => run_doctor(),
         Commands::Shaders => compile_shaders()?,
+        Commands::Web => run_web()?,
     }
 
     Ok(())
@@ -284,4 +287,85 @@ fn check_tool(name: &str, args: &[&str], required: bool, install_hint: &str) {
             }
         }
     }
+}
+
+fn run_web() -> Result<()> {
+    println!("============================================================");
+    println!("           VOXEL WEB COMPILATION & BUNDLE RUNNER            ");
+    println!("============================================================");
+
+    let start = Instant::now();
+
+    // 1. Build release WASM for voxel-web
+    println!("\n>> Compiling voxel-web (cargo build --target wasm32-unknown-unknown --release)...");
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "voxel-web",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+        ])
+        .status()
+        .context("Failed to run cargo build for wasm32-unknown-unknown")?;
+
+    if !status.success() {
+        bail!("Failed to compile voxel-web to wasm32-unknown-unknown");
+    }
+
+    // 2. Prepare web/dist directory
+    let dist_dir = Path::new("web/dist");
+    if dist_dir.exists() {
+        std::fs::remove_dir_all(dist_dir).context("Failed to clear web/dist directory")?;
+    }
+    std::fs::create_dir_all(dist_dir).context("Failed to create web/dist directory")?;
+
+    // 3. Run wasm-bindgen
+    println!("\n>> Running wasm-bindgen to produce JavaScript bindings...");
+    let wasm_path = "target/wasm32-unknown-unknown/release/voxel_web.wasm";
+    let status = Command::new("wasm-bindgen")
+        .args([
+            wasm_path,
+            "--out-dir",
+            "web/dist",
+            "--target",
+            "web",
+            "--no-typescript",
+        ])
+        .status()
+        .context("Failed to execute wasm-bindgen. Ensure wasm-bindgen is installed.")?;
+
+    if !status.success() {
+        bail!("wasm-bindgen failed to bundle voxel-web");
+    }
+
+    // 4. Copy static assets from web/static to web/dist
+    println!("\n>> Copying static assets from web/static to web/dist...");
+    let static_dir = Path::new("web/static");
+    if static_dir.exists() {
+        for entry in std::fs::read_dir(static_dir).context("Failed to read web/static")? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let file_name = path.file_name().unwrap();
+                let dest = dist_dir.join(file_name);
+                std::fs::copy(&path, &dest).with_context(|| {
+                    format!("Failed to copy {} to {}", path.display(), dest.display())
+                })?;
+                println!("   Copied {}", file_name.to_string_lossy());
+            }
+        }
+    }
+
+    let wasm_file = dist_dir.join("voxel_web_bg.wasm");
+    let wasm_size = wasm_file.metadata().map_or(0, |m| m.len());
+    println!("\n============================================================");
+    println!("   ✓ WEB BUILD COMPLETE ({:.2?})", start.elapsed());
+    println!("   WASM binary size: {:.1} KiB", wasm_size as f64 / 1024.0);
+    println!("   Output directory: web/dist/");
+    println!("   Host domain:      voxel.larvance.com");
+    println!("============================================================");
+
+    Ok(())
 }

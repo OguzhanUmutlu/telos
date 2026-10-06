@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOXEL — Rust + WebAssembly Voxel Engine</title>
+    <meta name="description" content="World-class voxel engine written in Rust and WebAssembly with real-time procedural terrain, 64-bit binary greedy mesher, and WebGL2 rendering.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="voxel-canvas"></canvas>
+    <div id="crosshair"></div>
+
+    <!-- HUD -->
+    <div id="hud">
+        <h1>VOXEL <span class="badge">WASM + WebGL2</span></h1>
+        <div id="fps-text" class="info-line">FPS: --</div>
+        <div id="pos-text" class="info-line">Pos: --, --, --</div>
+        <div class="subtext">
+            GitHub: <a href="https://github.com/larvance/voxel" target="_blank" rel="noopener">larvance/voxel</a>
+        </div>
+    </div>
+
+    <!-- Hotbar -->
+    <div id="hotbar-container">
+        <div id="slot-text">1: Grass Block</div>
+        <div id="hotbar">
+            <div class="hotbar-slot active" data-slot="0">
+                <span class="slot-num">1</span>
+                <div class="item-icon" style="background: #4ade80;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="1">
+                <span class="slot-num">2</span>
+                <div class="item-icon" style="background: #8b5a2b;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="2">
+                <span class="slot-num">3</span>
+                <div class="item-icon" style="background: #808080;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="3">
+                <span class="slot-num">4</span>
+                <div class="item-icon" style="background: #654321;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="4">
+                <span class="slot-num">5</span>
+                <div class="item-icon" style="background: #ab8a59;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="5">
+                <span class="slot-num">6</span>
+                <div class="item-icon" style="background: #3f8335;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="6">
+                <span class="slot-num">7</span>
+                <div class="item-icon" style="background: rgba(200, 240, 255, 0.7); border: 1px solid #fff;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="7">
+                <span class="slot-num">8</span>
+                <div class="item-icon" style="background: #808080; height: 10px; margin-top: 10px;"></div>
+            </div>
+            <div class="hotbar-slot" data-slot="8">
+                <span class="slot-num">9</span>
+                <div class="item-icon" style="background: #ab8a59; clip-path: polygon(0 50%, 50% 50%, 50% 0, 100% 0, 100% 100%, 0 100%);"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Click to play overlay -->
+    <div id="lock-overlay">
+        <div class="dialog">
+            <h2>VOXEL ENGINE (WEB PORT)</h2>
+            <p>High-performance voxel engine ported to WebAssembly with procedural terrain generation and binary greedy meshing.</p>
+            <div class="controls-table">
+                <div><span>Move</span>: <strong>W, A, S, D</strong></div>
+                <div><span>Fly Up / Down</span>: <strong>Space / Shift</strong></div>
+                <div><span>Break Block</span>: <strong>Left Click</strong></div>
+                <div><span>Place Block</span>: <strong>Right Click</strong></div>
+                <div><span>Select Block</span>: <strong>1 - 9 Keys</strong></div>
+                <div><span>Look</span>: <strong>Mouse Movement</strong></div>
+            </div>
+            <div class="click-hint">Click anywhere to capture mouse and play</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init from './voxel_web.js';
+
+        // Update active slot highlighting on number key press
+        window.addEventListener('keydown', (e) => {
+            const num = parseInt(e.key);
+            if (num >= 1 && num <= 9) {
+                document.querySelectorAll('.hotbar-slot').forEach((el, idx) => {
+                    if (idx === num - 1) {
+                        el.classList.add('active');
+                    } else {
+                        el.classList.remove('active');
+                    }
+                });
+            }
+        });
+
+        const overlay = document.getElementById('lock-overlay');
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement) {
+                overlay.classList.add('hidden');
+            } else {
+                overlay.classList.remove('hidden');
+            }
+        });
+
+        // Initialize WebAssembly runtime
+        async function run() {
+            try {
+                await init();
+                console.log("VOXEL WebAssembly engine initialized successfully.");
+            } catch (err) {
+                console.error("Failed to initialize VOXEL WebAssembly:", err);
+                overlay.querySelector('p').textContent = "Initialization error: " + err;
+            }
+        }
+
+        run();
+    </script>
+</body>
+</html>
