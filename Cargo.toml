@@ -8,6 +8,8 @@ members = [
     "crates/vx-assets",
     "crates/vx-worldgen",
     "crates/vx-storage",
+    "crates/vx-protocol",
+    "crates/vx-net",
     "apps/voxel-server",
     "apps/voxel",
     "xtask",
@@ -30,6 +32,8 @@ vx-mesh = { version = "0.1.0", path = "crates/vx-mesh" }
 vx-assets = { version = "0.1.0", path = "crates/vx-assets" }
 vx-worldgen = { version = "0.1.0", path = "crates/vx-worldgen" }
 vx-storage = { version = "0.1.0", path = "crates/vx-storage" }
+vx-protocol = { version = "0.1.0", path = "crates/vx-protocol" }
+vx-net = { version = "0.1.0", path = "crates/vx-net" }
 
 # Assets & image decoding
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -72,6 +76,13 @@ crc32fast = "1.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = { version = "0.13", default-features = false }
 lz4_flex = { version = "0.11", default-features = false }
+
+# Networking & Async
+tokio = { version = "1.43", default-features = false, features = ["sync", "rt", "net", "time", "macros"] }
+bytes = "1.10"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
