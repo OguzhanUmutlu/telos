@@ -28,6 +28,32 @@ enum Commands {
     Shaders,
     /// Compile voxel-web to WASM and bundle distribution files into web/dist
     Web,
+    /// Capture a diagnostic screenshot with the voxel client
+    Screenshot {
+        /// Initial camera position as X,Y,Z
+        #[arg(long, default_value = "207.9,174.4,190.7")]
+        pos: String,
+
+        /// Camera yaw in degrees
+        #[arg(long, default_value_t = -90.0, allow_hyphen_values = true)]
+        yaw: f32,
+
+        /// Camera pitch in degrees
+        #[arg(long, default_value_t = -15.0, allow_hyphen_values = true)]
+        pitch: f32,
+
+        /// Number of warmup frames before capture
+        #[arg(long, default_value_t = 30)]
+        frames: u32,
+
+        /// Output PNG path
+        #[arg(long, default_value = "dev-assets/screenshots/diagnostic.png")]
+        output: String,
+
+        /// Bypass Hi-Z culling
+        #[arg(long, default_value_t = false)]
+        no_cull: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -38,6 +64,14 @@ fn main() -> Result<()> {
         Commands::Doctor => run_doctor(),
         Commands::Shaders => compile_shaders()?,
         Commands::Web => run_web()?,
+        Commands::Screenshot {
+            pos,
+            yaw,
+            pitch,
+            frames,
+            output,
+            no_cull,
+        } => run_screenshot(&pos, yaw, pitch, frames, &output, no_cull)?,
     }
 
     Ok(())
@@ -367,5 +401,44 @@ fn run_web() -> Result<()> {
     println!("   Host domain:      voxel.larvance.com");
     println!("============================================================");
 
+    Ok(())
+}
+
+fn run_screenshot(
+    pos: &str,
+    yaw: f32,
+    pitch: f32,
+    frames: u32,
+    output: &str,
+    no_cull: bool,
+) -> Result<()> {
+    println!(">> Capturing diagnostic screenshot...");
+    println!("   Position: {pos}");
+    println!("   Yaw: {yaw}°, Pitch: {pitch}°");
+    println!("   Warmup frames: {frames}");
+    println!("   Output: {output}");
+    if no_cull {
+        println!("   Hi-Z culling: bypassed");
+    }
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["run", "--bin", "voxel", "--"]);
+    cmd.arg("--pos").arg(pos);
+    cmd.arg("--yaw").arg(yaw.to_string());
+    cmd.arg("--pitch").arg(pitch.to_string());
+    cmd.arg("--frames").arg(frames.to_string());
+    cmd.arg("--screenshot").arg(output);
+    if no_cull {
+        cmd.arg("--no-cull");
+    }
+
+    let status = cmd
+        .status()
+        .context("Failed to run voxel client for screenshot")?;
+    if !status.success() {
+        bail!("Voxel client screenshot exited with failure status {status}");
+    }
+
+    println!("   ✓ Screenshot successfully saved to {output}");
     Ok(())
 }

@@ -151,12 +151,18 @@ bool test_hiz_occlusion(vec3 bmin, vec3 bmax) {
 
     vec2 size_texels = (max_uv - min_uv) * vec2(pc.hiz_size);
     float max_dim = max(max(size_texels.x, size_texels.y), 1.0);
-    float lod = ceil(log2(max_dim));
+    float lod = floor(log2(max_dim));
 
-    vec2 sample_uv = (min_uv + max_uv) * 0.5;
-    float hiz_depth = textureLod(hiz_pyramid, sample_uv, lod).r;
+    // Sample the 4 corners of the bounding box footprint conservatively
+    float d0 = textureLod(hiz_pyramid, min_uv, lod).r;
+    float d1 = textureLod(hiz_pyramid, vec2(max_uv.x, min_uv.y), lod).r;
+    float d2 = textureLod(hiz_pyramid, vec2(min_uv.x, max_uv.y), lod).r;
+    float d3 = textureLod(hiz_pyramid, max_uv, lod).r;
 
-    // Reversed-Z: z_near < hiz_depth means closest point of AABB is further than the farthest occluder
+    // Reversed-Z: The furthest occluder in the footprint is min(d0..d3).
+    // For the AABB to be occluded, its closest depth (z_near) must be further than all occluders.
+    float hiz_depth = min(min(d0, d1), min(d2, d3));
+
     return z_near < hiz_depth;
 }
 

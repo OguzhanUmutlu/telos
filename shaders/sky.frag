@@ -35,7 +35,8 @@ void main() {
     // Reconstruct world-space ray direction from NDC at far plane
     vec4 ndc = vec4(v_uv * 2.0 - 1.0, 0.0, 1.0);
     vec4 world_h = pc.inv_view_proj * ndc;
-    vec3 ray_dir = normalize(world_h.xyz / world_h.w);
+    // In reversed-Z infinite perspective, z=0 is at infinity where homogeneous w=0; world_h.xyz is already a direction vector
+    vec3 ray_dir = length(world_h.xyz) > 1e-6 ? normalize(world_h.xyz) : vec3(0.0, 1.0, 0.0);
 
     float y = ray_dir.y;
     float y_pos = max(0.0, y);
@@ -65,8 +66,8 @@ void main() {
     float weather_weight = clamp(pc.rain_level * 0.85 + pc.thunder_level * 0.15, 0.0, 1.0);
     sky = mix(sky, overcast_target, weather_weight);
 
-    // Darken below horizon
-    float void_factor = clamp(1.0 + y * 2.0, 0.0, 1.0);
+    // Smooth atmospheric horizon transition below 0
+    float void_factor = clamp(1.0 + min(0.0, y) * 1.5, 0.25, 1.0);
     sky *= void_factor;
 
     // Stars at night (obscured during overcast weather)

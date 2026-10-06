@@ -3234,6 +3234,7 @@ dependencies = [
  "clap",
  "glam",
  "hashbrown 0.15.5",
+ "image",
  "mimalloc",
  "raw-window-handle",
  "tracing",

@@ -92,10 +92,10 @@ void main() {
     uint dir = (word0 >> 25u) & 0x7u;
     uint sky = (word0 >> 28u) & 0xFu;
 
-    // Decode Word 1
-    uint color_idx = word1 & 0xFFFFu;
-    uint ao = (word1 >> 16u) & 0x3u;
-    uint block = (word1 >> 18u) & 0xFu;
+    // Decode Word 1 (color index [0..12), 4-corner AO [12..20), block light [20..24), flags [24..28))
+    uint color_idx = word1 & 0x0FFFu;
+    uint ao = (word1 >> (12u + corner * 2u)) & 0x3u;
+    uint block = (word1 >> 20u) & 0xFu;
 
     // Lookup color in trailing palette
     uint palette_offset = draw_info.quad_count * 2u;

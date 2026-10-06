@@ -255,6 +255,9 @@ impl Swapchain {
             image_count = caps.max_image_count;
         }
 
+        let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+            | (caps.supported_usage_flags & vk::ImageUsageFlags::TRANSFER_SRC);
+
         let create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
@@ -262,7 +265,7 @@ impl Swapchain {
             .image_color_space(format.color_space)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_usage(usage)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)

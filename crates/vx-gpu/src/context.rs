@@ -358,6 +358,168 @@ impl GpuContext {
         res
     }
 
+    /// Captures the specified swapchain image into host memory and returns `(width, height, RGBA8 bytes)`.
+    #[allow(clippy::too_many_lines)]
+    pub fn capture_screenshot(
+        &mut self,
+        image_index: u32,
+    ) -> Result<(u32, u32, Vec<u8>), GpuError> {
+        self.device.wait_idle()?;
+
+        let width = self.current_extent.width;
+        let height = self.current_extent.height;
+        let byte_size = u64::from(width) * u64::from(height) * 4;
+        let swapchain_image = self.swapchain.image(image_index as usize);
+
+        // 1. Allocate host-visible readback buffer
+        let mut staging_buf = GpuBuffer::new(
+            self.device.raw(),
+            &self.allocator,
+            "screenshot_staging",
+            byte_size,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            gpu_allocator::MemoryLocation::GpuToCpu,
+        )?;
+
+        // 2. Transient command pool and command buffer for readback
+        let pool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.device.queue_families().graphics_family)
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+
+        // SAFETY: Creating transient command pool for screenshot readback
+        let pool = unsafe { self.device.raw().create_command_pool(&pool_info, None)? };
+
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
+        // SAFETY: Allocating one-time command buffer
+        let cmd = unsafe { self.device.raw().allocate_command_buffers(&alloc_info)?[0] };
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        // SAFETY: Recording transfer commands to copy swapchain image into staging buffer
+        unsafe {
+            self.device.raw().begin_command_buffer(cmd, &begin_info)?;
+
+            // Transition swapchain image from PRESENT_SRC_KHR to TRANSFER_SRC_OPTIMAL
+            let barrier_to_src = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .image(swapchain_image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            let dep_info = vk::DependencyInfo::default()
+                .image_memory_barriers(std::slice::from_ref(&barrier_to_src));
+            self.device.raw().cmd_pipeline_barrier2(cmd, &dep_info);
+
+            let copy_region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(width)
+                .buffer_image_height(height)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                });
+
+            self.device.raw().cmd_copy_image_to_buffer(
+                cmd,
+                swapchain_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                staging_buf.raw(),
+                std::slice::from_ref(&copy_region),
+            );
+
+            // Transition back to PRESENT_SRC_KHR
+            let barrier_back = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+                .dst_access_mask(vk::AccessFlags2::empty())
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .image(swapchain_image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            let dep_info_back = vk::DependencyInfo::default()
+                .image_memory_barriers(std::slice::from_ref(&barrier_back));
+            self.device.raw().cmd_pipeline_barrier2(cmd, &dep_info_back);
+
+            self.device.raw().end_command_buffer(cmd)?;
+
+            let cmd_bufs = [cmd];
+            let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
+            self.device.raw().queue_submit(
+                self.device.graphics_queue(),
+                &[submit_info],
+                vk::Fence::null(),
+            )?;
+            self.device
+                .raw()
+                .queue_wait_idle(self.device.graphics_queue())?;
+
+            self.device.raw().destroy_command_pool(pool, None);
+        }
+
+        // 3. Read back pixels and convert to RGBA
+        let num_bytes = usize::try_from(byte_size)
+            .map_err(|_| GpuError::Allocation("Screenshot byte size overflow".into()))?;
+        let mut raw_bytes = vec![0u8; num_bytes];
+        staging_buf.read_bytes(&mut raw_bytes)?;
+
+        let mut pixels = vec![0u8; num_bytes];
+        let is_bgr = self.swapchain.format() == vk::Format::B8G8R8A8_SRGB
+            || self.swapchain.format() == vk::Format::B8G8R8A8_UNORM;
+        if is_bgr {
+            for (src, dst) in raw_bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pixels.as_chunks_mut::<4>().0.iter_mut())
+            {
+                dst[0] = src[2]; // R
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // B
+                dst[3] = src[3]; // A
+            }
+        } else {
+            pixels.copy_from_slice(&raw_bytes);
+        }
+
+        staging_buf.destroy(self.device.raw(), &self.allocator);
+
+        Ok((width, height, pixels))
+    }
+
     /// Waits for all GPU queues to finish operations.
     pub fn wait_idle(&self) -> Result<(), GpuError> {
         self.device.wait_idle()

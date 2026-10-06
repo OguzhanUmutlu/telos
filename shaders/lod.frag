@@ -10,14 +10,11 @@ layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 1) uniform sampler2D u_lightmap;
 
-layout(push_constant) uniform LodPushConstants {
+layout(push_constant, std430) uniform LodPushConstants {
     mat4 view_proj;
-    ivec3 node_pos;
-    uint level;
-    uint quad_count;
-    uint64_t buffer_address;
     vec3 camera_pos;
     float max_distance;
+    uint64_t draw_info_buffer_address;
 } pc;
 
 void main() {
@@ -52,8 +49,10 @@ void main() {
     float fog_start = pc.max_distance * 0.75;
     float fog_end = pc.max_distance;
     float fog_factor = clamp((v_distance - fog_start) / max(1.0, fog_end - fog_start), 0.0, 1.0);
-    // Sky fog matches ambient sky light color dynamically across day, sunset, and night
-    vec3 sky_fog_color = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;
+    // Sky fog matches ambient sky light color and horizon gradient dynamically
+    vec3 sky_day_color = vec3(0.68, 0.82, 0.98);
+    vec3 light_intensity = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;
+    vec3 sky_fog_color = sky_day_color * light_intensity;
     vec3 final_rgb = mix(lit_color, sky_fog_color, fog_factor);
 
     out_color = vec4(final_rgb, v_color.a);

@@ -17,6 +17,12 @@ pub struct FrameResources {
 }
 
 impl FrameResources {
+    /// Returns the command pool for this frame.
+    #[must_use]
+    pub fn command_pool(&self) -> vk::CommandPool {
+        self.command_pool
+    }
+
     /// Returns the primary command buffer for this frame.
     #[must_use]
     pub fn command_buffer(&self) -> vk::CommandBuffer {

@@ -14,7 +14,7 @@ pub struct LodClipmapConfig {
     pub max_level: u8,
     /// Hysteresis fraction to prevent border oscillation thrashing (default: 0.12).
     pub hysteresis: f32,
-    /// Vertical node half-span above and below player level (default: 2 nodes).
+    /// Vertical node half-span above and below player level (default: 8 nodes).
     pub vertical_span: i32,
 }
 
@@ -24,7 +24,7 @@ impl Default for LodClipmapConfig {
             r0: 512.0,
             max_level: 6,
             hysteresis: 0.12,
-            vertical_span: 2,
+            vertical_span: 8,
         }
     }
 }

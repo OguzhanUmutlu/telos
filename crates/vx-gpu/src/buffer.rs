@@ -210,6 +210,43 @@ impl GpuBuffer {
         Ok(())
     }
 
+    /// Returns the mapped host pointer if this buffer is host-mapped.
+    #[must_use]
+    pub fn mapped_ptr(&self) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+        self.allocation
+            .as_ref()
+            .and_then(gpu_allocator::vulkan::Allocation::mapped_ptr)
+    }
+
+    /// Copies bytes out of a host-mapped buffer allocation (GPU-to-CPU).
+    pub fn read_bytes(&self, out: &mut [u8]) -> Result<(), GpuError> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .ok_or_else(|| GpuError::Allocation("Buffer has no allocation".into()))?;
+
+        let ptr = alloc
+            .mapped_ptr()
+            .ok_or_else(|| GpuError::Allocation("Buffer is not host-mapped".into()))?
+            .as_ptr()
+            .cast::<u8>();
+
+        let len_u64 = u64::try_from(out.len())
+            .map_err(|_| GpuError::Allocation("Output slice length overflow".into()))?;
+        if len_u64 > self.size {
+            return Err(GpuError::Allocation(
+                "Output slice exceeds buffer size".into(),
+            ));
+        }
+
+        // SAFETY: ptr is host-mapped and valid for at least out.len() bytes
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), out.len());
+        }
+
+        Ok(())
+    }
+
     /// Destroys the buffer and releases memory back to `GpuAllocator`.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &GpuAllocator) {
         if self.buffer != vk::Buffer::null() {

@@ -56,7 +56,7 @@ use winit::{
 static GLOBAL: MiMalloc = MiMalloc;
 
 /// Voxel engine client.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Log level filter.
@@ -78,6 +78,34 @@ struct Args {
     /// World save directory for singleplayer server.
     #[arg(short, long, default_value = "worlds/default")]
     world_dir: PathBuf,
+
+    /// Vertical chunk view distance radius.
+    #[arg(long, default_value_t = 12)]
+    vertical_view_distance: u32,
+
+    /// Initial camera position as X,Y,Z (e.g. "208,175,191").
+    #[arg(long)]
+    pos: Option<String>,
+
+    /// Initial camera yaw in degrees.
+    #[arg(long, allow_hyphen_values = true)]
+    yaw: Option<f32>,
+
+    /// Initial camera pitch in degrees.
+    #[arg(long, allow_hyphen_values = true)]
+    pitch: Option<f32>,
+
+    /// Path to write a screenshot PNG to (and exit after target frames).
+    #[arg(long)]
+    screenshot: Option<PathBuf>,
+
+    /// Number of frames to render before taking screenshot (default: 30).
+    #[arg(long, default_value_t = 30)]
+    frames: u32,
+
+    /// Disable Hi-Z GPU occlusion culling.
+    #[arg(long, default_value_t = false)]
+    no_cull: bool,
 }
 
 #[repr(C)]
@@ -1014,6 +1042,7 @@ struct GpuLodMesh {
     max_aabb: Vec3,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct App {
     validation: bool,
     view_distance: u32,
@@ -1167,14 +1196,36 @@ struct App {
     chat_state: ChatHudState,
     lan_listener: Option<vx_net::LanDiscoveryListener>,
     suggest_query_id: u32,
+    args: Args,
+    total_frames: u32,
+    manual_screenshot_requested: bool,
 }
 
 impl App {
     #[allow(clippy::too_many_lines)]
-    fn new(validation: bool, seed: u64, view_distance: u32, world_dir: PathBuf) -> Self {
-        let spawn_pos = Vec3::new(128.0, 45.0, 160.0);
+    fn new(args: Args) -> Self {
+        let spawn_pos = if let Some(ref pos_str) = args.pos {
+            let parts: Vec<f32> = pos_str
+                .split(',')
+                .filter_map(|s| s.trim().parse::<f32>().ok())
+                .collect();
+            if parts.len() == 3 {
+                Vec3::new(parts[0], parts[1], parts[2])
+            } else {
+                Vec3::new(128.0, 45.0, 160.0)
+            }
+        } else {
+            Vec3::new(128.0, 45.0, 160.0)
+        };
         let mut camera = Camera::new(spawn_pos);
-        camera.pitch = -0.3;
+        if let Some(yaw_deg) = args.yaw {
+            camera.yaw = yaw_deg.to_radians();
+        }
+        if let Some(pitch_deg) = args.pitch {
+            camera.pitch = pitch_deg.to_radians();
+        } else {
+            camera.pitch = -0.3;
+        }
 
         let registries = Arc::new(FrozenRegistries::new_default());
         let server_registries = Arc::clone(&registries);
@@ -1186,13 +1237,18 @@ impl App {
         let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
         let client_conn: Box<dyn Connection<C2sMessage, S2cMessage>> = Box::new(client_conn);
 
+        let view_distance = args.view_distance;
+        let vertical_view_distance = args.vertical_view_distance;
+        let world_dir = args.world_dir.clone();
+        let seed = args.seed;
+
         let server_handle = std::thread::Builder::new()
             .name("voxel-server".into())
             .spawn(move || {
                 let config = vx_server::ServerConfig {
                     tps: 20,
                     view_distance,
-                    vertical_view_distance: 2,
+                    vertical_view_distance,
                     chunks_per_tick_per_player: 16,
                     save_directory: Some(world_dir),
                     ..Default::default()
@@ -1222,8 +1278,8 @@ impl App {
         );
 
         Self {
-            validation,
-            view_distance,
+            validation: args.validation,
+            view_distance: args.view_distance,
             window: None,
             gpu_context: None,
             depth_buffer: None,
@@ -1374,6 +1430,9 @@ impl App {
             chat_state: ChatHudState::new(),
             lan_listener: vx_net::LanDiscoveryListener::new().ok(),
             suggest_query_id: 0,
+            args,
+            total_frames: 0,
+            manual_screenshot_requested: false,
         }
     }
 
@@ -2285,7 +2344,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render(&mut self) {
+    fn render(&mut self) -> bool {
         self.poll_network();
         self.send_player_position_if_needed();
         self.rebuild_dirty_meshes(16);
@@ -2387,6 +2446,7 @@ impl App {
         };
         self.targeted_block = raycast_voxels(origin, forward, max_reach, is_solid);
 
+        self.total_frames += 1;
         self.frame_counter += 1;
         self.frame_tick = self.frame_tick.wrapping_add(1);
         if now.duration_since(self.last_fps_time) >= Duration::from_secs(1) {
@@ -2430,7 +2490,7 @@ impl App {
             &self.hiz_pipeline,
         )
         else {
-            return;
+            return false;
         };
 
         // 1. Gather Chunk Cull Candidates
@@ -2566,10 +2626,10 @@ impl App {
 
         let frame_data = match gpu_context.begin_frame() {
             Ok(Some(data)) => data,
-            Ok(None) => return,
+            Ok(None) => return false,
             Err(err) => {
                 tracing::error!("begin_frame failed: {err}");
-                return;
+                return false;
             }
         };
 
@@ -2593,7 +2653,7 @@ impl App {
         }
 
         let device = gpu_context.device().raw();
-        let is_first_frame = u32::from(self.frame_counter <= 1);
+        let is_first_frame = u32::from(self.frame_counter <= 1 || self.args.no_cull);
         let hiz_extent = hiz_pyramid.extent();
         let hiz_levels = hiz_pyramid.mip_levels();
 
@@ -4015,6 +4075,61 @@ impl App {
         if let Err(err) = gpu_context.end_frame(image_index) {
             tracing::error!("end_frame failed: {err}");
         }
+
+        let mut should_exit = false;
+
+        let take_cli_screenshot =
+            self.args.screenshot.is_some() && self.total_frames >= self.args.frames;
+        let take_manual_screenshot = self.manual_screenshot_requested;
+
+        if take_cli_screenshot || take_manual_screenshot {
+            self.manual_screenshot_requested = false;
+            let target_path = if let Some(ref p) = self.args.screenshot {
+                p.clone()
+            } else {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                PathBuf::from(format!("dev-assets/screenshots/screenshot_{timestamp}.png"))
+            };
+
+            if let Some(parent) = target_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match gpu_context.capture_screenshot(image_index) {
+                Ok((width, height, pixels)) => {
+                    if let Some(img) = image::RgbaImage::from_raw(width, height, pixels) {
+                        match img.save(&target_path) {
+                            Ok(()) => {
+                                info!(
+                                    path = %target_path.display(),
+                                    width,
+                                    height,
+                                    frame = self.total_frames,
+                                    "Saved screenshot successfully"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to save screenshot image: {e}");
+                            }
+                        }
+                    } else {
+                        tracing::error!("Failed to create RgbaImage from raw screenshot buffer");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to capture GPU screenshot: {e}");
+                }
+            }
+
+            if take_cli_screenshot {
+                should_exit = true;
+            }
+        }
+
+        should_exit
     }
 }
 
@@ -5669,6 +5784,10 @@ impl ApplicationHandler for App {
                     KeyCode::Digit7 if pressed => self.select_hotbar_slot(6),
                     KeyCode::Digit8 if pressed => self.select_hotbar_slot(7),
                     KeyCode::Digit9 if pressed => self.select_hotbar_slot(8),
+                    KeyCode::F2 if pressed => {
+                        self.manual_screenshot_requested = true;
+                        info!("Screenshot requested (F2)");
+                    }
                     KeyCode::F3 if pressed => {
                         self.hud_state.f3_open = !self.hud_state.f3_open;
                         info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
@@ -5804,8 +5923,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render();
-                if let Some(window) = &self.window {
+                if self.render() {
+                    event_loop.exit();
+                } else if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
@@ -6876,7 +6996,7 @@ fn main() -> Result<()> {
 
     init_telemetry(&TelemetryConfig {
         app_name: "voxel-client",
-        default_filter: args.log.into(),
+        default_filter: args.log.clone().into(),
         ansi_colors: true,
     });
 
@@ -6891,12 +7011,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(
-        args.validation,
-        args.seed,
-        args.view_distance,
-        args.world_dir,
-    );
+    let mut app = App::new(args);
     event_loop.run_app(&mut app)?;
 
     Ok(())

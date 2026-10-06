@@ -31,6 +31,7 @@ clap = { workspace = true }
 tracing = { workspace = true }
 mimalloc = { workspace = true }
 anyhow = { workspace = true }
+image = { workspace = true }
 
 [lints]
 workspace = true

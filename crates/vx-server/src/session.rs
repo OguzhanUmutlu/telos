@@ -202,10 +202,10 @@ impl PlayerSession {
             }
         }
 
-        // 2. Identify and remove chunks outside hysteresis radius (r + 2)
+        // 2. Identify and remove chunks outside hysteresis radius (r + 2, ry + 4)
         let evict_r = r + 2;
         let evict_r_sq = evict_r * evict_r;
-        let evict_ry = ry + 1;
+        let evict_ry = ry + 4;
 
         let mut to_unload = Vec::new();
         self.sent_chunks.retain(|pos| {
