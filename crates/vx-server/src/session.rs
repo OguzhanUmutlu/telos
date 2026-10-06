@@ -52,6 +52,20 @@ pub struct PlayerSession {
     pub last_subscription_chunk: ChunkPos,
     /// Yaw angle when subscriptions were last recomputed.
     pub last_subscription_yaw: f32,
+    /// ECS Entity representing the player in vx-sim.
+    pub ecs_entity: Option<bevy_ecs::entity::Entity>,
+    /// Previous position for calculating distance traveled in the tick.
+    pub prev_position: DVec3,
+    /// Cached health sent to client.
+    pub cached_health: f32,
+    /// Cached food sent to client.
+    pub cached_food: u32,
+    /// Cached saturation sent to client.
+    pub cached_saturation: f32,
+    /// Cached experience level sent to client.
+    pub cached_xp_level: u32,
+    /// Cached experience progress fraction sent to client.
+    pub cached_xp_progress: f32,
 }
 
 impl PlayerSession {
@@ -92,6 +106,13 @@ impl PlayerSession {
             queued_lod_set: HashSet::new(),
             last_subscription_chunk: ChunkPos::new(i32::MAX, i32::MAX, i32::MAX),
             last_subscription_yaw: -90.0,
+            ecs_entity: None,
+            prev_position: spawn_pos,
+            cached_health: 20.0,
+            cached_food: 20,
+            cached_saturation: 5.0,
+            cached_xp_level: 0,
+            cached_xp_progress: 0.0,
         }
     }
 

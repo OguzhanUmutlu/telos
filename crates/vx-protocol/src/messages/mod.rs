@@ -13,9 +13,11 @@ pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
-    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload,
-    LodPayload, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cUniformChunk, S2cUpdateTime,
+    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sInventoryClick, C2sKeepAlive,
+    C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, LodPayload, PlayerCommandKind,
+    S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, SlotData,
     decode_chunk_snapshot, encode_chunk_snapshot,
 };
 
@@ -92,6 +94,10 @@ pub enum C2sMessage {
     PlayerPosition(C2sPlayerPosition),
     /// Play phase block break or place action.
     BlockAction(C2sBlockAction),
+    /// Play phase inventory click action.
+    InventoryClick(C2sInventoryClick),
+    /// Play phase player debug / action command.
+    PlayerCommand(C2sPlayerCommand),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -111,7 +117,9 @@ impl C2sMessage {
             Self::KeepAlive(_)
             | Self::ChatMessage(_)
             | Self::PlayerPosition(_)
-            | Self::BlockAction(_) => Some(ConnectionPhase::Play),
+            | Self::BlockAction(_)
+            | Self::InventoryClick(_)
+            | Self::PlayerCommand(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -127,6 +135,8 @@ impl C2sMessage {
             Self::ClientSettings(_) | Self::ChatMessage(_) => 1,
             Self::ConfigAck(_) | Self::PlayerPosition(_) => 2,
             Self::BlockAction(_) => 3,
+            Self::InventoryClick(_) => 4,
+            Self::PlayerCommand(_) => 5,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -143,6 +153,8 @@ impl C2sMessage {
             Self::ChatMessage(m) => m.encode(buf),
             Self::PlayerPosition(m) => m.encode(buf),
             Self::BlockAction(m) => m.encode(buf),
+            Self::InventoryClick(m) => m.encode(buf),
+            Self::PlayerCommand(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -181,6 +193,12 @@ pub enum S2cMessage {
     BlockActionAck(S2cBlockActionAck),
     /// Play phase world age and time-of-day synchronization.
     UpdateTime(S2cUpdateTime),
+    /// Play phase player survival stats synchronization.
+    UpdateStats(S2cUpdateStats),
+    /// Play phase single inventory slot update.
+    InventorySlot(S2cInventorySlot),
+    /// Play phase full inventory bulk synchronization.
+    InventoryBulk(S2cInventoryBulk),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -205,7 +223,10 @@ impl S2cMessage {
             | Self::LodNodeUnload(_)
             | Self::BlockUpdate(_)
             | Self::BlockActionAck(_)
-            | Self::UpdateTime(_) => Some(ConnectionPhase::Play),
+            | Self::UpdateTime(_)
+            | Self::UpdateStats(_)
+            | Self::InventorySlot(_)
+            | Self::InventoryBulk(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -228,6 +249,9 @@ impl S2cMessage {
             Self::BlockUpdate(_) => 8,
             Self::BlockActionAck(_) => 9,
             Self::UpdateTime(_) => 10,
+            Self::UpdateStats(_) => 11,
+            Self::InventorySlot(_) => 12,
+            Self::InventoryBulk(_) => 13,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -250,6 +274,9 @@ impl S2cMessage {
             Self::BlockUpdate(m) => m.encode(buf),
             Self::BlockActionAck(m) => m.encode(buf),
             Self::UpdateTime(m) => m.encode(buf),
+            Self::UpdateStats(m) => m.encode(buf),
+            Self::InventorySlot(m) => m.encode(buf),
+            Self::InventoryBulk(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

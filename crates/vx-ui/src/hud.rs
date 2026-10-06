@@ -22,6 +22,24 @@ pub struct UiLayers {
     pub crosshair_uv: [f32; 4],
     /// Bitmap font sheet texture layer.
     pub font: u32,
+    /// Survival icons and bars texture layer.
+    pub icons: u32,
+    /// Heart container (empty heart) UV bounds `[u0, v0, u1, v1]`.
+    pub heart_container_uv: [f32; 4],
+    /// Full heart UV bounds `[u0, v0, u1, v1]`.
+    pub heart_full_uv: [f32; 4],
+    /// Half heart UV bounds `[u0, v0, u1, v1]`.
+    pub heart_half_uv: [f32; 4],
+    /// Food empty drumstick UV bounds `[u0, v0, u1, v1]`.
+    pub food_empty_uv: [f32; 4],
+    /// Food full drumstick UV bounds `[u0, v0, u1, v1]`.
+    pub food_full_uv: [f32; 4],
+    /// Food half drumstick UV bounds `[u0, v0, u1, v1]`.
+    pub food_half_uv: [f32; 4],
+    /// Experience bar background UV bounds `[u0, v0, u1, v1]`.
+    pub xp_bar_bg_uv: [f32; 4],
+    /// Experience bar progress fill UV bounds `[u0, v0, u1, v1]`.
+    pub xp_bar_progress_uv: [f32; 4],
 }
 
 impl Default for UiLayers {
@@ -34,6 +52,15 @@ impl Default for UiLayers {
             crosshair: 2,
             crosshair_uv: [0.0, 0.0, 15.0 / 256.0, 15.0 / 256.0],
             font: 3,
+            icons: 4,
+            heart_container_uv: [0.0 / 256.0, 0.0 / 256.0, 9.0 / 256.0, 9.0 / 256.0],
+            heart_full_uv: [16.0 / 256.0, 0.0 / 256.0, 25.0 / 256.0, 9.0 / 256.0],
+            heart_half_uv: [32.0 / 256.0, 0.0 / 256.0, 41.0 / 256.0, 9.0 / 256.0],
+            food_empty_uv: [48.0 / 256.0, 0.0 / 256.0, 57.0 / 256.0, 9.0 / 256.0],
+            food_full_uv: [64.0 / 256.0, 0.0 / 256.0, 73.0 / 256.0, 9.0 / 256.0],
+            food_half_uv: [80.0 / 256.0, 0.0 / 256.0, 89.0 / 256.0, 9.0 / 256.0],
+            xp_bar_bg_uv: [0.0 / 256.0, 16.0 / 256.0, 182.0 / 256.0, 21.0 / 256.0],
+            xp_bar_progress_uv: [0.0 / 256.0, 24.0 / 256.0, 182.0 / 256.0, 29.0 / 256.0],
         }
     }
 }
@@ -73,6 +100,18 @@ pub struct HudState {
     pub day_number: u64,
     /// Current lunar phase display name.
     pub moon_phase_name: String,
+    /// Current player health points (0.0..=20.0).
+    pub health: f32,
+    /// Maximum player health points.
+    pub max_health: f32,
+    /// Food / hunger points (0..=20).
+    pub food: u32,
+    /// Saturation points (0.0..=food).
+    pub saturation: f32,
+    /// Current experience level.
+    pub xp_level: u32,
+    /// Progress fraction to the next level (0.0..1.0).
+    pub xp_progress: f32,
 }
 
 impl Default for HudState {
@@ -94,12 +133,19 @@ impl Default for HudState {
             time_of_day: 6000,
             day_number: 0,
             moon_phase_name: "Full Moon".to_string(),
+            health: 20.0,
+            max_health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            xp_level: 0,
+            xp_progress: 0.0,
         }
     }
 }
 
 /// Generates all HUD quads for the active frame.
 #[allow(
+    clippy::too_many_lines,
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -161,7 +207,133 @@ pub fn render_hud(
         UiQuad::rgba(255, 255, 255, 255),
     ));
 
-    // 4. F3 Debug Overlay (if toggled on)
+    // 4. Experience Bar (182x5) sitting directly above hotbar
+    let xp_w = hotbar_w;
+    let xp_h = to_physical_pixels(5, gui_scale) as u16;
+    let xp_x = hotbar_x;
+    let xp_y = hotbar_y - to_physical_pixels(6, gui_scale);
+
+    out.push(UiQuad::sprite(
+        [xp_x, xp_y],
+        [xp_w, xp_h],
+        [layers.xp_bar_bg_uv[0], layers.xp_bar_bg_uv[1]],
+        [layers.xp_bar_bg_uv[2], layers.xp_bar_bg_uv[3]],
+        layers.icons,
+        UiQuad::rgba(255, 255, 255, 255),
+    ));
+
+    let progress_clamped = state.xp_progress.clamp(0.0, 1.0);
+    if progress_clamped > 0.0 {
+        let prog_logical = (182.0 * progress_clamped).round() as i32;
+        if prog_logical > 0 {
+            let prog_w = to_physical_pixels(prog_logical, gui_scale) as u16;
+            let u0 = layers.xp_bar_progress_uv[0];
+            let u1 = u0 + (layers.xp_bar_progress_uv[2] - u0) * (prog_logical as f32 / 182.0);
+            out.push(UiQuad::sprite(
+                [xp_x, xp_y],
+                [prog_w, xp_h],
+                [u0, layers.xp_bar_progress_uv[1]],
+                [u1, layers.xp_bar_progress_uv[3]],
+                layers.icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+        }
+    }
+
+    // Experience Level number centered above the bar
+    if state.xp_level > 0 {
+        let lvl_str = format!("{}", state.xp_level);
+        let (txt_w, _) = font.measure_text(&lvl_str);
+        let lvl_x = (sw as f32 / gui_scale as f32 - txt_w) / 2.0;
+        let lvl_y = (xp_y as f32 / gui_scale as f32) - 6.0;
+        font.layout_text(
+            &lvl_str,
+            lvl_x,
+            lvl_y,
+            UiQuad::rgba(128, 255, 32, 255),
+            true,
+            gui_scale,
+            out,
+        );
+    }
+
+    // 5. Health Hearts (10 containers) anchored left above XP bar
+    let icon_sz = to_physical_pixels(9, gui_scale) as u16;
+    let icons_y = xp_y - to_physical_pixels(10, gui_scale);
+    let half_hearts = state.health.round() as i32;
+
+    for i in 0..10 {
+        let heart_x = hotbar_x + to_physical_pixels(i * 8, gui_scale);
+        // Container
+        out.push(UiQuad::sprite(
+            [heart_x, icons_y],
+            [icon_sz, icon_sz],
+            [layers.heart_container_uv[0], layers.heart_container_uv[1]],
+            [layers.heart_container_uv[2], layers.heart_container_uv[3]],
+            layers.icons,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+
+        // Fill
+        if half_hearts >= (i + 1) * 2 {
+            out.push(UiQuad::sprite(
+                [heart_x, icons_y],
+                [icon_sz, icon_sz],
+                [layers.heart_full_uv[0], layers.heart_full_uv[1]],
+                [layers.heart_full_uv[2], layers.heart_full_uv[3]],
+                layers.icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+        } else if half_hearts == i * 2 + 1 {
+            out.push(UiQuad::sprite(
+                [heart_x, icons_y],
+                [icon_sz, icon_sz],
+                [layers.heart_half_uv[0], layers.heart_half_uv[1]],
+                [layers.heart_half_uv[2], layers.heart_half_uv[3]],
+                layers.icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+        }
+    }
+
+    // 6. Food Drumsticks (10 icons) anchored right above XP bar (drawn right-to-left)
+    let food_points = state.food as i32;
+    for i in 0..10 {
+        let food_x =
+            hotbar_x + i32::from(hotbar_w) - to_physical_pixels((i + 1) * 8 + 1, gui_scale);
+        // Container / background
+        out.push(UiQuad::sprite(
+            [food_x, icons_y],
+            [icon_sz, icon_sz],
+            [layers.food_empty_uv[0], layers.food_empty_uv[1]],
+            [layers.food_empty_uv[2], layers.food_empty_uv[3]],
+            layers.icons,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+
+        // Fill
+        if food_points >= (i + 1) * 2 {
+            out.push(UiQuad::sprite(
+                [food_x, icons_y],
+                [icon_sz, icon_sz],
+                [layers.food_full_uv[0], layers.food_full_uv[1]],
+                [layers.food_full_uv[2], layers.food_full_uv[3]],
+                layers.icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+        } else if food_points == i * 2 + 1 {
+            out.push(UiQuad::sprite(
+                [food_x, icons_y],
+                [icon_sz, icon_sz],
+                [layers.food_half_uv[0], layers.food_half_uv[1]],
+                [layers.food_half_uv[2], layers.food_half_uv[3]],
+                layers.icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+        }
+    }
+
+    // 7. F3 Debug Overlay (if toggled on)
     if state.f3_open {
         render_f3_overlay(state, font, screen_width, gui_scale, out);
     }
@@ -207,6 +379,15 @@ fn render_f3_overlay(
         format!(
             "§fTime: §e{:02}:{:02} §f(Day {}, §b{}§f)",
             hours, minutes, state.day_number, state.moon_phase_name
+        ),
+        format!(
+            "§fHealth: §c{:.1}/{} §f| Food: §6{}/20 §f(Sat: §e{:.1}§f) | XP: §aLvl {} §f({:.0}%)",
+            state.health,
+            state.max_health as u32,
+            state.food,
+            state.saturation,
+            state.xp_level,
+            state.xp_progress * 100.0,
         ),
     ];
 

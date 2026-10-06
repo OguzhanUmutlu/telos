@@ -1180,6 +1180,348 @@ impl S2cUpdateTime {
     }
 }
 
+/// Server synchronizes player health, hunger, saturation, and experience stats.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cUpdateStats {
+    /// Current player health in half-hearts (0.0..=20.0).
+    pub health: f32,
+    /// Maximum player health (typically 20.0).
+    pub max_health: f32,
+    /// Current hunger level in half-drumsticks (0..=20).
+    pub food: u32,
+    /// Hidden saturation buffer protecting food level (0.0..=food).
+    pub saturation: f32,
+    /// Current experience level.
+    pub xp_level: u32,
+    /// Current level bar progress fraction (0.0..=1.0).
+    pub xp_progress: f32,
+}
+
+impl S2cUpdateStats {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.health.to_le_bytes());
+        buf.extend_from_slice(&self.max_health.to_le_bytes());
+        encode_varint(self.food, buf);
+        buf.extend_from_slice(&self.saturation.to_le_bytes());
+        encode_varint(self.xp_level, buf);
+        buf.extend_from_slice(&self.xp_progress.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 8 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let health = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        let max_health = f32::from_le_bytes(cursor[4..8].try_into().unwrap());
+        *cursor = &cursor[8..];
+
+        let food = decode_varint(cursor)?;
+
+        if cursor.len() < 4 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let saturation = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        *cursor = &cursor[4..];
+
+        let xp_level = decode_varint(cursor)?;
+
+        if cursor.len() < 4 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let xp_progress = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        *cursor = &cursor[4..];
+
+        if !health.is_finite()
+            || !max_health.is_finite()
+            || !saturation.is_finite()
+            || !xp_progress.is_finite()
+            || food > 100
+            || !(0.0..=1.0).contains(&xp_progress)
+        {
+            return Err(ProtocolError::InvalidValue {
+                field: "update_stats",
+                reason: "Survival stats contains NaN, negative, or out-of-range value".to_string(),
+            });
+        }
+
+        Ok(Self {
+            health,
+            max_health,
+            food,
+            saturation,
+            xp_level,
+            xp_progress,
+        })
+    }
+}
+
+/// A compact item stack description in network packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SlotData {
+    /// Item identifier (0 = Air / Empty).
+    pub item: u32,
+    /// Number of items (0 = Empty, max 64).
+    pub count: u16,
+}
+
+impl SlotData {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.item, buf);
+        encode_varint(u32::from(self.count), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let item = decode_varint(cursor)?;
+        let count_raw = decode_varint(cursor)?;
+        if count_raw > 64 {
+            return Err(ProtocolError::InvalidValue {
+                field: "slot_data.count",
+                reason: "Stack count exceeds 64".to_string(),
+            });
+        }
+        let count = count_raw as u16;
+        let item = if count == 0 { 0 } else { item };
+        Ok(Self { item, count })
+    }
+}
+
+/// Server updates a single inventory slot on the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cInventorySlot {
+    /// Slot index (0..35).
+    pub slot: u16,
+    /// Item identifier.
+    pub item: u32,
+    /// Stack count.
+    pub count: u16,
+}
+
+impl S2cInventorySlot {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(u32::from(self.slot), buf);
+        encode_varint(self.item, buf);
+        encode_varint(u32::from(self.count), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let slot = decode_varint(cursor)? as u16;
+        let item = decode_varint(cursor)?;
+        let count_raw = decode_varint(cursor)?;
+        if slot >= 36 {
+            return Err(ProtocolError::InvalidValue {
+                field: "inventory_slot.slot",
+                reason: "Slot index out of bounds".to_string(),
+            });
+        }
+        if count_raw > 64 {
+            return Err(ProtocolError::InvalidValue {
+                field: "inventory_slot.count",
+                reason: "Stack count exceeds 64".to_string(),
+            });
+        }
+        let count = count_raw as u16;
+        let item = if count == 0 { 0 } else { item };
+        Ok(Self { slot, item, count })
+    }
+}
+
+/// Server synchronizes the entire player inventory (36 slots + carried).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cInventoryBulk {
+    /// All 36 inventory slots.
+    pub slots: BoundedVec<SlotData, 40>,
+    /// Carried cursor slot.
+    pub carried: SlotData,
+}
+
+impl S2cInventoryBulk {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.slots.encode_with(buf, SlotData::encode);
+        self.carried.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let slots = BoundedVec::<SlotData, 40>::decode_with(cursor, SlotData::decode)?;
+        let carried = SlotData::decode(cursor)?;
+        Ok(Self { slots, carried })
+    }
+}
+
+/// Client clicks on an inventory slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C2sInventoryClick {
+    /// Slot index clicked (0..35).
+    pub slot: u16,
+    /// Mouse button: 0 = Left, 1 = Right.
+    pub button: u8,
+    /// Interaction mode: 0 = Pickup, 1 = `QuickMove`, 2 = `SwapHotbar`, 3 = Drop.
+    pub mode: u8,
+    /// Predicted carried item identifier before the click.
+    pub predicted_carried_item: u32,
+    /// Predicted carried item count before the click.
+    pub predicted_carried_count: u16,
+}
+
+impl C2sInventoryClick {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(u32::from(self.slot), buf);
+        buf.push(self.button);
+        buf.push(self.mode);
+        encode_varint(self.predicted_carried_item, buf);
+        encode_varint(u32::from(self.predicted_carried_count), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let slot = decode_varint(cursor)? as u16;
+        if cursor.len() < 2 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let button = cursor[0];
+        let mode = cursor[1];
+        *cursor = &cursor[2..];
+
+        let predicted_carried_item = decode_varint(cursor)?;
+        let predicted_carried_count = decode_varint(cursor)? as u16;
+
+        if slot >= 36 || button > 1 || mode > 3 || predicted_carried_count > 64 {
+            return Err(ProtocolError::InvalidValue {
+                field: "inventory_click",
+                reason: "Invalid slot, button, mode, or count".to_string(),
+            });
+        }
+
+        Ok(Self {
+            slot,
+            button,
+            mode,
+            predicted_carried_item,
+            predicted_carried_count,
+        })
+    }
+}
+
+/// Kinds of debug and gameplay player commands sent by the client.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlayerCommandKind {
+    /// Deal test damage to player.
+    Damage(f32),
+    /// Heal player health.
+    Heal(f32),
+    /// Set food level (0..20).
+    SetFood(u32),
+    /// Grant experience points.
+    AddXp(u32),
+}
+
+/// Client sends an interactive player command or debug action to server.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct C2sPlayerCommand {
+    /// Command payload.
+    pub command: PlayerCommandKind,
+}
+
+impl C2sPlayerCommand {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        match self.command {
+            PlayerCommandKind::Damage(amt) => {
+                buf.push(0);
+                buf.extend_from_slice(&amt.to_le_bytes());
+            }
+            PlayerCommandKind::Heal(amt) => {
+                buf.push(1);
+                buf.extend_from_slice(&amt.to_le_bytes());
+            }
+            PlayerCommandKind::SetFood(food) => {
+                buf.push(2);
+                encode_varint(food, buf);
+            }
+            PlayerCommandKind::AddXp(pts) => {
+                buf.push(3);
+                encode_varint(pts, buf);
+            }
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let kind = cursor[0];
+        *cursor = &cursor[1..];
+
+        let command = match kind {
+            0 => {
+                if cursor.len() < 4 {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let amt = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+                *cursor = &cursor[4..];
+                if !amt.is_finite() || amt < 0.0 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.damage",
+                        reason: "Amount must be finite and positive".to_string(),
+                    });
+                }
+                PlayerCommandKind::Damage(amt)
+            }
+            1 => {
+                if cursor.len() < 4 {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let amt = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+                *cursor = &cursor[4..];
+                if !amt.is_finite() || amt < 0.0 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.heal",
+                        reason: "Amount must be finite and positive".to_string(),
+                    });
+                }
+                PlayerCommandKind::Heal(amt)
+            }
+            2 => {
+                let food = decode_varint(cursor)?;
+                if food > 20 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.food",
+                        reason: "Food must be <= 20".to_string(),
+                    });
+                }
+                PlayerCommandKind::SetFood(food)
+            }
+            3 => {
+                let pts = decode_varint(cursor)?;
+                if pts > 1_000_000 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.xp",
+                        reason: "XP points exceeds maximum limit".to_string(),
+                    });
+                }
+                PlayerCommandKind::AddXp(pts)
+            }
+            other => {
+                return Err(ProtocolError::InvalidDiscriminant {
+                    enum_name: "PlayerCommandKind",
+                    value: u32::from(other),
+                });
+            }
+        };
+
+        Ok(Self { command })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1537,61 @@ mod tests {
 
         let mut cursor = &buf[..];
         let decoded = S2cUpdateTime::decode(&mut cursor).expect("failed to decode S2cUpdateTime");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_update_stats_codec_round_trip() {
+        let msg = S2cUpdateStats {
+            health: 18.5,
+            max_health: 20.0,
+            food: 19,
+            saturation: 4.5,
+            xp_level: 5,
+            xp_progress: 0.65,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+
+        let mut cursor = &buf[..];
+        let decoded = S2cUpdateStats::decode(&mut cursor).expect("failed to decode S2cUpdateStats");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_inventory_slot_codec_round_trip() {
+        let msg = S2cInventorySlot {
+            slot: 4,
+            item: 2,
+            count: 32,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+
+        let mut cursor = &buf[..];
+        let decoded =
+            S2cInventorySlot::decode(&mut cursor).expect("failed to decode S2cInventorySlot");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_inventory_click_codec_round_trip() {
+        let msg = C2sInventoryClick {
+            slot: 0,
+            button: 0,
+            mode: 0,
+            predicted_carried_item: 0,
+            predicted_carried_count: 0,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+
+        let mut cursor = &buf[..];
+        let decoded =
+            C2sInventoryClick::decode(&mut cursor).expect("failed to decode C2sInventoryClick");
         assert_eq!(msg, decoded);
         assert!(cursor.is_empty());
     }

@@ -8,9 +8,10 @@ use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
 use crate::messages::login::{C2sLoginStart, S2cLoginSuccess};
 use crate::messages::play::{
-    C2sBlockAction, C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, S2cBlockActionAck,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cJoinGame, S2cKeepAlive,
-    S2cLodNodeData, S2cLodNodeUnload, S2cUniformChunk,
+    C2sBlockAction, C2sChatMessage, C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand,
+    C2sPlayerPosition, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
+    S2cChunkUnload, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -265,6 +266,8 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
                 1 => C2sMessage::ChatMessage(C2sChatMessage::decode(&mut frame_cur)?),
                 2 => C2sMessage::PlayerPosition(C2sPlayerPosition::decode(&mut frame_cur)?),
                 3 => C2sMessage::BlockAction(C2sBlockAction::decode(&mut frame_cur)?),
+                4 => C2sMessage::InventoryClick(C2sInventoryClick::decode(&mut frame_cur)?),
+                5 => C2sMessage::PlayerCommand(C2sPlayerCommand::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
@@ -361,9 +364,10 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 7 => S2cMessage::LodNodeUnload(S2cLodNodeUnload::decode(&mut frame_cur)?),
                 8 => S2cMessage::BlockUpdate(S2cBlockUpdate::decode(&mut frame_cur)?),
                 9 => S2cMessage::BlockActionAck(S2cBlockActionAck::decode(&mut frame_cur)?),
-                10 => {
-                    S2cMessage::UpdateTime(crate::messages::S2cUpdateTime::decode(&mut frame_cur)?)
-                }
+                10 => S2cMessage::UpdateTime(S2cUpdateTime::decode(&mut frame_cur)?),
+                11 => S2cMessage::UpdateStats(S2cUpdateStats::decode(&mut frame_cur)?),
+                12 => S2cMessage::InventorySlot(S2cInventorySlot::decode(&mut frame_cur)?),
+                13 => S2cMessage::InventoryBulk(S2cInventoryBulk::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

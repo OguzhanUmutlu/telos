@@ -1,31 +1,24 @@
 [package]
-name = "vx-server"
+name = "vx-sim"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Authoritative server runtime, session management, and chunk delivery pipeline for voxel"
+description = "Pure, deterministic ECS gameplay simulation core for voxel (health, hunger, XP, inventory)"
 
 [dependencies]
 vx-core = { workspace = true }
 vx-voxel = { workspace = true }
-vx-worldgen = { workspace = true }
-vx-protocol = { workspace = true }
-vx-net = { workspace = true }
-vx-lod = { workspace = true }
-vx-storage = { workspace = true }
-vx-sim = { workspace = true }
 bevy_ecs = { workspace = true }
-tracing = { workspace = true }
-hashbrown = { workspace = true }
 glam = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

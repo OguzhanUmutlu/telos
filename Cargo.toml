@@ -13,6 +13,7 @@ members = [
     "crates/vx-server",
     "crates/vx-lod",
     "crates/vx-ui",
+    "crates/vx-sim",
     "apps/voxel-server",
     "apps/voxel",
     "apps/voxel-web",
@@ -41,6 +42,10 @@ vx-net = { version = "0.1.0", path = "crates/vx-net" }
 vx-server = { version = "0.1.0", path = "crates/vx-server" }
 vx-lod = { version = "0.1.0", path = "crates/vx-lod" }
 vx-ui = { version = "0.1.0", path = "crates/vx-ui" }
+vx-sim = { version = "0.1.0", path = "crates/vx-sim" }
+
+# ECS & Gameplay
+bevy_ecs = { version = "0.15", default-features = false }
 
 # UI & Layout
 taffy = "0.14"

@@ -27,7 +27,8 @@ use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, S2cMessage,
+    C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
+    PlayerCommandKind, S2cMessage,
 };
 use vx_ui::{BitmapFont, HudState, UiLayers, UiQuad, compute_gui_scale, render_hud};
 use vx_voxel::chunk::{Chunk, ChunkSnapshot};
@@ -1358,6 +1359,27 @@ impl App {
                         self.client_world_age = update.world_age;
                         let server_time = (update.time_of_day % vx_core::time::DAY_TICKS) as f32;
                         self.client_time_of_day = server_time;
+                    }
+                    S2cMessage::UpdateStats(stats) => {
+                        self.hud_state.health = stats.health;
+                        self.hud_state.max_health = stats.max_health;
+                        self.hud_state.food = stats.food;
+                        self.hud_state.saturation = stats.saturation;
+                        self.hud_state.xp_level = stats.xp_level;
+                        self.hud_state.xp_progress = stats.xp_progress;
+                    }
+                    S2cMessage::InventoryBulk(bulk) => {
+                        for (i, slot) in bulk.slots.iter().enumerate().take(9) {
+                            if slot.count > 0 && i == self.selected_hotbar_slot {
+                                self.selected_block_state = BlockStateId::new(slot.item);
+                            }
+                        }
+                    }
+                    S2cMessage::InventorySlot(slot_msg)
+                        if slot_msg.slot as usize == self.selected_hotbar_slot
+                            && slot_msg.count > 0 =>
+                    {
+                        self.selected_block_state = BlockStateId::new(slot_msg.item);
                     }
                     _ => {}
                 },
@@ -3692,8 +3714,8 @@ impl ApplicationHandler for App {
             Ok(res) => res,
             Err(err) => {
                 tracing::warn!("Failed to load UI textures: {err}; using procedural fallback");
-                let fallback_bytes = vec![255u8; 256 * 256 * 4 * 4];
-                let fallback_regions: Vec<TextureMipRegion> = (0..4)
+                let fallback_bytes = vec![255u8; 256 * 256 * 4 * 5];
+                let fallback_regions: Vec<TextureMipRegion> = (0..5)
                     .map(|layer| TextureMipRegion {
                         buffer_offset: u64::from(layer * 256 * 256 * 4),
                         layer,
@@ -3704,7 +3726,7 @@ impl ApplicationHandler for App {
                     .collect();
                 let fallback = match gpu_context.create_texture_array(
                     256,
-                    4,
+                    5,
                     1,
                     &fallback_bytes,
                     &fallback_regions,
@@ -4199,6 +4221,27 @@ impl ApplicationHandler for App {
                         self.hud_state.f3_open = !self.hud_state.f3_open;
                         info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
                     }
+                    KeyCode::KeyK if pressed => {
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::Damage(2.0),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!("Sent test damage command (2.0 HP)");
+                    }
+                    KeyCode::KeyJ if pressed => {
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::AddXp(50),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!("Sent test add XP command (50 XP)");
+                    }
+                    KeyCode::KeyL if pressed => {
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::SetFood(6),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!("Sent test set food command (6 food)");
+                    }
                     KeyCode::Escape if pressed => {
                         if self.controller.mouse_captured {
                             self.controller.mouse_captured = false;
@@ -4556,20 +4599,27 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
     stack.add_root("dev-assets/classic-26.2");
     stack.add_root("assets/voxel");
 
-    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 4) as usize];
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 5) as usize];
 
-    // Helper to copy a sub-image into a 256x256 layer
-    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+    // Helper to copy a sub-image into a 256x256 layer at specified offset
+    let copy_to_layer_at = |dest: &mut [u8],
+                            layer: usize,
+                            x_offset: usize,
+                            y_offset: usize,
+                            img: &vx_assets::RgbaImage| {
         let layer_offset = layer * (UI_RES * UI_RES * 4) as usize;
-        let w = img.width.min(UI_RES);
-        let h = img.height.min(UI_RES);
+        let w = (img.width as usize).min(UI_RES as usize - x_offset);
+        let h = (img.height as usize).min(UI_RES as usize - y_offset);
         for y in 0..h {
-            let src_start = ((y * img.width) * 4) as usize;
-            let src_end = src_start + (w * 4) as usize;
-            let dst_start = layer_offset + ((y * UI_RES) * 4) as usize;
-            dest[dst_start..dst_start + (w * 4) as usize]
-                .copy_from_slice(&img.data[src_start..src_end]);
+            let src_start = (y * img.width as usize) * 4;
+            let src_end = src_start + w * 4;
+            let dst_start = layer_offset + ((y_offset + y) * UI_RES as usize + x_offset) * 4;
+            dest[dst_start..dst_start + w * 4].copy_from_slice(&img.data[src_start..src_end]);
         }
+    };
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+        copy_to_layer_at(dest, layer, 0, 0, img);
     };
 
     // Layer 0: Hotbar (182x22)
@@ -4674,7 +4724,132 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
         BitmapFont::from_rgba(&ascii_256, 256, 256, 3)
     };
 
-    let regions: Vec<TextureMipRegion> = (0..4)
+    // Layer 4: Survival Icons & Bars
+    let heart_container_img = stack
+        .load_gui_sprite("hud/heart/container")
+        .unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(9, 9);
+            for y in 0..9 {
+                for x in 0..9 {
+                    let idx = ((y * 9 + x) * 4) as usize;
+                    if x == 0 || x == 8 || y == 0 || y == 8 {
+                        img.data[idx] = 60;
+                        img.data[idx + 1] = 60;
+                        img.data[idx + 2] = 60;
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer_at(&mut pixel_data, 4, 0, 0, &heart_container_img);
+
+    let heart_full_img = stack.load_gui_sprite("hud/heart/full").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(9, 9);
+        for y in 1..8 {
+            for x in 1..8 {
+                let idx = ((y * 9 + x) * 4) as usize;
+                img.data[idx] = 230;
+                img.data[idx + 1] = 30;
+                img.data[idx + 2] = 30;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    });
+    copy_to_layer_at(&mut pixel_data, 4, 16, 0, &heart_full_img);
+
+    let heart_half_img = stack.load_gui_sprite("hud/heart/half").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(9, 9);
+        for y in 1..8 {
+            for x in 1..5 {
+                let idx = ((y * 9 + x) * 4) as usize;
+                img.data[idx] = 230;
+                img.data[idx + 1] = 30;
+                img.data[idx + 2] = 30;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    });
+    copy_to_layer_at(&mut pixel_data, 4, 32, 0, &heart_half_img);
+
+    let food_empty_img = stack.load_gui_sprite("hud/food_empty").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(9, 9);
+        for y in 0..9 {
+            for x in 0..9 {
+                let idx = ((y * 9 + x) * 4) as usize;
+                if x == 0 || x == 8 || y == 0 || y == 8 {
+                    img.data[idx] = 70;
+                    img.data[idx + 1] = 50;
+                    img.data[idx + 2] = 30;
+                    img.data[idx + 3] = 255;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer_at(&mut pixel_data, 4, 48, 0, &food_empty_img);
+
+    let food_full_img = stack.load_gui_sprite("hud/food_full").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(9, 9);
+        for y in 1..8 {
+            for x in 1..8 {
+                let idx = ((y * 9 + x) * 4) as usize;
+                img.data[idx] = 180;
+                img.data[idx + 1] = 100;
+                img.data[idx + 2] = 40;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    });
+    copy_to_layer_at(&mut pixel_data, 4, 64, 0, &food_full_img);
+
+    let food_half_img = stack.load_gui_sprite("hud/food_half").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(9, 9);
+        for y in 1..8 {
+            for x in 1..5 {
+                let idx = ((y * 9 + x) * 4) as usize;
+                img.data[idx] = 180;
+                img.data[idx + 1] = 100;
+                img.data[idx + 2] = 40;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    });
+    copy_to_layer_at(&mut pixel_data, 4, 80, 0, &food_half_img);
+
+    let xp_bar_bg_img = stack
+        .load_gui_sprite("hud/experience_bar_background")
+        .unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(182, 5);
+            for i in (0..img.data.len()).step_by(4) {
+                img.data[i] = 30;
+                img.data[i + 1] = 30;
+                img.data[i + 2] = 30;
+                img.data[i + 3] = 200;
+            }
+            img
+        });
+    copy_to_layer_at(&mut pixel_data, 4, 0, 16, &xp_bar_bg_img);
+
+    let xp_bar_progress_img = stack
+        .load_gui_sprite("hud/experience_bar_progress")
+        .unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(182, 5);
+            for i in (0..img.data.len()).step_by(4) {
+                img.data[i] = 120;
+                img.data[i + 1] = 230;
+                img.data[i + 2] = 30;
+                img.data[i + 3] = 255;
+            }
+            img
+        });
+    copy_to_layer_at(&mut pixel_data, 4, 0, 24, &xp_bar_progress_img);
+
+    let regions: Vec<TextureMipRegion> = (0..5)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
             layer,
@@ -4684,9 +4859,9 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
         })
         .collect();
 
-    let texture_array = gpu_context.create_texture_array(UI_RES, 4, 1, &pixel_data, &regions)?;
+    let texture_array = gpu_context.create_texture_array(UI_RES, 5, 1, &pixel_data, &regions)?;
 
-    info!("UI texture array loaded (4 layers, 256x256, font baked)");
+    info!("UI texture array loaded (5 layers, 256x256, font baked, survival icons)");
 
     Ok((texture_array, font))
 }

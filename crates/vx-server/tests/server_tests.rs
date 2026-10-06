@@ -5,7 +5,8 @@ use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sLoginStart, C2sMessage, C2sPlayerPosition, S2cMessage,
+    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition,
+    PlayerCommandKind, S2cMessage,
 };
 use vx_server::{Server, ServerConfig};
 use vx_voxel::state::BlockStateId;
@@ -123,6 +124,7 @@ fn test_server_handshake_and_chunk_streaming() {
             S2cMessage::UpdateTime(time) => {
                 assert!(time.time_of_day >= 6000);
             }
+            S2cMessage::UpdateStats(_) | S2cMessage::InventoryBulk(_) => {}
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }
     }
@@ -490,4 +492,159 @@ fn test_server_persistence_save_and_reload() {
             "Block state must persist across server restarts via .vxr storage"
         );
     }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_survival_stats_and_inventory_interaction() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 1,
+        vertical_view_distance: 1,
+        chunks_per_tick_per_player: 10,
+        ..Default::default()
+    };
+    let mut server = Server::new(777, config);
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    // Handshake
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("SurvivalPlayer").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 1,
+                simulation_distance: 1,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify initial messages: JoinGame, UpdateTime, UpdateStats, InventoryBulk
+    let mut got_stats = false;
+    let mut got_bulk = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        match incoming.into_msg().unwrap() {
+            S2cMessage::UpdateStats(stats) => {
+                assert!((stats.health - 20.0).abs() < 0.001);
+                assert_eq!(stats.food, 20);
+                assert_eq!(stats.xp_level, 0);
+                got_stats = true;
+            }
+            S2cMessage::InventoryBulk(bulk) => {
+                assert_eq!(bulk.slots.len(), 36);
+                assert_eq!(bulk.slots[0].item, 1); // Stone
+                assert_eq!(bulk.slots[0].count, 64);
+                assert_eq!(bulk.carried.count, 0);
+                got_bulk = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(got_stats, "Must receive initial UpdateStats");
+    assert!(got_bulk, "Must receive initial InventoryBulk");
+
+    // Test Damage command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::Damage(4.0),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut health_reduced = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateStats(stats)) = incoming.into_msg() {
+            assert!((stats.health - 16.0).abs() < 0.001);
+            health_reduced = true;
+        }
+    }
+    assert!(health_reduced, "Health must drop to 16.0 after 4.0 damage");
+
+    // Test AddXp command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::AddXp(60),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut xp_updated = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateStats(stats)) = incoming.into_msg() {
+            assert_eq!(stats.xp_level, 5);
+            xp_updated = true;
+        }
+    }
+    assert!(
+        xp_updated,
+        "XP level must increase after receiving 60 XP points"
+    );
+
+    // Test Inventory click: Left click on slot 0 (stone x64) to pick it up
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 0,
+                button: 0, // Left
+                mode: 0,   // Pickup
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut inventory_swapped = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::InventoryBulk(bulk)) = incoming.into_msg() {
+            assert_eq!(bulk.slots[0].count, 0, "Slot 0 should now be empty");
+            assert_eq!(bulk.carried.item, 1, "Carried item should now be stone");
+            assert_eq!(bulk.carried.count, 64, "Carried count should be 64");
+            inventory_swapped = true;
+        }
+    }
+    assert!(
+        inventory_swapped,
+        "Inventory click must update inventory bulk"
+    );
 }

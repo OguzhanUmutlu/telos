@@ -18,6 +18,15 @@ use vx_voxel::storage::Blocks;
 use crate::config::ServerConfig;
 use crate::session::PlayerSession;
 use crate::world::ServerWorld;
+use vx_protocol::bounded::BoundedVec;
+use vx_protocol::messages::{
+    C2sInventoryClick, C2sPlayerCommand, PlayerCommandKind, S2cInventoryBulk, S2cUpdateStats,
+    SlotData,
+};
+use vx_sim::{
+    CombatTracker, DamageType, Experience, Health, Hunger, Inventory, ItemStack, SimParams,
+    build_sim_schedule,
+};
 
 /// Top-level authoritative server orchestrating worlds, simulation, and client streaming.
 pub struct Server {
@@ -28,6 +37,8 @@ pub struct Server {
     next_entity_id: u32,
     tick_count: u64,
     time_of_day: u64,
+    ecs_world: bevy_ecs::world::World,
+    sim_schedule: bevy_ecs::schedule::Schedule,
 }
 
 impl Server {
@@ -49,6 +60,10 @@ impl Server {
             ServerWorld::new(seed, registry)
         };
 
+        let mut ecs_world = bevy_ecs::world::World::new();
+        ecs_world.insert_resource(SimParams::default());
+        let sim_schedule = build_sim_schedule();
+
         Self {
             config,
             world,
@@ -57,7 +72,20 @@ impl Server {
             next_entity_id: 1,
             tick_count: 0,
             time_of_day: vx_core::NOON_TICKS,
+            ecs_world,
+            sim_schedule,
         }
+    }
+
+    /// Accesses the ECS simulation world immutably.
+    #[must_use]
+    pub fn ecs_world(&self) -> &bevy_ecs::world::World {
+        &self.ecs_world
+    }
+
+    /// Accesses the ECS simulation world mutably.
+    pub fn ecs_world_mut(&mut self) -> &mut bevy_ecs::world::World {
+        &mut self.ecs_world
     }
 
     /// Accesses the server configuration.
@@ -117,6 +145,8 @@ impl Server {
         // 1. Process inbound network packets across all sessions
         let mut disconnected = Vec::new();
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
+        let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
+        let mut player_commands: Vec<(u64, C2sPlayerCommand)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -184,6 +214,55 @@ impl Server {
                                     .connection
                                     .send(Lane::Control, Payload::Msg(time_msg));
 
+                                // Spawn player entity in ECS simulation
+                                let mut inv = Inventory::default();
+                                inv.slots[0] = ItemStack::new(1, 64); // Stone
+                                inv.slots[1] = ItemStack::new(2, 64); // Dirt
+                                inv.slots[2] = ItemStack::new(5, 64); // Planks
+                                inv.slots[3] = ItemStack::new(4, 64); // Cobblestone
+
+                                let ecs_entity = self
+                                    .ecs_world
+                                    .spawn((
+                                        Health::new(20.0),
+                                        CombatTracker::default(),
+                                        Hunger::new(20, 5.0),
+                                        Experience::default(),
+                                        inv.clone(),
+                                    ))
+                                    .id();
+                                session.ecs_entity = Some(ecs_entity);
+
+                                let stats_msg = S2cMessage::UpdateStats(S2cUpdateStats {
+                                    health: 20.0,
+                                    max_health: 20.0,
+                                    food: 20,
+                                    saturation: 5.0,
+                                    xp_level: 0,
+                                    xp_progress: 0.0,
+                                });
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(stats_msg));
+
+                                let mut slot_vec = Vec::with_capacity(36);
+                                for slot in &inv.slots {
+                                    slot_vec.push(SlotData {
+                                        item: slot.item,
+                                        count: slot.count,
+                                    });
+                                }
+                                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                    slots: BoundedVec::new(slot_vec).expect("36 <= 40"),
+                                    carried: SlotData {
+                                        item: inv.carried.item,
+                                        count: inv.carried.count,
+                                    },
+                                });
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(bulk_msg));
+
                                 // Force initial chunk subscriptions
                                 let _ = session.recompute_subscriptions();
                             }
@@ -205,6 +284,12 @@ impl Server {
                         C2sMessage::BlockAction(action) => {
                             block_actions.push((*session_id, action));
                         }
+                        C2sMessage::InventoryClick(click) => {
+                            inventory_clicks.push((*session_id, click));
+                        }
+                        C2sMessage::PlayerCommand(cmd) => {
+                            player_commands.push((*session_id, cmd));
+                        }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
                         }
@@ -215,11 +300,97 @@ impl Server {
         }
 
         for id in disconnected {
-            self.sessions.remove(&id);
-            info!(session_id = id, "Session disconnected");
+            if let Some(session) = self.sessions.remove(&id) {
+                if let Some(entity) = session.ecs_entity {
+                    self.ecs_world.despawn(entity);
+                }
+                info!(session_id = id, "Session disconnected");
+            }
         }
 
-        // 2. Process block actions (authoritative validation & simulation)
+        // 2. Process player debug and action commands
+        for (session_id, cmd) in player_commands {
+            let Some(session) = self.sessions.get(&session_id) else {
+                continue;
+            };
+            let Some(entity) = session.ecs_entity else {
+                continue;
+            };
+            match cmd.command {
+                PlayerCommandKind::Damage(amt) => {
+                    let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                    if let Ok((mut health, mut combat)) = query.get_mut(&mut self.ecs_world, entity)
+                    {
+                        vx_sim::apply_damage(&mut health, &mut combat, amt, DamageType::Command);
+                    }
+                }
+                PlayerCommandKind::Heal(amt) => {
+                    if let Some(mut health) = self.ecs_world.get_mut::<Health>(entity) {
+                        health.heal(amt);
+                    }
+                }
+                PlayerCommandKind::SetFood(food) => {
+                    if let Some(mut hunger) = self.ecs_world.get_mut::<Hunger>(entity) {
+                        hunger.food = food.min(20);
+                        #[allow(clippy::cast_precision_loss)]
+                        let max_sat = hunger.food as f32;
+                        hunger.saturation = hunger.saturation.min(max_sat);
+                    }
+                }
+                PlayerCommandKind::AddXp(pts) => {
+                    if let Some(mut exp) = self.ecs_world.get_mut::<Experience>(entity) {
+                        exp.add_xp(pts);
+                    }
+                }
+            }
+        }
+
+        // 3. Process inventory clicks
+        for (session_id, click) in inventory_clicks {
+            let Some(session) = self.sessions.get(&session_id) else {
+                continue;
+            };
+            let Some(entity) = session.ecs_entity else {
+                continue;
+            };
+            let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity) else {
+                continue;
+            };
+
+            let button = match click.button {
+                0 => vx_sim::ClickButton::Left,
+                _ => vx_sim::ClickButton::Right,
+            };
+            let mode = match click.mode {
+                0 => vx_sim::ClickMode::Pickup,
+                1 => vx_sim::ClickMode::QuickMove,
+                2 => vx_sim::ClickMode::SwapHotbar,
+                _ => vx_sim::ClickMode::Drop,
+            };
+
+            let slot_idx = click.slot as usize;
+            if vx_sim::inventory_click(&mut inv, slot_idx, button, mode).is_ok() {
+                let mut slot_vec = Vec::with_capacity(36);
+                for slot in &inv.slots {
+                    slot_vec.push(SlotData {
+                        item: slot.item,
+                        count: slot.count,
+                    });
+                }
+                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                    slots: BoundedVec::new(slot_vec).expect("36 <= 40"),
+                    carried: SlotData {
+                        item: inv.carried.item,
+                        count: inv.carried.count,
+                    },
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(bulk_msg));
+            }
+        }
+
+        // 4. Process block actions (authoritative validation & simulation)
         for (session_id, action) in block_actions {
             let Some(session) = self.sessions.get(&session_id) else {
                 continue;
@@ -306,7 +477,71 @@ impl Server {
             }
         }
 
-        // 3. Process active chunk subscriptions and deliveries
+        // 5. Compute movement exhaustion, run ECS simulation tick, and sync stats
+        for session in self.sessions.values_mut() {
+            if session.phase != ConnectionPhase::Play {
+                session.prev_position = session.position;
+                continue;
+            }
+            let dist = session.position.distance(session.prev_position);
+            session.prev_position = session.position;
+            if dist > 0.001
+                && let Some(entity) = session.ecs_entity
+                && let Some(mut hunger) = self.ecs_world.get_mut::<Hunger>(entity)
+            {
+                #[allow(clippy::cast_precision_loss)]
+                hunger.add_exhaustion(dist as f32 * 0.1);
+            }
+        }
+
+        self.sim_schedule.run(&mut self.ecs_world);
+
+        for session in self.sessions.values_mut() {
+            if session.phase != ConnectionPhase::Play {
+                continue;
+            }
+            let Some(entity) = session.ecs_entity else {
+                continue;
+            };
+
+            let health = self.ecs_world.get::<Health>(entity);
+            let hunger = self.ecs_world.get::<Hunger>(entity);
+            let xp = self.ecs_world.get::<Experience>(entity);
+
+            let health_val = health.map_or(20.0, |h| h.cur);
+            let max_health = health.map_or(20.0, |h| h.max);
+            let food_val = hunger.map_or(20, |h| h.food);
+            let sat_val = hunger.map_or(5.0, |h| h.saturation);
+            let (xp_lvl, xp_prog) = xp.map_or((0, 0.0), |x| (x.level(), x.progress()));
+
+            let stats_changed = (session.cached_health - health_val).abs() > 0.001
+                || session.cached_food != food_val
+                || (session.cached_saturation - sat_val).abs() > 0.001
+                || session.cached_xp_level != xp_lvl
+                || (session.cached_xp_progress - xp_prog).abs() > 0.001;
+
+            if stats_changed {
+                session.cached_health = health_val;
+                session.cached_food = food_val;
+                session.cached_saturation = sat_val;
+                session.cached_xp_level = xp_lvl;
+                session.cached_xp_progress = xp_prog;
+
+                let stats_msg = S2cMessage::UpdateStats(S2cUpdateStats {
+                    health: health_val,
+                    max_health,
+                    food: food_val,
+                    saturation: sat_val,
+                    xp_level: xp_lvl,
+                    xp_progress: xp_prog,
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(stats_msg));
+            }
+        }
+
+        // 6. Process active chunk subscriptions and deliveries
         let quota = self.config.chunks_per_tick_per_player;
 
         for session in self.sessions.values_mut() {

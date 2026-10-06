@@ -96,8 +96,8 @@ fn test_render_hud_quad_generation() {
     let mut quads = Vec::new();
     render_hud(&state, &font, &layers, 1920, 1080, 4, &mut quads);
 
-    // 1 crosshair + 1 hotbar + 1 selection indicator = 3 quads
-    assert_eq!(quads.len(), 3);
+    // 1 crosshair + 1 hotbar + 1 selection indicator + 1 xp bar bg + 20 hearts + 20 food drumsticks = 44 quads
+    assert_eq!(quads.len(), 44);
 
     // Turn on F3 overlay
     state.f3_open = true;
