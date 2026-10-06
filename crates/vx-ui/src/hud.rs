@@ -129,6 +129,8 @@ pub struct HudState {
     pub weather_thunder_level: f32,
     /// Local precipitation type (e.g. "None", "Rain", "Snow").
     pub local_precipitation: String,
+    /// Number of active entities tracked on client.
+    pub entities_rendered: u32,
 }
 
 impl Default for HudState {
@@ -160,6 +162,7 @@ impl Default for HudState {
             weather_rain_level: 0.0,
             weather_thunder_level: 0.0,
             local_precipitation: "None".to_string(),
+            entities_rendered: 0,
         }
     }
 }
@@ -460,6 +463,7 @@ fn render_f3_overlay(
             state.chunks_rendered, state.chunks_culled_hiz
         ),
         format!("§fLOD Nodes: §e{} §factive", state.lod_nodes_rendered),
+        format!("§fEntities: §d{} §ftracked", state.entities_rendered),
         format!("§fGUI Scale: §a{gui_scale}x"),
     ];
 

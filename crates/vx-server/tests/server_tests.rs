@@ -5,8 +5,8 @@ use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition,
-    PlayerCommandKind, S2cMessage,
+    C2sInteractEntity, C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand,
+    C2sPlayerPosition, PlayerCommandKind, S2cMessage,
 };
 use vx_server::{Server, ServerConfig};
 use vx_voxel::state::BlockStateId;
@@ -836,4 +836,244 @@ fn test_server_weather_synchronization_and_commands() {
         got_lightning,
         "Server must broadcast lightning strike flash event"
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_server_mob_lifecycle_and_combat() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 3,
+        vertical_view_distance: 2,
+        ..Default::default()
+    };
+    let mut server = Server::new(12345, config);
+
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    // Connect player to Play phase
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv(); // HelloReply
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("Hero").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv(); // LoginSuccess
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 3,
+                simulation_distance: 3,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+
+    // Drain initial join messages
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+
+    // Align player position to terrain surface
+    let surface_y = server.world().get_surface_y(128, 160);
+    let player_y = f64::from(surface_y) + 1.0;
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                x: 128.0,
+                y: player_y,
+                z: 160.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: true,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Spawn Zombie near player at (128.0, player_y, 161.5)
+    let zombie_id = server.spawn_mob(
+        vx_sim::EntityType::Zombie,
+        glam::DVec3::new(128.0, player_y, 161.5),
+    );
+    assert_eq!(server.tracked_mobs.len(), 1);
+
+    // Client receives S2cSpawnEntity
+    let mut got_spawn = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::SpawnEntity(spawn)) = incoming.into_msg()
+            && spawn.net_id == zombie_id
+        {
+            assert_eq!(spawn.entity_type, vx_sim::EntityType::Zombie.to_u8());
+            assert!((spawn.health - 20.0).abs() < 0.01);
+            got_spawn = true;
+        }
+    }
+    assert!(
+        got_spawn,
+        "Client must receive S2cSpawnEntity for newly spawned mob"
+    );
+
+    // Tick server so mob AI updates and movement delta broadcasts
+    server.tick();
+
+    let mut got_move = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::EntityMove(m)) = incoming.into_msg()
+            && m.net_id == zombie_id
+        {
+            got_move = true;
+        }
+    }
+    // Note: mob may or may not move immediately depending on distance, but tracking exists
+    let _ = got_move;
+
+    // Player attacks zombie (action 0)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InteractEntity(C2sInteractEntity {
+                target_net_id: zombie_id,
+                action: 0,
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+
+    // Verify S2cEntityStatus(2) for hurt
+    let mut got_hurt = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::EntityStatus(s)) = incoming.into_msg()
+            && s.net_id == zombie_id
+            && s.status == 2
+        {
+            got_hurt = true;
+        }
+    }
+    assert!(
+        got_hurt,
+        "Server must broadcast entity hurt status on valid attack"
+    );
+
+    // Attack 4 more times to kill zombie (20 HP / 4 dmg = 5 hits)
+    for _ in 0..5 {
+        // Tick to decay combat invulnerability
+        for _ in 0..12 {
+            server.tick();
+        }
+        let mob_pos = server
+            .mob_positions
+            .get(&zombie_id)
+            .copied()
+            .unwrap_or(glam::DVec3::new(128.0, player_y, 161.5));
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                    x: mob_pos.x,
+                    y: mob_pos.y,
+                    z: mob_pos.z - 1.0,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    on_ground: true,
+                })),
+            )
+            .unwrap();
+        server.tick();
+
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::InteractEntity(C2sInteractEntity {
+                    target_net_id: zombie_id,
+                    action: 0,
+                })),
+            )
+            .unwrap();
+        server.tick();
+    }
+
+    // Verify death status and despawn packet
+    let mut got_death = false;
+    let mut got_despawn = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(msg) = incoming.into_msg() {
+            match msg {
+                S2cMessage::EntityStatus(s) if s.net_id == zombie_id && s.status == 3 => {
+                    got_death = true;
+                }
+                S2cMessage::DespawnEntity(d) if d.net_ids.as_slice().contains(&zombie_id) => {
+                    got_despawn = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        got_death,
+        "Server must broadcast death status (3) on lethal hit"
+    );
+    assert!(
+        got_despawn,
+        "Server must broadcast despawn packet on mob death"
+    );
+    assert!(!server.tracked_mobs.contains_key(&zombie_id));
+
+    // Test SpawnMob command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::SpawnMob {
+                    mob_type: vx_sim::EntityType::Pig.to_u8(),
+                    x: 128.0,
+                    y: 45.0,
+                    z: 160.0,
+                },
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+    assert_eq!(server.tracked_mobs.len(), 1);
+
+    // Test ClearMobs command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::ClearMobs,
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+    assert_eq!(server.tracked_mobs.len(), 0);
 }

@@ -8,6 +8,7 @@
 pub mod attributes;
 pub mod bundles;
 pub mod crafting;
+pub mod entity;
 pub mod experience;
 pub mod hunger;
 pub mod inventory;
@@ -17,6 +18,10 @@ pub mod weather;
 pub use attributes::{CombatTracker, DamageEvent, DamageType, Health, apply_damage};
 pub use bundles::PlayerBundle;
 pub use crafting::{Recipe2x2, find_recipe_2x2};
+pub use entity::{
+    AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,
+    Position, Rotation, Velocity, mob_ai_system, mob_hurt_decay_system, mob_movement_system,
+};
 pub use experience::{
     Experience, level_from_total_points, points_for_next_level, total_points_for_level,
 };

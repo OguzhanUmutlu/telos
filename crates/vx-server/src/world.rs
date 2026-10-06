@@ -85,6 +85,12 @@ impl ServerWorld {
         })
     }
 
+    /// Returns the world generation seed.
+    #[must_use]
+    pub const fn seed(&self) -> u64 {
+        self.generator.seed()
+    }
+
     /// Accesses the server's block registry.
     #[must_use]
     pub fn registry(&self) -> &BlockRegistry {
@@ -403,5 +409,37 @@ impl ServerWorld {
         let arc = Arc::new(mesh);
         self.lod_meshes.insert(key, arc.clone());
         arc
+    }
+
+    /// Returns the world Y coordinate of the highest solid block at (x, z), or 64 as fallback.
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn get_surface_y(&self, x: i32, z: i32) -> i32 {
+        let chunk_x = x.div_euclid(32);
+        let chunk_z = z.div_euclid(32);
+        let local_x = x.rem_euclid(32) as u32;
+        let local_z = z.rem_euclid(32) as u32;
+        if let Some(col) = self.columns.get(&(chunk_x, chunk_z)) {
+            let top = col.get_top(local_x, local_z);
+            if top > i16::MIN {
+                return i32::from(top);
+            }
+        }
+        64
+    }
+
+    /// Returns (`sky_light`, `block_light`) at pos.
+    #[must_use]
+    pub fn get_light(&self, pos: BlockPos) -> (u8, u8) {
+        let (cpos, lpos) = split_block_pos(pos);
+        if let Some(sc) = self.chunks.get(&cpos)
+            && let Some(light) = sc.snapshot.light()
+        {
+            return (
+                light.get_sky(lpos.as_usize()),
+                light.get_block(lpos.as_usize()),
+            );
+        }
+        (15, 0)
     }
 }

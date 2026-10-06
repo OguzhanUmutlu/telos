@@ -1,6 +1,7 @@
 //! Bevy ECS simulation schedules, system sets, and standard tick systems.
 
 use crate::attributes::{CombatTracker, Health};
+use crate::entity::{mob_ai_system, mob_hurt_decay_system, mob_movement_system};
 use crate::hunger::{Hunger, SimParams, tick_hunger};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::{ScheduleLabel, SystemSet};
@@ -12,6 +13,10 @@ pub struct SimTick;
 /// System sets defining the strictly ordered stages of a single simulation tick.
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TickSet {
+    /// Artificial intelligence decision making for mobs.
+    Ai,
+    /// Physical velocity integration, gravity, and drag.
+    Movement,
     /// Processing player and environment interactions.
     Interaction,
     /// Damage resolution, invulnerability frames, and combat effects.
@@ -40,10 +45,20 @@ pub fn hunger_system(mut query: Query<(&mut Health, &mut Hunger)>, params: Res<S
 pub fn build_sim_schedule() -> Schedule {
     let mut schedule = Schedule::new(SimTick);
 
-    schedule.configure_sets((TickSet::Interaction, TickSet::Combat, TickSet::Status).chain());
+    schedule.configure_sets(
+        (
+            TickSet::Ai,
+            TickSet::Movement,
+            TickSet::Interaction,
+            TickSet::Combat,
+            TickSet::Status,
+        )
+            .chain(),
+    );
 
-    schedule.add_systems(combat_tracker_system.in_set(TickSet::Combat));
-
+    schedule.add_systems(mob_ai_system.in_set(TickSet::Ai));
+    schedule.add_systems(mob_movement_system.in_set(TickSet::Movement));
+    schedule.add_systems((combat_tracker_system, mob_hurt_decay_system).in_set(TickSet::Combat));
     schedule.add_systems(hunger_system.in_set(TickSet::Status));
 
     schedule

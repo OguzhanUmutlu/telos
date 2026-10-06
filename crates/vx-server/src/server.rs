@@ -6,11 +6,19 @@ use std::sync::Arc;
 use tracing::{debug, info};
 use vx_core::coords::{BlockPos, Face};
 use vx_net::{Connection, Lane, Payload};
+use vx_protocol::bounded::BoundedVec;
 use vx_protocol::messages::{
-    BlockActionKind, C2sBlockAction, C2sMessage, ChunkPayload, ConnectionPhase, LodPayload,
-    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cHelloReply, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cUniformChunk, S2cUpdateTime,
-    S2cUpdateWeather,
+    BlockActionKind, C2sBlockAction, C2sInteractEntity, C2sInventoryClick, C2sMessage,
+    C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload, PlayerCommandKind,
+    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cDespawnEntity,
+    S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats,
+    S2cUpdateTime, S2cUpdateWeather, SlotData,
+};
+use vx_sim::{
+    CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
+    ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams, Velocity,
+    WeatherKind, WeatherState, build_sim_schedule,
 };
 use vx_voxel::registry::BlockRegistry;
 use vx_voxel::state::BlockStateId;
@@ -19,15 +27,6 @@ use vx_voxel::storage::Blocks;
 use crate::config::ServerConfig;
 use crate::session::PlayerSession;
 use crate::world::ServerWorld;
-use vx_protocol::bounded::BoundedVec;
-use vx_protocol::messages::{
-    C2sInventoryClick, C2sPlayerCommand, PlayerCommandKind, S2cInventoryBulk, S2cUpdateStats,
-    SlotData,
-};
-use vx_sim::{
-    CombatTracker, DamageType, Experience, Health, Hunger, Inventory, ItemStack, SimParams,
-    WeatherKind, WeatherState, build_sim_schedule,
-};
 
 /// Top-level authoritative server orchestrating worlds, simulation, and client streaming.
 pub struct Server {
@@ -42,6 +41,14 @@ pub struct Server {
     pub weather: WeatherState,
     ecs_world: bevy_ecs::world::World,
     sim_schedule: bevy_ecs::schedule::Schedule,
+    /// Active mob entities keyed by their network ID.
+    pub tracked_mobs: HashMap<u32, bevy_ecs::entity::Entity>,
+    /// Last known positions of mobs for delta move broadcasting.
+    pub mob_positions: HashMap<u32, DVec3>,
+    /// Last known yaw of mobs for delta rotation broadcasting.
+    pub mob_yaws: HashMap<u32, f32>,
+    /// Tick count when natural mob spawning last ran.
+    pub last_mob_spawn_tick: u64,
 }
 
 impl Server {
@@ -78,6 +85,154 @@ impl Server {
             weather: WeatherState::new(seed),
             ecs_world,
             sim_schedule,
+            tracked_mobs: HashMap::new(),
+            mob_positions: HashMap::new(),
+            mob_yaws: HashMap::new(),
+            last_mob_spawn_tick: 0,
+        }
+    }
+
+    /// Spawns a mob entity of the given type at `pos`.
+    pub fn spawn_mob(&mut self, entity_type: EntityType, pos: DVec3) -> u32 {
+        let net_id = self.next_entity_id;
+        self.next_entity_id += 1;
+
+        let seed = self.world.seed().wrapping_add(u64::from(net_id));
+        let bundle = match entity_type {
+            EntityType::Pig => MobBundle::new_pig(net_id, pos, seed),
+            EntityType::Cow => MobBundle::new_cow(net_id, pos, seed),
+            EntityType::Zombie | EntityType::Player => MobBundle::new_zombie(net_id, pos, seed),
+        };
+        let health = bundle.health.cur;
+        let entity = self.ecs_world.spawn(bundle).id();
+
+        self.tracked_mobs.insert(net_id, entity);
+        self.mob_positions.insert(net_id, pos);
+        self.mob_yaws.insert(net_id, 0.0);
+
+        let spawn_msg = S2cMessage::SpawnEntity(S2cSpawnEntity {
+            net_id,
+            entity_type: entity_type.to_u8(),
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            health,
+            max_health: health,
+        });
+
+        for s in self.sessions.values_mut() {
+            if s.phase == ConnectionPhase::Play {
+                let _ = s
+                    .connection
+                    .send(Lane::Control, Payload::Msg(spawn_msg.clone()));
+            }
+        }
+
+        net_id
+    }
+
+    /// Despawns a mob entity by its network ID.
+    pub fn despawn_mob(&mut self, net_id: u32) {
+        if let Some(entity) = self.tracked_mobs.remove(&net_id) {
+            self.ecs_world.despawn(entity);
+            self.mob_positions.remove(&net_id);
+            self.mob_yaws.remove(&net_id);
+
+            let despawn_msg = S2cMessage::DespawnEntity(S2cDespawnEntity {
+                net_ids: BoundedVec::new(vec![net_id]).expect("single net_id"),
+            });
+
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(despawn_msg.clone()));
+                }
+            }
+        }
+    }
+
+    /// Clears and despawns all currently active mobs.
+    pub fn clear_mobs(&mut self) {
+        let mob_ids: Vec<u32> = self.tracked_mobs.keys().copied().collect();
+        for id in mob_ids {
+            self.despawn_mob(id);
+        }
+    }
+
+    /// Spawns natural mobs around players according to light and surface rules.
+    pub fn tick_natural_spawner(&mut self) {
+        let player_count = self
+            .sessions
+            .values()
+            .filter(|s| s.phase == ConnectionPhase::Play)
+            .count();
+        if player_count == 0 {
+            return;
+        }
+
+        // Cap of 20 mobs per connected player
+        let mob_cap = player_count * 20;
+        if self.tracked_mobs.len() >= mob_cap {
+            return;
+        }
+
+        let players: Vec<(u32, DVec3)> = self
+            .sessions
+            .values()
+            .filter(|s| s.phase == ConnectionPhase::Play)
+            .map(|s| (s.entity_id, s.position))
+            .collect();
+
+        let is_night = self.time_of_day > 13_000 && self.time_of_day < 23_000;
+
+        for (idx, &(player_id, player_pos)) in players.iter().enumerate() {
+            if self.tracked_mobs.len() >= mob_cap {
+                break;
+            }
+
+            // Pseudo-random angle and distance around player
+            let hash = self
+                .tick_count
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(u64::from(player_id))
+                .wrapping_add(idx as u64);
+            let angle = ((hash & 0xFFFF) as f64 / 65535.0) * std::f64::consts::TAU;
+            let dist = 18.0 + (((hash >> 16) & 0xFFFF) as f64 / 65535.0) * 22.0;
+
+            let spawn_x = (player_pos.x + angle.cos() * dist).floor() as i32;
+            let spawn_z = (player_pos.z + angle.sin() * dist).floor() as i32;
+
+            let surface_y = self.world.get_surface_y(spawn_x, spawn_z);
+            if !(-500..=1000).contains(&surface_y) {
+                continue;
+            }
+
+            let check_pos = BlockPos::new(spawn_x, surface_y + 1, spawn_z);
+            let (sky_light, block_light) = self.world.get_light(check_pos);
+
+            let spawn_pos = DVec3::new(
+                f64::from(spawn_x) + 0.5,
+                f64::from(surface_y) + 1.0,
+                f64::from(spawn_z) + 0.5,
+            );
+
+            // Spawning conditions:
+            // Hostile (Zombie): dark caves (sky_light <= 4 && block_light <= 7) or night time (block_light <= 7)
+            // Passive (Pig/Cow): daylight (sky_light >= 10 && !is_night)
+            if (sky_light <= 4 || is_night) && block_light <= 7 {
+                self.spawn_mob(EntityType::Zombie, spawn_pos);
+            } else if sky_light >= 10 && !is_night {
+                let mob_type = if (hash >> 32) & 1 == 0 {
+                    EntityType::Pig
+                } else {
+                    EntityType::Cow
+                };
+                self.spawn_mob(mob_type, spawn_pos);
+            }
         }
     }
 
@@ -151,6 +306,7 @@ impl Server {
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
         let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
         let mut player_commands: Vec<(u64, C2sPlayerCommand)> = Vec::new();
+        let mut entity_interactions: Vec<(u64, C2sInteractEntity)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -278,6 +434,32 @@ impl Server {
                                     .connection
                                     .send(Lane::Control, Payload::Msg(bulk_msg));
 
+                                // Send active mobs to joining client
+                                for (&net_id, &entity) in &self.tracked_mobs {
+                                    if let (Some(net), Some(pos), Some(rot), Some(health)) = (
+                                        self.ecs_world.get::<NetEntity>(entity),
+                                        self.ecs_world.get::<Position>(entity),
+                                        self.ecs_world.get::<Rotation>(entity),
+                                        self.ecs_world.get::<Health>(entity),
+                                    ) {
+                                        let spawn_msg = S2cMessage::SpawnEntity(S2cSpawnEntity {
+                                            net_id,
+                                            entity_type: net.entity_type.to_u8(),
+                                            x: pos.0.x,
+                                            y: pos.0.y,
+                                            z: pos.0.z,
+                                            yaw: rot.yaw,
+                                            pitch: rot.pitch,
+                                            head_yaw: rot.head_yaw,
+                                            health: health.cur,
+                                            max_health: health.max,
+                                        });
+                                        let _ = session
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(spawn_msg));
+                                    }
+                                }
+
                                 // Force initial chunk subscriptions
                                 let _ = session.recompute_subscriptions();
                             }
@@ -305,6 +487,9 @@ impl Server {
                         C2sMessage::PlayerCommand(cmd) => {
                             player_commands.push((*session_id, cmd));
                         }
+                        C2sMessage::InteractEntity(interact) => {
+                            entity_interactions.push((*session_id, interact));
+                        }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
                         }
@@ -325,27 +510,41 @@ impl Server {
 
         // 2. Process player debug and action commands
         for (session_id, cmd) in player_commands {
-            let Some(session) = self.sessions.get(&session_id) else {
+            let Some((entity, session_pos, session_yaw)) = self
+                .sessions
+                .get(&session_id)
+                .map(|s| (s.ecs_entity, s.position, s.yaw))
+            else {
                 continue;
             };
-            let Some(entity) = session.ecs_entity else {
-                continue;
-            };
+
             match cmd.command {
                 PlayerCommandKind::Damage(amt) => {
-                    let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
-                    if let Ok((mut health, mut combat)) = query.get_mut(&mut self.ecs_world, entity)
-                    {
-                        vx_sim::apply_damage(&mut health, &mut combat, amt, DamageType::Command);
+                    if let Some(entity) = entity {
+                        let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                        if let Ok((mut health, mut combat)) =
+                            query.get_mut(&mut self.ecs_world, entity)
+                        {
+                            vx_sim::apply_damage(
+                                &mut health,
+                                &mut combat,
+                                amt,
+                                DamageType::Command,
+                            );
+                        }
                     }
                 }
                 PlayerCommandKind::Heal(amt) => {
-                    if let Some(mut health) = self.ecs_world.get_mut::<Health>(entity) {
+                    if let Some(entity) = entity
+                        && let Some(mut health) = self.ecs_world.get_mut::<Health>(entity)
+                    {
                         health.heal(amt);
                     }
                 }
                 PlayerCommandKind::SetFood(food) => {
-                    if let Some(mut hunger) = self.ecs_world.get_mut::<Hunger>(entity) {
+                    if let Some(entity) = entity
+                        && let Some(mut hunger) = self.ecs_world.get_mut::<Hunger>(entity)
+                    {
                         hunger.food = food.min(20);
                         #[allow(clippy::cast_precision_loss)]
                         let max_sat = hunger.food as f32;
@@ -353,7 +552,9 @@ impl Server {
                     }
                 }
                 PlayerCommandKind::AddXp(pts) => {
-                    if let Some(mut exp) = self.ecs_world.get_mut::<Experience>(entity) {
+                    if let Some(entity) = entity
+                        && let Some(mut exp) = self.ecs_world.get_mut::<Experience>(entity)
+                    {
                         exp.add_xp(pts);
                     }
                 }
@@ -363,6 +564,121 @@ impl Server {
                 }
                 PlayerCommandKind::TriggerLightning => {
                     self.weather.trigger_lightning();
+                }
+                PlayerCommandKind::SpawnMob { mob_type, x, y, z } => {
+                    let entity_type = EntityType::from_u8(mob_type).unwrap_or(EntityType::Zombie);
+                    let spawn_pos = if x.abs() < 0.001 && y.abs() < 0.001 && z.abs() < 0.001 {
+                        let rad = session_yaw.to_radians();
+                        let fwd = DVec3::new(-f64::from(rad.sin()), 0.0, f64::from(rad.cos()));
+                        session_pos + fwd * 3.0
+                    } else {
+                        DVec3::new(x, y, z)
+                    };
+                    self.spawn_mob(entity_type, spawn_pos);
+                }
+                PlayerCommandKind::ClearMobs => {
+                    self.clear_mobs();
+                }
+            }
+        }
+
+        // 2b. Process entity interactions (combat & interaction)
+        for (session_id, interact) in entity_interactions {
+            let Some(session_pos) = self.sessions.get(&session_id).map(|s| s.position) else {
+                continue;
+            };
+            let Some(&target_entity) = self.tracked_mobs.get(&interact.target_net_id) else {
+                continue;
+            };
+
+            let Some(target_pos) = self.ecs_world.get::<Position>(target_entity).map(|p| p.0)
+            else {
+                continue;
+            };
+
+            // Reach validation: 4.5 blocks max
+            let dist = session_pos.distance(target_pos);
+            if dist > 4.5 {
+                continue;
+            }
+
+            if interact.action == 0 {
+                // Action 0 = Attack
+                let mut is_dead = false;
+
+                let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                if let Ok((mut health, mut tracker)) =
+                    query.get_mut(&mut self.ecs_world, target_entity)
+                {
+                    vx_sim::apply_damage(&mut health, &mut tracker, 4.0, DamageType::Attack);
+                    if !health.is_alive() {
+                        is_dead = true;
+                    }
+                }
+
+                if let Some(mut hurt_time) = self.ecs_world.get_mut::<HurtTime>(target_entity) {
+                    hurt_time.0 = 10;
+                }
+
+                // Apply knockback away from player
+                if let Some(mut vel) = self.ecs_world.get_mut::<Velocity>(target_entity) {
+                    let diff = target_pos - session_pos;
+                    let horiz_dist = (diff.x * diff.x + diff.z * diff.z).sqrt().max(0.1);
+                    let kb_dir = glam::Vec3::new(
+                        (diff.x / horiz_dist) as f32,
+                        0.35,
+                        (diff.z / horiz_dist) as f32,
+                    );
+                    vel.0 += kb_dir * 0.4;
+                }
+
+                // If passive mob, enter fleeing state
+                if let Some(mut mob) = self.ecs_world.get_mut::<vx_sim::Mob>(target_entity)
+                    && mob.kind == vx_sim::MobKind::Passive
+                {
+                    mob.ai_state = vx_sim::AiState::Fleeing {
+                        away_from: session_pos,
+                        timer: 60,
+                    };
+                }
+
+                // Broadcast hurt status (status = 2)
+                let hurt_msg = S2cMessage::EntityStatus(S2cEntityStatus {
+                    net_id: interact.target_net_id,
+                    status: 2,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(hurt_msg.clone()));
+                    }
+                }
+
+                if is_dead {
+                    // Broadcast death status (status = 3)
+                    let death_msg = S2cMessage::EntityStatus(S2cEntityStatus {
+                        net_id: interact.target_net_id,
+                        status: 3,
+                    });
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(death_msg.clone()));
+                        }
+                    }
+
+                    // Award experience to attacking player
+                    if let Some(player_ecs) =
+                        self.sessions.get(&session_id).and_then(|s| s.ecs_entity)
+                        && let Some(mut xp) = self.ecs_world.get_mut::<Experience>(player_ecs)
+                    {
+                        xp.add_xp(5);
+                    }
+
+                    // Despawn mob
+                    self.despawn_mob(interact.target_net_id);
                 }
             }
         }
@@ -516,7 +832,39 @@ impl Server {
             }
         }
 
+        let player_pos_list: Vec<(u32, DVec3)> = self
+            .sessions
+            .values()
+            .filter(|s| s.phase == ConnectionPhase::Play)
+            .map(|s| (s.entity_id, s.position))
+            .collect();
+        self.ecs_world
+            .insert_resource(PlayerPositions(player_pos_list));
+
         self.sim_schedule.run(&mut self.ecs_world);
+
+        // Terrain floor clamp for mobs
+        let mut mob_query = self
+            .ecs_world
+            .query::<(&NetEntity, &mut Position, &mut Velocity)>();
+        let mut fallen_mobs = Vec::new();
+        for (net, mut pos, mut vel) in mob_query.iter_mut(&mut self.ecs_world) {
+            #[allow(clippy::cast_possible_truncation)]
+            let surface_y = self
+                .world
+                .get_surface_y(pos.0.x.floor() as i32, pos.0.z.floor() as i32);
+            let floor_y = f64::from(surface_y) + 1.0;
+            if pos.0.y < floor_y {
+                pos.0.y = floor_y;
+                vel.0.y = 0.0;
+            }
+            if pos.0.y < -100.0 {
+                fallen_mobs.push(net.net_id);
+            }
+        }
+        for id in fallen_mobs {
+            self.despawn_mob(id);
+        }
 
         for session in self.sessions.values_mut() {
             if session.phase != ConnectionPhase::Play {
@@ -667,7 +1015,77 @@ impl Server {
             }
         }
 
-        // 4. Periodic autosave
+        // 7. Natural mob spawning (runs every 100 ticks = 5 seconds)
+        if self.tick_count.saturating_sub(self.last_mob_spawn_tick) >= 100 {
+            self.last_mob_spawn_tick = self.tick_count;
+            self.tick_natural_spawner();
+        }
+
+        // 8. Distance despawning (> 72 blocks from all players)
+        let active_players: Vec<DVec3> = self
+            .sessions
+            .values()
+            .filter(|s| s.phase == ConnectionPhase::Play)
+            .map(|s| s.position)
+            .collect();
+
+        if !active_players.is_empty() {
+            let mut to_despawn = Vec::new();
+            for (&net_id, &entity) in &self.tracked_mobs {
+                if let Some(pos) = self.ecs_world.get::<Position>(entity) {
+                    let min_dist_sq = active_players
+                        .iter()
+                        .map(|p| p.distance_squared(pos.0))
+                        .fold(f64::INFINITY, f64::min);
+                    if min_dist_sq > 72.0 * 72.0 {
+                        to_despawn.push(net_id);
+                    }
+                }
+            }
+            for id in to_despawn {
+                self.despawn_mob(id);
+            }
+        }
+
+        // 9. Broadcast mob movement deltas
+        for (&net_id, &entity) in &self.tracked_mobs {
+            if let (Some(pos), Some(rot)) = (
+                self.ecs_world.get::<Position>(entity),
+                self.ecs_world.get::<Rotation>(entity),
+            ) {
+                let prev_pos = self.mob_positions.get(&net_id).copied().unwrap_or(pos.0);
+                let prev_yaw = self.mob_yaws.get(&net_id).copied().unwrap_or(rot.yaw);
+
+                let moved = pos.0.distance_squared(prev_pos) > 0.0001;
+                let rotated = (rot.yaw - prev_yaw).abs() > 0.5;
+
+                if moved || rotated {
+                    self.mob_positions.insert(net_id, pos.0);
+                    self.mob_yaws.insert(net_id, rot.yaw);
+
+                    let move_msg = S2cMessage::EntityMove(S2cEntityMove {
+                        net_id,
+                        x: pos.0.x,
+                        y: pos.0.y,
+                        z: pos.0.z,
+                        yaw: rot.yaw,
+                        pitch: rot.pitch,
+                        head_yaw: rot.head_yaw,
+                        on_ground: true,
+                    });
+
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(move_msg.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 10. Periodic autosave
         if self.config.autosave_interval_ticks > 0
             && self
                 .tick_count

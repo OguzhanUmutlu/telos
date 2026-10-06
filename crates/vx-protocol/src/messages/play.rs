@@ -1425,6 +1425,19 @@ pub enum PlayerCommandKind {
     SetWeather(u8),
     /// Trigger immediate lightning flash.
     TriggerLightning,
+    /// Spawn a mob of type at world coordinates (for debugging / admin).
+    SpawnMob {
+        /// Entity type (1 = Zombie, 2 = Pig, 3 = Cow).
+        mob_type: u8,
+        /// World X coordinate.
+        x: f64,
+        /// World Y coordinate.
+        y: f64,
+        /// World Z coordinate.
+        z: f64,
+    },
+    /// Clear all active mobs.
+    ClearMobs,
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1477,6 +1490,263 @@ impl S2cUpdateWeather {
     }
 }
 
+/// Server spawns a new living entity in the client's simulation area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cSpawnEntity {
+    /// Network ID of the spawned entity.
+    pub net_id: u32,
+    /// Entity type category (1 = Zombie, 2 = Pig, 3 = Cow).
+    pub entity_type: u8,
+    /// World position X.
+    pub x: f64,
+    /// World position Y.
+    pub y: f64,
+    /// World position Z.
+    pub z: f64,
+    /// Body yaw in degrees.
+    pub yaw: f32,
+    /// Pitch angle in degrees.
+    pub pitch: f32,
+    /// Head yaw in degrees.
+    pub head_yaw: f32,
+    /// Current health points.
+    pub health: f32,
+    /// Maximum health points.
+    pub max_health: f32,
+}
+
+impl S2cSpawnEntity {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.net_id, buf);
+        buf.push(self.entity_type);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+        buf.extend_from_slice(&self.head_yaw.to_le_bytes());
+        buf.extend_from_slice(&self.health.to_le_bytes());
+        buf.extend_from_slice(&self.max_health.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_id = decode_varint(cursor)?;
+        if cursor.len() < 45 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let entity_type = cursor[0];
+        let x = f64::from_le_bytes(cursor[1..9].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[9..17].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[17..25].try_into().unwrap());
+        let yaw = f32::from_le_bytes(cursor[25..29].try_into().unwrap());
+        let pitch = f32::from_le_bytes(cursor[29..33].try_into().unwrap());
+        let head_yaw = f32::from_le_bytes(cursor[33..37].try_into().unwrap());
+        let health = f32::from_le_bytes(cursor[37..41].try_into().unwrap());
+        let max_health = f32::from_le_bytes(cursor[41..45].try_into().unwrap());
+        *cursor = &cursor[45..];
+
+        if entity_type > 10 {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_entity.entity_type",
+                reason: "Entity type exceeds allowable range".to_string(),
+            });
+        }
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_entity.pos",
+                reason: "Entity coordinates must be finite".to_string(),
+            });
+        }
+        if !yaw.is_finite() || !pitch.is_finite() || !head_yaw.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_entity.rot",
+                reason: "Entity rotation angles must be finite".to_string(),
+            });
+        }
+        if !health.is_finite() || !max_health.is_finite() || health < 0.0 || max_health <= 0.0 {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_entity.health",
+                reason: "Entity health must be positive and finite".to_string(),
+            });
+        }
+
+        Ok(Self {
+            net_id,
+            entity_type,
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            head_yaw,
+            health,
+            max_health,
+        })
+    }
+}
+
+/// Server despawns one or more entities from the client's simulation area.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cDespawnEntity {
+    /// List of entity network IDs to remove (max 64 per packet).
+    pub net_ids: BoundedVec<u32, 64>,
+}
+
+impl S2cDespawnEntity {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.net_ids.encode_with(buf, |id, b| encode_varint(*id, b));
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_ids = BoundedVec::<u32, 64>::decode_with(cursor, decode_varint)?;
+        Ok(Self { net_ids })
+    }
+}
+
+/// Server replicates movement and rotation update for an active entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cEntityMove {
+    /// Network ID of the moving entity.
+    pub net_id: u32,
+    /// World position X.
+    pub x: f64,
+    /// World position Y.
+    pub y: f64,
+    /// World position Z.
+    pub z: f64,
+    /// Body yaw in degrees.
+    pub yaw: f32,
+    /// Pitch angle in degrees.
+    pub pitch: f32,
+    /// Head yaw in degrees.
+    pub head_yaw: f32,
+    /// Ground contact flag.
+    pub on_ground: bool,
+}
+
+impl S2cEntityMove {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.net_id, buf);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+        buf.extend_from_slice(&self.head_yaw.to_le_bytes());
+        buf.push(u8::from(self.on_ground));
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_id = decode_varint(cursor)?;
+        if cursor.len() < 37 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f64::from_le_bytes(cursor[..8].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        let yaw = f32::from_le_bytes(cursor[24..28].try_into().unwrap());
+        let pitch = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
+        let head_yaw = f32::from_le_bytes(cursor[32..36].try_into().unwrap());
+        let on_ground = cursor[36] != 0;
+        *cursor = &cursor[37..];
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "entity_move.pos",
+                reason: "Coordinates must be finite".to_string(),
+            });
+        }
+        if !yaw.is_finite() || !pitch.is_finite() || !head_yaw.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "entity_move.rot",
+                reason: "Rotations must be finite".to_string(),
+            });
+        }
+
+        Ok(Self {
+            net_id,
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            head_yaw,
+            on_ground,
+        })
+    }
+}
+
+/// Server broadcasts entity event or animation status (hurt, death).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cEntityStatus {
+    /// Network ID of the affected entity.
+    pub net_id: u32,
+    /// Event status code (2 = hurt red flash, 3 = death).
+    pub status: u8,
+}
+
+impl S2cEntityStatus {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.net_id, buf);
+        buf.push(self.status);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_id = decode_varint(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let status = cursor[0];
+        *cursor = &cursor[1..];
+        Ok(Self { net_id, status })
+    }
+}
+
+/// Client attacks or interacts with an entity in range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C2sInteractEntity {
+    /// Network ID of the target entity.
+    pub target_net_id: u32,
+    /// Action type (0 = Attack, 1 = Interact).
+    pub action: u8,
+}
+
+impl C2sInteractEntity {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.target_net_id, buf);
+        buf.push(self.action);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let target_net_id = decode_varint(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let action = cursor[0];
+        *cursor = &cursor[1..];
+        if action > 1 {
+            return Err(ProtocolError::InvalidValue {
+                field: "interact_entity.action",
+                reason: "Action must be 0 (Attack) or 1 (Interact)".to_string(),
+            });
+        }
+        Ok(Self {
+            target_net_id,
+            action,
+        })
+    }
+}
+
 /// Client sends an interactive player command or debug action to server.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct C2sPlayerCommand {
@@ -1511,10 +1781,21 @@ impl C2sPlayerCommand {
             PlayerCommandKind::TriggerLightning => {
                 buf.push(5);
             }
+            PlayerCommandKind::SpawnMob { mob_type, x, y, z } => {
+                buf.push(6);
+                buf.push(mob_type);
+                buf.extend_from_slice(&x.to_le_bytes());
+                buf.extend_from_slice(&y.to_le_bytes());
+                buf.extend_from_slice(&z.to_le_bytes());
+            }
+            PlayerCommandKind::ClearMobs => {
+                buf.push(7);
+            }
         }
     }
 
     /// Decodes from wire buffer.
+    #[allow(clippy::too_many_lines)]
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
         if cursor.is_empty() {
             return Err(ProtocolError::UnexpectedEof);
@@ -1586,6 +1867,30 @@ impl C2sPlayerCommand {
                 PlayerCommandKind::SetWeather(w)
             }
             5 => PlayerCommandKind::TriggerLightning,
+            6 => {
+                if cursor.len() < 25 {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let mob_type = cursor[0];
+                let x = f64::from_le_bytes(cursor[1..9].try_into().unwrap());
+                let y = f64::from_le_bytes(cursor[9..17].try_into().unwrap());
+                let z = f64::from_le_bytes(cursor[17..25].try_into().unwrap());
+                *cursor = &cursor[25..];
+                if mob_type == 0 || mob_type > 3 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.spawn_mob.mob_type",
+                        reason: "Mob type must be 1..=3".to_string(),
+                    });
+                }
+                if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.spawn_mob.pos",
+                        reason: "Coordinates must be finite".to_string(),
+                    });
+                }
+                PlayerCommandKind::SpawnMob { mob_type, x, y, z }
+            }
+            7 => PlayerCommandKind::ClearMobs,
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
                     enum_name: "PlayerCommandKind",
@@ -1687,5 +1992,77 @@ mod tests {
             S2cUpdateWeather::decode(&mut cursor).expect("failed to decode S2cUpdateWeather");
         assert_eq!(msg, decoded);
         assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_entity_codec_round_trip() {
+        let spawn = S2cSpawnEntity {
+            net_id: 42,
+            entity_type: 1,
+            x: 12.5,
+            y: 64.0,
+            z: -18.25,
+            yaw: 45.0,
+            pitch: -15.0,
+            head_yaw: 50.0,
+            health: 20.0,
+            max_health: 20.0,
+        };
+        let mut buf = Vec::new();
+        spawn.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_spawn =
+            S2cSpawnEntity::decode(&mut cursor).expect("failed to decode S2cSpawnEntity");
+        assert_eq!(spawn, decoded_spawn);
+
+        let despawn_ids = BoundedVec::new(vec![42, 43]).unwrap();
+        let despawn = S2cDespawnEntity {
+            net_ids: despawn_ids,
+        };
+        let mut buf = Vec::new();
+        despawn.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_despawn =
+            S2cDespawnEntity::decode(&mut cursor).expect("failed to decode S2cDespawnEntity");
+        assert_eq!(despawn, decoded_despawn);
+
+        let emove = S2cEntityMove {
+            net_id: 42,
+            x: 13.0,
+            y: 64.0,
+            z: -18.0,
+            yaw: 50.0,
+            pitch: 0.0,
+            head_yaw: 55.0,
+            on_ground: true,
+        };
+        let mut buf = Vec::new();
+        emove.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_move =
+            S2cEntityMove::decode(&mut cursor).expect("failed to decode S2cEntityMove");
+        assert_eq!(emove, decoded_move);
+
+        let status = S2cEntityStatus {
+            net_id: 42,
+            status: 2,
+        };
+        let mut buf = Vec::new();
+        status.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_status =
+            S2cEntityStatus::decode(&mut cursor).expect("failed to decode S2cEntityStatus");
+        assert_eq!(status, decoded_status);
+
+        let interact = C2sInteractEntity {
+            target_net_id: 42,
+            action: 0,
+        };
+        let mut buf = Vec::new();
+        interact.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_interact =
+            C2sInteractEntity::decode(&mut cursor).expect("failed to decode C2sInteractEntity");
+        assert_eq!(interact, decoded_interact);
     }
 }

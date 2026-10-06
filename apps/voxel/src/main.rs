@@ -1,6 +1,7 @@
 //! Client application executable for the voxel engine.
 
 pub mod camera;
+pub mod entity_client;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use camera::{Camera, FlyController};
 use clap::Parser;
+use entity_client::{ClientEntityStore, EntityPushConstants, EntityVertexGpu};
 use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
@@ -27,8 +29,8 @@ use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition,
-    ChunkPayload, ConnectionPhase, PlayerCommandKind, S2cMessage,
+    C2sInteractEntity, C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand,
+    C2sPlayerPosition, ChunkPayload, ConnectionPhase, PlayerCommandKind, S2cMessage,
 };
 use vx_ui::{
     BitmapFont, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale, render_hud,
@@ -1091,6 +1093,19 @@ struct App {
     weather_buffer: Option<GpuBuffer>,
     weather_particles_count: u32,
     world_seed: u64,
+
+    // Entities & Mob Rendering
+    entity_store: ClientEntityStore,
+    entity_pipeline: Option<GraphicsPipeline>,
+    entity_vert_shader: Option<ShaderModule>,
+    entity_frag_shader: Option<ShaderModule>,
+    entity_textures: Option<GpuTextureArray>,
+    entity_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    entity_descriptor_pool: Option<vk::DescriptorPool>,
+    entity_descriptor_set: Option<vk::DescriptorSet>,
+    entity_buffer: Option<GpuBuffer>,
+    entity_vertex_count: u32,
+    mob_spawn_type_cycle: u8,
 }
 
 impl App {
@@ -1272,6 +1287,18 @@ impl App {
             weather_buffer: None,
             weather_particles_count: 0,
             world_seed: seed,
+
+            entity_store: ClientEntityStore::new(),
+            entity_pipeline: None,
+            entity_vert_shader: None,
+            entity_frag_shader: None,
+            entity_textures: None,
+            entity_descriptor_set_layout: None,
+            entity_descriptor_pool: None,
+            entity_descriptor_set: None,
+            entity_buffer: None,
+            entity_vertex_count: 0,
+            mob_spawn_type_cycle: 1,
         }
     }
 
@@ -1536,6 +1563,18 @@ impl App {
                         if weather.lightning_flash > 0 {
                             self.weather_lightning_flash = 1.0;
                         }
+                    }
+                    S2cMessage::SpawnEntity(spawn) => {
+                        self.entity_store.on_spawn(spawn);
+                    }
+                    S2cMessage::DespawnEntity(despawn) => {
+                        self.entity_store.on_despawn(despawn.net_ids.as_slice());
+                    }
+                    S2cMessage::EntityMove(m) => {
+                        self.entity_store.on_move(m);
+                    }
+                    S2cMessage::EntityStatus(s) => {
+                        self.entity_store.on_status(s.net_id, s.status);
                     }
                     _ => {}
                 },
@@ -2140,6 +2179,51 @@ impl App {
         }
 
         self.generate_weather_particles(dt);
+
+        // Entity simulation update & mesh generation (Phase 21)
+        self.entity_store.update(dt);
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.hud_state.entities_rendered = self.entity_store.count() as u32;
+        }
+
+        let mut entity_vertices = Vec::new();
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            let get_light = |pos: glam::DVec3| -> (u8, u8) {
+                let bpos = BlockPos::new(
+                    pos.x.floor() as i32,
+                    pos.y.floor() as i32,
+                    pos.z.floor() as i32,
+                );
+                let (cpos, lpos) = vx_voxel::coords::split_block_pos(bpos);
+                if let Some(snap) = self.chunks.get(&cpos)
+                    && let Some(light) = snap.light()
+                {
+                    (
+                        light.get_sky(lpos.as_usize()),
+                        light.get_block(lpos.as_usize()),
+                    )
+                } else {
+                    (15, 0)
+                }
+            };
+            self.entity_store
+                .build_mesh(get_light, &mut entity_vertices);
+        }
+
+        if entity_vertices.len() > 16384 {
+            entity_vertices.truncate(16384);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.entity_vertex_count = entity_vertices.len() as u32;
+        }
+        if self.entity_vertex_count > 0
+            && let Some(buf) = &mut self.entity_buffer
+        {
+            let _ = buf.write_bytes(bytemuck::cast_slice(&entity_vertices));
+        }
 
         // Voxel DDA Raycast for block aiming & selection
         let origin = self.camera.position;
@@ -3324,6 +3408,38 @@ impl App {
                     MAX_CHUNK_CANDIDATES as u32,
                     16,
                 );
+            }
+
+            // Pass 14: Dynamic Entities (Mobs: Zombie, Pig, Cow)
+            if self.entity_vertex_count > 0
+                && let (Some(entity_pipe), Some(entity_set), Some(entity_buf)) = (
+                    &self.entity_pipeline,
+                    self.entity_descriptor_set,
+                    &self.entity_buffer,
+                )
+            {
+                let entity_pc = EntityPushConstants {
+                    view_proj,
+                    vertex_buffer_address: entity_buf.device_address(),
+                    pad: [0, 0],
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, entity_pipe.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    entity_pipe.layout(),
+                    0,
+                    &[entity_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    entity_pipe.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&entity_pc),
+                );
+                device.cmd_draw(cmd, self.entity_vertex_count, 1, 0, 0);
             }
 
             // Pass 17: Atmospheric Precipitation Particles (Rain streaks & fluttering Snow)
@@ -4599,6 +4715,187 @@ impl ApplicationHandler for App {
             }
         };
 
+        // ---------------------------------------------------------------------
+        // Initialize Dynamic Entity & Mob Rendering Resources (Phase 21)
+        // ---------------------------------------------------------------------
+        let entity_textures = match load_and_upload_entity_textures(&gpu_context) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::error!("Failed to load entity textures: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let entity_binding_tex = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let entity_binding_lightmap = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let entity_bindings = [entity_binding_tex, entity_binding_lightmap];
+        let entity_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&entity_bindings);
+        let entity_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&entity_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create entity descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let entity_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(2);
+        let entity_pool_sizes = [entity_pool_size];
+        let entity_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&entity_pool_sizes);
+        let entity_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&entity_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create entity descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let entity_set_layouts = [entity_descriptor_set_layout];
+        let entity_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(entity_descriptor_pool)
+            .set_layouts(&entity_set_layouts);
+        let entity_descriptor_set = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&entity_alloc_info)
+            {
+                Ok(sets) => sets[0],
+                Err(err) => {
+                    tracing::error!("Failed to allocate entity descriptor set: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let entity_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(entity_textures.sampler())
+            .image_view(entity_textures.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let entity_lightmap_info = [vk::DescriptorImageInfo::default()
+            .sampler(lightmap_texture.sampler())
+            .image_view(lightmap_texture.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let entity_descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(entity_descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&entity_image_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(entity_descriptor_set)
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&entity_lightmap_info),
+        ];
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&entity_descriptor_writes, &[]);
+        }
+
+        let entity_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/entity.vert.spv"));
+        let entity_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/entity.frag.spv"));
+        let entity_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), entity_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create entity vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let entity_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), entity_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create entity fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let entity_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<EntityPushConstants>() as u32);
+
+        let entity_pipeline = match GraphicsPipeline::create_dynamic(
+            gpu_context.device().raw(),
+            entity_vert_module.raw(),
+            entity_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            vk::FrontFace::COUNTER_CLOCKWISE,
+            &[entity_descriptor_set_layout],
+            &[entity_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create entity graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let entity_buffer = match GpuBuffer::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            "entity_vertex_buffer",
+            (16384 * size_of::<EntityVertexGpu>()) as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        ) {
+            Ok(buf) => buf,
+            Err(err) => {
+                tracing::error!("Failed to allocate entity vertex buffer: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        self.entity_textures = Some(entity_textures);
+        self.entity_descriptor_set_layout = Some(entity_descriptor_set_layout);
+        self.entity_descriptor_pool = Some(entity_descriptor_pool);
+        self.entity_descriptor_set = Some(entity_descriptor_set);
+        self.entity_vert_shader = Some(entity_vert_module);
+        self.entity_frag_shader = Some(entity_frag_module);
+        self.entity_pipeline = Some(entity_pipeline);
+        self.entity_buffer = Some(entity_buffer);
+
         self.celestial_texture = Some(celestial_texture);
         self.sky_descriptor_set_layout = Some(sky_descriptor_set_layout);
         self.sky_descriptor_pool = Some(sky_descriptor_pool);
@@ -4761,6 +5058,28 @@ impl ApplicationHandler for App {
                 if self.controller.mouse_captured {
                     match button {
                         MouseButton::Left => {
+                            // Check combat raycast against entities first
+                            let origin = self.camera.position;
+                            let forward = self.camera.forward();
+                            if let Some((target_net_id, _dist)) = self.entity_store.raycast(
+                                glam::DVec3::new(
+                                    f64::from(origin.x),
+                                    f64::from(origin.y),
+                                    f64::from(origin.z),
+                                ),
+                                forward,
+                                3.5,
+                            ) {
+                                let interact_msg = C2sMessage::InteractEntity(C2sInteractEntity {
+                                    target_net_id,
+                                    action: 1, // Attack
+                                });
+                                let _ = self
+                                    .client_conn
+                                    .send(Lane::Control, Payload::Msg(interact_msg));
+                                return;
+                            }
+
                             if let Some(hit) = self.targeted_block {
                                 self.action_sequence += 1;
                                 let msg = C2sMessage::BlockAction(C2sBlockAction {
@@ -4927,6 +5246,38 @@ impl ApplicationHandler for App {
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                         info!("Sent trigger lightning command");
+                    }
+                    KeyCode::F9 if pressed => {
+                        let mob_type = self.mob_spawn_type_cycle;
+                        self.mob_spawn_type_cycle = match self.mob_spawn_type_cycle {
+                            1 => 2, // Zombie -> Pig
+                            2 => 3, // Pig -> Cow
+                            _ => 1, // Cow -> Zombie
+                        };
+                        let origin = self.camera.position;
+                        let forward = self.camera.forward();
+                        let spawn_pos = origin + forward * 3.0;
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::SpawnMob {
+                                mob_type,
+                                x: f64::from(spawn_pos.x),
+                                y: f64::from(spawn_pos.y),
+                                z: f64::from(spawn_pos.z),
+                            },
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!(
+                            mob_type,
+                            next_cycle = self.mob_spawn_type_cycle,
+                            "Sent spawn mob command (F9)"
+                        );
+                    }
+                    KeyCode::F10 if pressed => {
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::ClearMobs,
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!("Sent clear mobs command (F10)");
                     }
                     KeyCode::KeyK if pressed => {
                         let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
@@ -5246,6 +5597,32 @@ impl ApplicationHandler for App {
                 tex.destroy(device, allocator);
             }
             if let Some(mut buf) = self.weather_buffer.take() {
+                buf.destroy(device, allocator);
+            }
+
+            if let Some(mut pipeline) = self.entity_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.entity_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.entity_frag_shader.take() {
+                frag.destroy(device);
+            }
+            if let Some(pool) = self.entity_descriptor_pool.take() {
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+            if let Some(layout) = self.entity_descriptor_set_layout.take() {
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+            if let Some(mut tex) = self.entity_textures.take() {
+                tex.destroy(device, allocator);
+            }
+            if let Some(mut buf) = self.entity_buffer.take() {
                 buf.destroy(device, allocator);
             }
         }
@@ -5910,6 +6287,122 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
     )?;
 
     info!("Weather precipitation texture array loaded (2 layers: rain, snow, 64x256)");
+
+    Ok(texture_array)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    const ENTITY_RES: u32 = 64;
+    const LAYER_COUNT: u32 = 3;
+
+    let mut pixel_data = vec![0u8; (ENTITY_RES * ENTITY_RES * 4 * LAYER_COUNT) as usize];
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+        let layer_offset = layer * (ENTITY_RES * ENTITY_RES * 4) as usize;
+        let w = img.width.min(ENTITY_RES);
+        let h = img.height.min(ENTITY_RES);
+        for y in 0..h {
+            let src_start = ((y * img.width) * 4) as usize;
+            let src_end = src_start + (w * 4) as usize;
+            let dst_start = layer_offset + ((y * ENTITY_RES) * 4) as usize;
+            dest[dst_start..dst_start + (w * 4) as usize]
+                .copy_from_slice(&img.data[src_start..src_end]);
+        }
+    };
+
+    // Layer 0: Zombie
+    let zombie_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/entity/zombie/zombie.png",
+    );
+    let zombie_img = vx_assets::RgbaImage::from_file_exact(zombie_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                if y < 32 {
+                    // Head & torso
+                    img.data[idx] = 60;
+                    img.data[idx + 1] = 140;
+                    img.data[idx + 2] = 60;
+                    img.data[idx + 3] = 255;
+                } else {
+                    // Legs / pants
+                    img.data[idx] = 40;
+                    img.data[idx + 1] = 50;
+                    img.data[idx + 2] = 160;
+                    img.data[idx + 3] = 255;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 0, &zombie_img);
+
+    // Layer 1: Pig
+    let pig_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/entity/pig/pig_temperate.png",
+    );
+    let pig_img = vx_assets::RgbaImage::from_file_exact(pig_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                img.data[idx] = 240;
+                img.data[idx + 1] = 160;
+                img.data[idx + 2] = 160;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 1, &pig_img);
+
+    // Layer 2: Cow
+    let cow_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/entity/cow/cow_temperate.png",
+    );
+    let cow_img = vx_assets::RgbaImage::from_file_exact(cow_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                let is_spot = ((x / 8) + (y / 8)) % 2 == 0;
+                if is_spot {
+                    img.data[idx] = 80;
+                    img.data[idx + 1] = 50;
+                    img.data[idx + 2] = 40;
+                    img.data[idx + 3] = 255;
+                } else {
+                    img.data[idx] = 230;
+                    img.data[idx + 1] = 230;
+                    img.data[idx + 2] = 230;
+                    img.data[idx + 3] = 255;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 2, &cow_img);
+
+    let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
+        .map(|layer| TextureMipRegion {
+            buffer_offset: u64::from(layer * ENTITY_RES * ENTITY_RES * 4),
+            layer,
+            mip_level: 0,
+            width: ENTITY_RES,
+            height: ENTITY_RES,
+        })
+        .collect();
+
+    let texture_array =
+        gpu_context.create_texture_array(ENTITY_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
+
+    info!("Entity texture array loaded (3 layers: Zombie, Pig, Cow, 64x64)");
 
     Ok(texture_array)
 }
