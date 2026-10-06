@@ -6523,13 +6523,38 @@ impl ApplicationHandler for App {
     }
 }
 
+fn mount_asset_roots(stack: &mut ResourcePackStack) {
+    if let Ok(dir) = std::env::var("VOXEL_ASSETS_DIR") {
+        stack.add_root(dir);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        stack.add_root(exe_dir.join("assets"));
+        stack.add_root(exe_dir.join("assets/voxel"));
+        stack.add_root(exe_dir.join("../share/voxel/assets"));
+        stack.add_root(exe_dir.join("../dev-assets/faithful-32x"));
+        stack.add_root(exe_dir.join("../dev-assets/classic-pack"));
+    }
+    stack.add_root("/usr/share/voxel/assets");
+    stack.add_root("/usr/local/share/voxel/assets");
+    if let Ok(home) = std::env::var("HOME") {
+        stack.add_root(format!("{home}/.local/share/voxel/assets"));
+        stack.add_root(format!("{home}/Projects/voxel/dev-assets/faithful-32x"));
+        stack.add_root(format!("{home}/Projects/voxel/dev-assets/classic-pack"));
+        stack.add_root(format!("{home}/Projects/voxel/assets/voxel"));
+    }
+    stack.add_root("dev-assets/faithful-32x");
+    stack.add_root("dev-assets/classic-pack");
+    stack.add_root("assets/voxel");
+}
+
+#[allow(clippy::too_many_lines)]
 fn load_and_upload_textures(
     gpu_context: &GpuContext,
 ) -> Result<(GpuTextureArray, AnimatedTextureInfo)> {
     let mut stack = ResourcePackStack::new();
-    stack.add_root("dev-assets/faithful-32x");
-    stack.add_root("dev-assets/classic-pack");
-    stack.add_root("assets/voxel");
+    mount_asset_roots(&mut stack);
 
     let is_faithful = stack
         .find_block_texture("stone")
@@ -6546,35 +6571,69 @@ fn load_and_upload_textures(
         "Loading and baking block textures into 2D texture array"
     );
 
+    let load_texture_with_fallback = |name: &str| -> vx_assets::RgbaImage {
+        stack.load_block_texture(name).unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(target_res, target_res);
+            let color = match name {
+                "stone" | "bedrock" => [128, 128, 128, 255],
+                "dirt" | "grass_block_side" => [134, 96, 67, 255],
+                "grass_block_top" => [124, 189, 81, 255],
+                "sand" => [219, 211, 160, 255],
+                "oak_planks" => [162, 130, 78, 255],
+                "oak_leaves" => [60, 140, 40, 255],
+                "glass" => [200, 220, 255, 128],
+                "poppy" => [220, 40, 40, 255],
+                "dandelion" => [255, 230, 40, 255],
+                "torch" => [255, 200, 50, 255],
+                "short_grass" | "tall_grass" | "fern" => [100, 180, 60, 255],
+                "dead_bush" => [140, 110, 70, 255],
+                _ => [255, 0, 255, 255],
+            };
+            for pixel in img.data.as_chunks_mut::<4>().0 {
+                *pixel = color;
+            }
+            img
+        })
+    };
+
     let mut builder = TextureArrayBuilder::new(target_res);
-    builder.insert("stone", stack.load_block_texture("stone")?);
-    builder.insert("dirt", stack.load_block_texture("dirt")?);
+    builder.insert("stone", load_texture_with_fallback("stone"));
+    builder.insert("dirt", load_texture_with_fallback("dirt"));
     builder.insert(
         "grass_block_top",
-        stack.load_block_texture("grass_block_top")?,
+        load_texture_with_fallback("grass_block_top"),
     );
     builder.insert(
         "grass_block_side",
-        stack.load_block_texture("grass_block_side")?,
+        load_texture_with_fallback("grass_block_side"),
     );
-    builder.insert("bedrock", stack.load_block_texture("bedrock")?);
-    builder.insert("sand", stack.load_block_texture("sand")?);
-    builder.insert("oak_planks", stack.load_block_texture("oak_planks")?);
-    builder.insert("oak_leaves", stack.load_block_texture("oak_leaves")?);
-    builder.insert("glass", stack.load_block_texture("glass")?);
-    builder.insert("poppy", stack.load_block_texture("poppy")?);
-    builder.insert("dandelion", stack.load_block_texture("dandelion")?);
-    builder.insert("torch", stack.load_block_texture("torch")?);
+    builder.insert("bedrock", load_texture_with_fallback("bedrock"));
+    builder.insert("sand", load_texture_with_fallback("sand"));
+    builder.insert("oak_planks", load_texture_with_fallback("oak_planks"));
+    builder.insert("oak_leaves", load_texture_with_fallback("oak_leaves"));
+    builder.insert("glass", load_texture_with_fallback("glass"));
+    builder.insert("poppy", load_texture_with_fallback("poppy"));
+    builder.insert("dandelion", load_texture_with_fallback("dandelion"));
+    builder.insert("torch", load_texture_with_fallback("torch"));
     builder.insert(
         "short_grass",
         stack
             .load_block_texture("short_grass")
-            .or_else(|_| stack.load_block_texture("tall_grass"))?,
+            .or_else(|_| stack.load_block_texture("tall_grass"))
+            .unwrap_or_else(|_| load_texture_with_fallback("short_grass")),
     );
-    builder.insert("fern", stack.load_block_texture("fern")?);
-    builder.insert("dead_bush", stack.load_block_texture("dead_bush")?);
+    builder.insert("fern", load_texture_with_fallback("fern"));
+    builder.insert("dead_bush", load_texture_with_fallback("dead_bush"));
 
-    let water_frames = stack.load_animated_block_texture("water_still")?;
+    let water_frames = stack
+        .load_animated_block_texture("water_still")
+        .unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(target_res, target_res);
+            for pixel in img.data.as_chunks_mut::<4>().0 {
+                *pixel = [40, 80, 200, 200];
+            }
+            vec![img]
+        });
     let water_anim = builder.insert_animated("water_still", water_frames, 2);
 
     let baked = builder.bake();
@@ -6613,9 +6672,7 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
     const UI_RES: u32 = 256;
 
     let mut stack = ResourcePackStack::new();
-    stack.add_root("dev-assets/faithful-32x");
-    stack.add_root("dev-assets/classic-pack");
-    stack.add_root("assets/voxel");
+    mount_asset_roots(&mut stack);
 
     let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 7) as usize];
 
@@ -7018,27 +7075,30 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
         }
     };
 
+    let mut stack = ResourcePackStack::new();
+    mount_asset_roots(&mut stack);
+
     // Layer 0: Sun
-    let sun_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/environment/celestial/sun.png",
-    );
-    let sun_img = vx_assets::RgbaImage::from_file(sun_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
-        for y in 0..CELESTIAL_RES {
-            for x in 0..CELESTIAL_RES {
-                let idx = ((y * CELESTIAL_RES + x) * 4) as usize;
-                let dx = x as f32 - 15.5;
-                let dy = y as f32 - 15.5;
-                if dx * dx + dy * dy <= 14.0 * 14.0 {
-                    img.data[idx] = 255;
-                    img.data[idx + 1] = 250;
-                    img.data[idx + 2] = 220;
-                    img.data[idx + 3] = 255;
+    let sun_img = stack
+        .find_texture("textures/environment/celestial/sun.png")
+        .and_then(|p| vx_assets::RgbaImage::from_file(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
+            for y in 0..CELESTIAL_RES {
+                for x in 0..CELESTIAL_RES {
+                    let idx = ((y * CELESTIAL_RES + x) * 4) as usize;
+                    let dx = x as f32 - 15.5;
+                    let dy = y as f32 - 15.5;
+                    if dx * dx + dy * dy <= 14.0 * 14.0 {
+                        img.data[idx] = 255;
+                        img.data[idx + 1] = 250;
+                        img.data[idx + 2] = 220;
+                        img.data[idx + 3] = 255;
+                    }
                 }
             }
-        }
-        img
-    });
+            img
+        });
     copy_to_layer(&mut pixel_data, 0, &sun_img);
 
     // Layers 1..=8: Moon phases
@@ -7054,11 +7114,10 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
     ];
 
     for (phase_idx, name) in moon_files.iter().enumerate() {
-        let moon_path = format!(
-            "dev-assets/classic-pack/assets/classic/textures/environment/celestial/moon/{name}.png"
-        );
-        let moon_img = vx_assets::RgbaImage::from_file(std::path::Path::new(&moon_path))
-            .unwrap_or_else(|_| {
+        let moon_img = stack
+            .find_texture(&format!("textures/environment/celestial/moon/{name}.png"))
+            .and_then(|p| vx_assets::RgbaImage::from_file(&p).ok())
+            .unwrap_or_else(|| {
                 let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
                 for y in 0..CELESTIAL_RES {
                     for x in 0..CELESTIAL_RES {
@@ -7121,48 +7180,51 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
         }
     };
 
+    let mut stack = ResourcePackStack::new();
+    mount_asset_roots(&mut stack);
+
     // Layer 0: Rain
-    let rain_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/environment/rain.png",
-    );
-    let rain_img = vx_assets::RgbaImage::from_file_exact(rain_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
-        for y in 0..WEATHER_H {
-            for x in 0..WEATHER_W {
-                let idx = ((y * WEATHER_W + x) * 4) as usize;
-                let is_streak = (x % 8 == (y / 4) % 8) && (y % 16 < 12);
-                if is_streak {
-                    img.data[idx] = 160;
-                    img.data[idx + 1] = 180;
-                    img.data[idx + 2] = 255;
-                    img.data[idx + 3] = 200;
+    let rain_img = stack
+        .find_texture("textures/environment/rain.png")
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
+            for y in 0..WEATHER_H {
+                for x in 0..WEATHER_W {
+                    let idx = ((y * WEATHER_W + x) * 4) as usize;
+                    let is_streak = (x % 8 == (y / 4) % 8) && (y % 16 < 12);
+                    if is_streak {
+                        img.data[idx] = 160;
+                        img.data[idx + 1] = 180;
+                        img.data[idx + 2] = 255;
+                        img.data[idx + 3] = 200;
+                    }
                 }
             }
-        }
-        img
-    });
+            img
+        });
     copy_to_layer(&mut pixel_data, 0, &rain_img);
 
     // Layer 1: Snow
-    let snow_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/environment/snow.png",
-    );
-    let snow_img = vx_assets::RgbaImage::from_file_exact(snow_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
-        for y in 0..WEATHER_H {
-            for x in 0..WEATHER_W {
-                let idx = ((y * WEATHER_W + x) * 4) as usize;
-                let is_flake = (x % 16 == 8) && (y % 16 == 8);
-                if is_flake {
-                    img.data[idx] = 255;
-                    img.data[idx + 1] = 255;
-                    img.data[idx + 2] = 255;
-                    img.data[idx + 3] = 240;
+    let snow_img = stack
+        .find_texture("textures/environment/snow.png")
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
+            for y in 0..WEATHER_H {
+                for x in 0..WEATHER_W {
+                    let idx = ((y * WEATHER_W + x) * 4) as usize;
+                    let is_flake = (x % 16 == 8) && (y % 16 == 8);
+                    if is_flake {
+                        img.data[idx] = 255;
+                        img.data[idx + 1] = 255;
+                        img.data[idx + 2] = 255;
+                        img.data[idx + 3] = 240;
+                    }
                 }
             }
-        }
-        img
-    });
+            img
+        });
     copy_to_layer(&mut pixel_data, 1, &snow_img);
 
     let copy_regions = [
@@ -7220,78 +7282,83 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
         }
     };
 
+    let mut stack = ResourcePackStack::new();
+    mount_asset_roots(&mut stack);
+
     // Layer 0: Zombie
-    let zombie_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/entity/zombie/zombie.png",
-    );
-    let zombie_img = vx_assets::RgbaImage::from_file_exact(zombie_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-        for y in 0..ENTITY_RES {
-            for x in 0..ENTITY_RES {
-                let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                if y < 32 {
-                    // Head & torso
-                    img.data[idx] = 60;
-                    img.data[idx + 1] = 140;
-                    img.data[idx + 2] = 60;
-                    img.data[idx + 3] = 255;
-                } else {
-                    // Legs / pants
-                    img.data[idx] = 40;
-                    img.data[idx + 1] = 50;
+    let zombie_img = stack
+        .find_texture("textures/entity/zombie/zombie.png")
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+            for y in 0..ENTITY_RES {
+                for x in 0..ENTITY_RES {
+                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                    if y < 32 {
+                        // Head & torso
+                        img.data[idx] = 60;
+                        img.data[idx + 1] = 140;
+                        img.data[idx + 2] = 60;
+                        img.data[idx + 3] = 255;
+                    } else {
+                        // Legs / pants
+                        img.data[idx] = 40;
+                        img.data[idx + 1] = 50;
+                        img.data[idx + 2] = 160;
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer(&mut pixel_data, 0, &zombie_img);
+
+    // Layer 1: Pig
+    let pig_img = stack
+        .find_texture("textures/entity/pig/pig_temperate.png")
+        .or_else(|| stack.find_texture("textures/entity/pig/pig.png"))
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+            for y in 0..ENTITY_RES {
+                for x in 0..ENTITY_RES {
+                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                    img.data[idx] = 240;
+                    img.data[idx + 1] = 160;
                     img.data[idx + 2] = 160;
                     img.data[idx + 3] = 255;
                 }
             }
-        }
-        img
-    });
-    copy_to_layer(&mut pixel_data, 0, &zombie_img);
-
-    // Layer 1: Pig
-    let pig_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/entity/pig/pig_temperate.png",
-    );
-    let pig_img = vx_assets::RgbaImage::from_file_exact(pig_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-        for y in 0..ENTITY_RES {
-            for x in 0..ENTITY_RES {
-                let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                img.data[idx] = 240;
-                img.data[idx + 1] = 160;
-                img.data[idx + 2] = 160;
-                img.data[idx + 3] = 255;
-            }
-        }
-        img
-    });
+            img
+        });
     copy_to_layer(&mut pixel_data, 1, &pig_img);
 
     // Layer 2: Cow
-    let cow_path = std::path::Path::new(
-        "dev-assets/classic-pack/assets/classic/textures/entity/cow/cow_temperate.png",
-    );
-    let cow_img = vx_assets::RgbaImage::from_file_exact(cow_path).unwrap_or_else(|_| {
-        let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-        for y in 0..ENTITY_RES {
-            for x in 0..ENTITY_RES {
-                let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                let is_spot = ((x / 8) + (y / 8)) % 2 == 0;
-                if is_spot {
-                    img.data[idx] = 80;
-                    img.data[idx + 1] = 50;
-                    img.data[idx + 2] = 40;
-                    img.data[idx + 3] = 255;
-                } else {
-                    img.data[idx] = 230;
-                    img.data[idx + 1] = 230;
-                    img.data[idx + 2] = 230;
-                    img.data[idx + 3] = 255;
+    let cow_img = stack
+        .find_texture("textures/entity/cow/cow_temperate.png")
+        .or_else(|| stack.find_texture("textures/entity/cow/cow.png"))
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+            for y in 0..ENTITY_RES {
+                for x in 0..ENTITY_RES {
+                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                    let is_spot = ((x / 8) + (y / 8)) % 2 == 0;
+                    if is_spot {
+                        img.data[idx] = 80;
+                        img.data[idx + 1] = 50;
+                        img.data[idx + 2] = 40;
+                        img.data[idx + 3] = 255;
+                    } else {
+                        img.data[idx] = 230;
+                        img.data[idx + 1] = 230;
+                        img.data[idx + 2] = 230;
+                        img.data[idx + 3] = 255;
+                    }
                 }
             }
-        }
-        img
-    });
+            img
+        });
     copy_to_layer(&mut pixel_data, 2, &cow_img);
 
     let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
