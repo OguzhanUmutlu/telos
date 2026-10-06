@@ -1,0 +1,27 @@
+[package]
+name = "telos-mesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pure-CPU voxel meshing engine: 64-bit binary greedy meshing (T0 fast path)"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+glam = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "meshing"
+harness = false
+
+[lints]
+workspace = true

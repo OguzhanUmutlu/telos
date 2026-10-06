@@ -3237,6 +3237,315 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
+name = "telos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "clap",
+ "glam",
+ "hashbrown 0.15.5",
+ "image",
+ "mimalloc",
+ "raw-window-handle",
+ "telos-assets",
+ "telos-audio",
+ "telos-content",
+ "telos-core",
+ "telos-gpu",
+ "telos-lod",
+ "telos-mesh",
+ "telos-net",
+ "telos-protocol",
+ "telos-server",
+ "telos-sim",
+ "telos-ui",
+ "telos-voxel",
+ "telos-worldgen",
+ "tracing",
+ "winit",
+]
+
+[[package]]
+name = "telos-assets"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "telos-core",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-audio"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "proptest",
+ "rodio",
+ "telos-content",
+ "telos-core",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-content"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hashbrown 0.15.5",
+ "ron",
+ "semver",
+ "serde",
+ "serde_json",
+ "telos-core",
+ "telos-voxel",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "telos-core"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "dirs",
+ "glam",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tracy",
+]
+
+[[package]]
+name = "telos-gpu"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "ash-window",
+ "gpu-allocator",
+ "raw-window-handle",
+ "telos-core",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-lod"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "glam",
+ "hashbrown 0.15.5",
+ "proptest",
+ "telos-assets",
+ "telos-core",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-mesh"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "glam",
+ "hashbrown 0.15.5",
+ "proptest",
+ "telos-core",
+ "telos-voxel",
+ "tracing",
+]
+
+[[package]]
+name = "telos-mod"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "hashbrown 0.15.5",
+ "proptest",
+ "telos-content",
+ "telos-core",
+ "telos-sim",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "tracing",
+ "wasmtime",
+]
+
+[[package]]
+name = "telos-net"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "proptest",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "telos-core",
+ "telos-protocol",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "telos-protocol"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "criterion",
+ "lz4_flex",
+ "proptest",
+ "telos-core",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "telos-server"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "ctrlc",
+ "glam",
+ "hashbrown 0.15.5",
+ "proptest",
+ "serde",
+ "telos-content",
+ "telos-core",
+ "telos-lod",
+ "telos-mod",
+ "telos-net",
+ "telos-protocol",
+ "telos-sim",
+ "telos-storage",
+ "telos-voxel",
+ "telos-worldgen",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "telos-server-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ctrlc",
+ "mimalloc",
+ "telos-core",
+ "telos-server",
+ "tracing",
+]
+
+[[package]]
+name = "telos-sim"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bitflags 2.13.2",
+ "glam",
+ "hashbrown 0.15.5",
+ "proptest",
+ "telos-core",
+ "telos-protocol",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-storage"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "criterion",
+ "lz4_flex",
+ "proptest",
+ "telos-core",
+ "telos-voxel",
+ "telos-worldgen",
+ "thiserror 2.0.21",
+ "tracing",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "telos-ui"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "glam",
+ "image",
+ "proptest",
+ "slotmap",
+ "taffy",
+ "telos-assets",
+ "telos-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "telos-voxel"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "bitflags 2.13.2",
+ "criterion",
+ "hashbrown 0.15.5",
+ "proptest",
+ "telos-core",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "telos-web"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "glam",
+ "hashbrown 0.15.5",
+ "js-sys",
+ "telos-core",
+ "telos-lod",
+ "telos-mesh",
+ "telos-voxel",
+ "telos-worldgen",
+ "tracing",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "telos-worldgen"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "criterion",
+ "proptest",
+ "serde",
+ "telos-core",
+ "telos-voxel",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3594,315 +3903,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voxel"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "clap",
- "glam",
- "hashbrown 0.15.5",
- "image",
- "mimalloc",
- "raw-window-handle",
- "tracing",
- "vx-assets",
- "vx-audio",
- "vx-content",
- "vx-core",
- "vx-gpu",
- "vx-lod",
- "vx-mesh",
- "vx-net",
- "vx-protocol",
- "vx-server",
- "vx-sim",
- "vx-ui",
- "vx-voxel",
- "vx-worldgen",
- "winit",
-]
-
-[[package]]
-name = "voxel-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "ctrlc",
- "mimalloc",
- "tracing",
- "vx-core",
- "vx-server",
-]
-
-[[package]]
-name = "voxel-web"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "glam",
- "hashbrown 0.15.5",
- "js-sys",
- "tracing",
- "vx-core",
- "vx-lod",
- "vx-mesh",
- "vx-voxel",
- "vx-worldgen",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "vx-assets"
-version = "0.1.0"
-dependencies = [
- "image",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
-]
-
-[[package]]
-name = "vx-audio"
-version = "0.1.0"
-dependencies = [
- "glam",
- "proptest",
- "rodio",
- "thiserror 2.0.21",
- "tracing",
- "vx-content",
- "vx-core",
-]
-
-[[package]]
-name = "vx-content"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "hashbrown 0.15.5",
- "ron",
- "semver",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "tracing",
- "vx-core",
- "vx-voxel",
-]
-
-[[package]]
-name = "vx-core"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "dirs",
- "glam",
- "proptest",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
- "tracing-subscriber",
- "tracing-tracy",
-]
-
-[[package]]
-name = "vx-gpu"
-version = "0.1.0"
-dependencies = [
- "ash",
- "ash-window",
- "gpu-allocator",
- "raw-window-handle",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
-]
-
-[[package]]
-name = "vx-lod"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "glam",
- "hashbrown 0.15.5",
- "proptest",
- "thiserror 2.0.21",
- "tracing",
- "vx-assets",
- "vx-core",
- "vx-voxel",
-]
-
-[[package]]
-name = "vx-mesh"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "glam",
- "hashbrown 0.15.5",
- "proptest",
- "tracing",
- "vx-core",
- "vx-voxel",
-]
-
-[[package]]
-name = "vx-mod"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "hashbrown 0.15.5",
- "proptest",
- "thiserror 2.0.21",
- "tracing",
- "vx-content",
- "vx-core",
- "vx-sim",
- "vx-voxel",
- "wasmtime",
-]
-
-[[package]]
-name = "vx-net"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "proptest",
- "quinn",
- "rcgen",
- "rustls",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "vx-core",
- "vx-protocol",
- "vx-voxel",
-]
-
-[[package]]
-name = "vx-protocol"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "crc32fast",
- "criterion",
- "lz4_flex",
- "proptest",
- "thiserror 2.0.21",
- "vx-core",
- "vx-voxel",
- "xxhash-rust",
-]
-
-[[package]]
-name = "vx-server"
-version = "0.1.0"
-dependencies = [
- "bevy_ecs",
- "ctrlc",
- "glam",
- "hashbrown 0.15.5",
- "proptest",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "tracing",
- "vx-content",
- "vx-core",
- "vx-lod",
- "vx-mod",
- "vx-net",
- "vx-protocol",
- "vx-sim",
- "vx-storage",
- "vx-voxel",
- "vx-worldgen",
-]
-
-[[package]]
-name = "vx-sim"
-version = "0.1.0"
-dependencies = [
- "bevy_ecs",
- "bitflags 2.13.2",
- "glam",
- "hashbrown 0.15.5",
- "proptest",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
- "vx-protocol",
- "vx-voxel",
-]
-
-[[package]]
-name = "vx-storage"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "criterion",
- "lz4_flex",
- "proptest",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
- "vx-voxel",
- "vx-worldgen",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "vx-ui"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "bytemuck",
- "glam",
- "image",
- "proptest",
- "slotmap",
- "taffy",
- "thiserror 2.0.21",
- "vx-assets",
- "vx-core",
-]
-
-[[package]]
-name = "vx-voxel"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "bitflags 2.13.2",
- "criterion",
- "hashbrown 0.15.5",
- "proptest",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
-]
-
-[[package]]
-name = "vx-worldgen"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "criterion",
- "proptest",
- "serde",
- "thiserror 2.0.21",
- "tracing",
- "vx-core",
- "vx-voxel",
-]
 
 [[package]]
 name = "wait-timeout"

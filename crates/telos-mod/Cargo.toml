@@ -1,0 +1,26 @@
+[package]
+name = "telos-mod"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "WebAssembly component-model modding runtime and sandbox host for voxel"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-content = { workspace = true }
+telos-voxel = { workspace = true }
+telos-sim = { workspace = true }
+wasmtime = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bitflags = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

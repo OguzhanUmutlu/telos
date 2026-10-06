@@ -1,25 +1,25 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/vx-core",
-    "crates/vx-gpu",
-    "crates/vx-voxel",
-    "crates/vx-mesh",
-    "crates/vx-assets",
-    "crates/vx-worldgen",
-    "crates/vx-storage",
-    "crates/vx-protocol",
-    "crates/vx-net",
-    "crates/vx-content",
-    "crates/vx-server",
-    "crates/vx-lod",
-    "crates/vx-ui",
-    "crates/vx-sim",
-    "crates/vx-mod",
-    "crates/vx-audio",
-    "apps/voxel-server",
-    "apps/voxel",
-    "apps/voxel-web",
+    "crates/telos-core",
+    "crates/telos-gpu",
+    "crates/telos-voxel",
+    "crates/telos-mesh",
+    "crates/telos-assets",
+    "crates/telos-worldgen",
+    "crates/telos-storage",
+    "crates/telos-protocol",
+    "crates/telos-net",
+    "crates/telos-content",
+    "crates/telos-server",
+    "crates/telos-lod",
+    "crates/telos-ui",
+    "crates/telos-sim",
+    "crates/telos-mod",
+    "crates/telos-audio",
+    "apps/telos-server",
+    "apps/telos",
+    "apps/telos-web",
     "xtask",
 ]
 
@@ -33,22 +33,22 @@ repository = "https://github.com/larvance/telos"
 
 [workspace.dependencies]
 # Internal crates
-vx-core = { version = "0.1.0", path = "crates/vx-core" }
-vx-gpu = { version = "0.1.0", path = "crates/vx-gpu" }
-vx-voxel = { version = "0.1.0", path = "crates/vx-voxel" }
-vx-content = { version = "0.1.0", path = "crates/vx-content" }
-vx-mesh = { version = "0.1.0", path = "crates/vx-mesh" }
-vx-assets = { version = "0.1.0", path = "crates/vx-assets" }
-vx-worldgen = { version = "0.1.0", path = "crates/vx-worldgen" }
-vx-storage = { version = "0.1.0", path = "crates/vx-storage" }
-vx-protocol = { version = "0.1.0", path = "crates/vx-protocol" }
-vx-net = { version = "0.1.0", path = "crates/vx-net" }
-vx-server = { version = "0.1.0", path = "crates/vx-server" }
-vx-lod = { version = "0.1.0", path = "crates/vx-lod" }
-vx-ui = { version = "0.1.0", path = "crates/vx-ui" }
-vx-sim = { version = "0.1.0", path = "crates/vx-sim" }
-vx-mod = { version = "0.1.0", path = "crates/vx-mod" }
-vx-audio = { version = "0.1.0", path = "crates/vx-audio" }
+telos-core = { version = "0.1.0", path = "crates/telos-core" }
+telos-gpu = { version = "0.1.0", path = "crates/telos-gpu" }
+telos-voxel = { version = "0.1.0", path = "crates/telos-voxel" }
+telos-content = { version = "0.1.0", path = "crates/telos-content" }
+telos-mesh = { version = "0.1.0", path = "crates/telos-mesh" }
+telos-assets = { version = "0.1.0", path = "crates/telos-assets" }
+telos-worldgen = { version = "0.1.0", path = "crates/telos-worldgen" }
+telos-storage = { version = "0.1.0", path = "crates/telos-storage" }
+telos-protocol = { version = "0.1.0", path = "crates/telos-protocol" }
+telos-net = { version = "0.1.0", path = "crates/telos-net" }
+telos-server = { version = "0.1.0", path = "crates/telos-server" }
+telos-lod = { version = "0.1.0", path = "crates/telos-lod" }
+telos-ui = { version = "0.1.0", path = "crates/telos-ui" }
+telos-sim = { version = "0.1.0", path = "crates/telos-sim" }
+telos-mod = { version = "0.1.0", path = "crates/telos-mod" }
+telos-audio = { version = "0.1.0", path = "crates/telos-audio" }
 
 # Audio & spatial sound
 rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis", "wav"] }

@@ -1,0 +1,36 @@
+[package]
+name = "telos-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Authoritative server runtime, session management, and chunk delivery pipeline for voxel"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+telos-worldgen = { workspace = true }
+telos-protocol = { workspace = true }
+telos-net = { workspace = true }
+telos-lod = { workspace = true }
+telos-storage = { workspace = true }
+telos-content = { workspace = true }
+telos-sim = { workspace = true }
+telos-mod = { workspace = true }
+bevy_ecs = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+ctrlc = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "telos-lod"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Far-field terrain LOD clipmaps, downsampling, and binary greedy meshing for voxel"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+telos-assets = { workspace = true }
+hashbrown = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "lod_benchmarks"
+harness = false
+
+[lints]
+workspace = true

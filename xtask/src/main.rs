@@ -1,4 +1,4 @@
-//! Build automation, diagnostic tools, and CI runners for the voxel engine.
+//! Build automation, diagnostic tools, and CI runners for the Telos engine.
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -11,7 +11,7 @@ use std::{
 #[derive(Parser, Debug)]
 #[command(
     name = "xtask",
-    about = "Build automation and diagnostic tools for voxel"
+    about = "Build automation and diagnostic tools for Telos"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,9 +26,9 @@ enum Commands {
     Doctor,
     /// Compile and validate all GLSL shaders in shaders/ to SPIR-V
     Shaders,
-    /// Compile voxel-web to WASM and bundle distribution files into web/dist
+    /// Compile telos-web to WASM and bundle distribution files into web/dist
     Web,
-    /// Capture a diagnostic screenshot with the voxel client
+    /// Capture a diagnostic screenshot with the telos client
     Screenshot {
         /// Initial camera position as X,Y,Z
         #[arg(long, default_value = "207.9,174.4,190.7")]
@@ -114,7 +114,7 @@ fn main() -> Result<()> {
 
 fn run_ci() -> Result<()> {
     println!("============================================================");
-    println!("            VOXEL CI QUALITY ASSURANCE PIPELINE             ");
+    println!("            TELOS CI QUALITY ASSURANCE PIPELINE             ");
     println!("============================================================");
 
     let steps: [(&str, &[&str]); 6] = [
@@ -145,7 +145,7 @@ fn run_ci() -> Result<()> {
         ),
         (
             "Verifying headless server build isolation",
-            &["cargo", "build", "-p", "voxel-server"],
+            &["cargo", "build", "-p", "telos-server-app"],
         ),
     ];
 
@@ -193,7 +193,7 @@ fn run_ci() -> Result<()> {
 
 fn run_doctor() {
     println!("============================================================");
-    println!("               VOXEL ENVIRONMENT DOCTOR                     ");
+    println!("               TELOS ENVIRONMENT DOCTOR                     ");
     println!("============================================================");
 
     check_tool("rustc", &["--version"], true, "Install Rust via rustup");
@@ -237,7 +237,7 @@ fn run_doctor() {
         println!("! Placeholder assets NOT found at {}", dev_assets.display());
     }
 
-    let original_assets = Path::new("assets/voxel");
+    let original_assets = Path::new("assets/telos");
     if original_assets.exists() {
         println!(
             "✓ Original assets directory found at {}",
@@ -360,18 +360,18 @@ fn check_tool(name: &str, args: &[&str], required: bool, install_hint: &str) {
 
 fn run_web() -> Result<()> {
     println!("============================================================");
-    println!("           VOXEL WEB COMPILATION & BUNDLE RUNNER            ");
+    println!("           TELOS WEB COMPILATION & BUNDLE RUNNER            ");
     println!("============================================================");
 
     let start = Instant::now();
 
-    // 1. Build release WASM for voxel-web
-    println!("\n>> Compiling voxel-web (cargo build --target wasm32-unknown-unknown --release)...");
+    // 1. Build release WASM for telos-web
+    println!("\n>> Compiling telos-web (cargo build --target wasm32-unknown-unknown --release)...");
     let status = Command::new("cargo")
         .args([
             "build",
             "-p",
-            "voxel-web",
+            "telos-web",
             "--target",
             "wasm32-unknown-unknown",
             "--release",
@@ -380,7 +380,7 @@ fn run_web() -> Result<()> {
         .context("Failed to run cargo build for wasm32-unknown-unknown")?;
 
     if !status.success() {
-        bail!("Failed to compile voxel-web to wasm32-unknown-unknown");
+        bail!("Failed to compile telos-web to wasm32-unknown-unknown");
     }
 
     // 2. Prepare web/dist directory
@@ -392,7 +392,7 @@ fn run_web() -> Result<()> {
 
     // 3. Run wasm-bindgen
     println!("\n>> Running wasm-bindgen to produce JavaScript bindings...");
-    let wasm_path = "target/wasm32-unknown-unknown/release/voxel_web.wasm";
+    let wasm_path = "target/wasm32-unknown-unknown/release/telos_web.wasm";
     let status = Command::new("wasm-bindgen")
         .args([
             wasm_path,
@@ -406,7 +406,7 @@ fn run_web() -> Result<()> {
         .context("Failed to execute wasm-bindgen. Ensure wasm-bindgen is installed.")?;
 
     if !status.success() {
-        bail!("wasm-bindgen failed to bundle voxel-web");
+        bail!("wasm-bindgen failed to bundle telos-web");
     }
 
     // 4. Copy static assets from web/static to web/dist
@@ -427,13 +427,13 @@ fn run_web() -> Result<()> {
         }
     }
 
-    let wasm_file = dist_dir.join("voxel_web_bg.wasm");
+    let wasm_file = dist_dir.join("telos_web_bg.wasm");
     let wasm_size = wasm_file.metadata().map_or(0, |m| m.len());
     println!("\n============================================================");
     println!("   ✓ WEB BUILD COMPLETE ({:.2?})", start.elapsed());
     println!("   WASM binary size: {:.1} KiB", wasm_size as f64 / 1024.0);
     println!("   Output directory: web/dist/");
-    println!("   Host domain:      voxel.larvance.com");
+    println!("   Host domain:      telos.larvance.com");
     println!("============================================================");
 
     Ok(())
@@ -457,7 +457,7 @@ fn run_screenshot(
     }
 
     let mut cmd = Command::new("cargo");
-    cmd.args(["run", "--bin", "voxel", "--"]);
+    cmd.args(["run", "--bin", "telos", "--"]);
     cmd.arg("--pos").arg(pos);
     cmd.arg("--yaw").arg(yaw.to_string());
     cmd.arg("--pitch").arg(pitch.to_string());
@@ -469,9 +469,9 @@ fn run_screenshot(
 
     let status = cmd
         .status()
-        .context("Failed to run voxel client for screenshot")?;
+        .context("Failed to run telos client for screenshot")?;
     if !status.success() {
-        bail!("Voxel client screenshot exited with failure status {status}");
+        bail!("Telos client screenshot exited with failure status {status}");
     }
 
     println!("   ✓ Screenshot successfully saved to {output}");
@@ -493,7 +493,7 @@ fn run_dist(
     };
 
     println!("============================================================");
-    println!("       VOXEL CROSS-PLATFORM DISTRIBUTION PACKAGER           ");
+    println!("       TELOS CROSS-PLATFORM DISTRIBUTION PACKAGER           ");
     println!("============================================================");
     println!("Target Version:   v{ver}");
     println!("Output Directory: {output_dir}");
@@ -505,15 +505,15 @@ fn run_dist(
     println!("------------------------------------------------------------");
 
     // 1. Build release binaries
-    println!("\n>> 1. Building release binaries (voxel, voxel-server)...");
+    println!("\n>> 1. Building release binaries (telos, telos-server)...");
     let status = Command::new("cargo")
         .args([
             "build",
             "--release",
             "--bin",
-            "voxel",
+            "telos",
             "--bin",
-            "voxel-server",
+            "telos-server",
         ])
         .status()
         .context("Failed to execute cargo build --release")?;
@@ -525,41 +525,41 @@ fn run_dist(
     let dist_dir = root_dir.join(output_dir);
     std::fs::create_dir_all(&dist_dir)?;
 
-    let client_bin = root_dir.join("target/release/voxel");
-    let server_bin = root_dir.join("target/release/voxel-server");
+    let client_bin = root_dir.join("target/release/telos");
+    let server_bin = root_dir.join("target/release/telos-server");
 
     // 2. Build portable tarballs
     println!("\n>> 2. Assembling portable tarballs (.tar.gz)...");
 
     // Stage client
     let client_stage_dir = root_dir.join("target/tar-client");
-    let client_stage = client_stage_dir.join(format!("voxel-{ver}"));
+    let client_stage = client_stage_dir.join(format!("telos-{ver}"));
     let _ = std::fs::remove_dir_all(&client_stage);
     std::fs::create_dir_all(&client_stage)?;
 
-    std::fs::copy(&client_bin, client_stage.join("voxel"))?;
-    set_executable_perms(&client_stage.join("voxel"))?;
+    std::fs::copy(&client_bin, client_stage.join("telos"))?;
+    set_executable_perms(&client_stage.join("telos"))?;
 
-    let desktop_file = root_dir.join("packaging/linux/voxel.desktop");
+    let desktop_file = root_dir.join("packaging/linux/telos.desktop");
     if desktop_file.exists() {
-        std::fs::copy(&desktop_file, client_stage.join("voxel.desktop"))?;
+        std::fs::copy(&desktop_file, client_stage.join("telos.desktop"))?;
     }
-    let icon_file = root_dir.join("packaging/linux/voxel.png");
+    let icon_file = root_dir.join("packaging/linux/telos.png");
     if icon_file.exists() {
-        std::fs::copy(&icon_file, client_stage.join("voxel.png"))?;
+        std::fs::copy(&icon_file, client_stage.join("telos.png"))?;
     }
 
-    let assets_dir = root_dir.join("assets/voxel");
+    let assets_dir = root_dir.join("assets/telos");
     if assets_dir.exists() {
-        let client_assets = client_stage.join("assets/voxel");
+        let client_assets = client_stage.join("assets/telos");
         copy_dir_all(&assets_dir, &client_assets)?;
     }
 
-    let client_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport VOXEL_ASSETS_DIR=\"$DIR/assets/voxel\"\nexec \"$DIR/voxel\" \"$@\"\n";
+    let client_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport TELOS_ASSETS_DIR=\"$DIR/assets/telos\"\nexec \"$DIR/telos\" \"$@\"\n";
     std::fs::write(client_stage.join("run.sh"), client_run_script)?;
     set_executable_perms(&client_stage.join("run.sh"))?;
 
-    let client_tar_name = format!("voxel-{ver}-linux-x86_64.tar.gz");
+    let client_tar_name = format!("telos-{ver}-linux-x86_64.tar.gz");
     let client_tar_path = dist_dir.join(&client_tar_name);
     let tar_client_status = Command::new("tar")
         .args([
@@ -567,7 +567,7 @@ fn run_dist(
             client_tar_path.to_str().unwrap(),
             "-C",
             client_stage_dir.to_str().unwrap(),
-            &format!("voxel-{ver}"),
+            &format!("telos-{ver}"),
         ])
         .status()
         .context("Failed to run tar for client archive")?;
@@ -578,23 +578,23 @@ fn run_dist(
 
     // Stage server
     let server_stage_dir = root_dir.join("target/tar-server");
-    let server_stage = server_stage_dir.join(format!("voxel-server-{ver}"));
+    let server_stage = server_stage_dir.join(format!("telos-server-{ver}"));
     let _ = std::fs::remove_dir_all(&server_stage);
     std::fs::create_dir_all(&server_stage)?;
 
-    std::fs::copy(&server_bin, server_stage.join("voxel-server"))?;
-    set_executable_perms(&server_stage.join("voxel-server"))?;
+    std::fs::copy(&server_bin, server_stage.join("telos-server"))?;
+    set_executable_perms(&server_stage.join("telos-server"))?;
 
     let server_toml = root_dir.join("packaging/server.toml");
     if server_toml.exists() {
         std::fs::copy(&server_toml, server_stage.join("server.toml"))?;
     }
 
-    let server_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexec \"$DIR/voxel-server\" \"$@\"\n";
+    let server_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexec \"$DIR/telos-server\" \"$@\"\n";
     std::fs::write(server_stage.join("run.sh"), server_run_script)?;
     set_executable_perms(&server_stage.join("run.sh"))?;
 
-    let server_tar_name = format!("voxel-server-{ver}-linux-x86_64.tar.gz");
+    let server_tar_name = format!("telos-server-{ver}-linux-x86_64.tar.gz");
     let server_tar_path = dist_dir.join(&server_tar_name);
     let tar_server_status = Command::new("tar")
         .args([
@@ -602,7 +602,7 @@ fn run_dist(
             server_tar_path.to_str().unwrap(),
             "-C",
             server_stage_dir.to_str().unwrap(),
-            &format!("voxel-server-{ver}"),
+            &format!("telos-server-{ver}"),
         ])
         .status()
         .context("Failed to run tar for server archive")?;

@@ -1,0 +1,27 @@
+[package]
+name = "telos-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Networking runtime, Transport abstraction, QUIC and in-memory singleplayer channels"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-protocol = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+telos-voxel = { workspace = true }
+
+[lints]
+workspace = true

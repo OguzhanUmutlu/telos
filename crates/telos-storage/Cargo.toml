@@ -1,0 +1,31 @@
+[package]
+name = "telos-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Persistent world save format and region container (.tlr) for the Telos voxel engine"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+xxhash-rust = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+telos-worldgen = { workspace = true }
+
+[[bench]]
+name = "storage_bench"
+harness = false
+
+[lints]
+workspace = true

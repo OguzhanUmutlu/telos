@@ -98,7 +98,7 @@ jobs:
           vulkan-use-cache: true
 
       - name: Build release binaries
-        run: cargo build --release --bin voxel --bin voxel-server
+        run: cargo build --release --bin telos --bin telos-server
 
       - name: Install Inno Setup
         shell: pwsh
@@ -111,8 +111,8 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p target/dist
-          iscc "/DMyAppVersion=${VERSION}" packaging/windows/voxel-setup.iss
-          iscc "/DMyAppVersion=${VERSION}" packaging/windows/voxel-server-setup.iss
+          iscc "/DMyAppVersion=${VERSION}" packaging/windows/telos-setup.iss
+          iscc "/DMyAppVersion=${VERSION}" packaging/windows/telos-server-setup.iss
 
       - name: Package Windows Portable Zips (.zip)
         shell: pwsh
@@ -121,21 +121,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path target\dist | Out-Null
 
           # Client zip
-          $ClientZipDir = "target\zip-client\voxel-$Version"
+          $ClientZipDir = "target\zip-client\telos-$Version"
           New-Item -ItemType Directory -Force -Path $ClientZipDir | Out-Null
-          Copy-Item target\release\voxel.exe -Destination $ClientZipDir
-          Copy-Item packaging\windows\voxel.ico -Destination $ClientZipDir
-          if (Test-Path assets\voxel) {
-              Copy-Item -Recurse assets\voxel -Destination "$ClientZipDir\assets\voxel"
+          Copy-Item target\release\telos.exe -Destination $ClientZipDir
+          Copy-Item packaging\windows\telos.ico -Destination $ClientZipDir
+          if (Test-Path assets\telos) {
+              Copy-Item -Recurse assets\telos -Destination "$ClientZipDir\assets\telos"
           }
-          Compress-Archive -Path "$ClientZipDir\*" -DestinationPath "target\dist\voxel-$Version-windows-x86_64.zip" -Force
+          Compress-Archive -Path "$ClientZipDir\*" -DestinationPath "target\dist\telos-$Version-windows-x86_64.zip" -Force
 
           # Server zip
-          $ServerZipDir = "target\zip-server\voxel-server-$Version"
+          $ServerZipDir = "target\zip-server\telos-server-$Version"
           New-Item -ItemType Directory -Force -Path $ServerZipDir | Out-Null
-          Copy-Item target\release\voxel-server.exe -Destination $ServerZipDir
+          Copy-Item target\release\telos-server.exe -Destination $ServerZipDir
           Copy-Item packaging\server.toml -Destination $ServerZipDir
-          Compress-Archive -Path "$ServerZipDir\*" -DestinationPath "target\dist\voxel-server-$Version-windows-x86_64.zip" -Force
+          Compress-Archive -Path "$ServerZipDir\*" -DestinationPath "target\dist\telos-server-$Version-windows-x86_64.zip" -Force
 
       - name: Upload Windows Dist Artifacts
         uses: actions/upload-artifact@v4
@@ -169,7 +169,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          name: Voxel Release ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: Telos Release ${{ github.event.inputs.tag_name || github.ref_name }}
           files: release-artifacts/*
           generate_release_notes: true
           draft: false

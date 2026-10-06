@@ -1,0 +1,29 @@
+[package]
+name = "telos-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded message codecs, types, and connection lifecycle protocol for the voxel engine"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+thiserror = { workspace = true }
+bitflags = { workspace = true }
+xxhash-rust = { workspace = true }
+crc32fast = { workspace = true }
+lz4_flex = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "codec_bench"
+harness = false
+
+[lints]
+workspace = true

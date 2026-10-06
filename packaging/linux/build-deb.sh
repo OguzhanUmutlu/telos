@@ -10,44 +10,44 @@ DIST_DIR="${DIST_DIR:-${ROOT_DIR}/target/dist}"
 
 mkdir -p "${DIST_DIR}"
 
-CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/target/release/voxel}"
-SERVER_BIN="${SERVER_BIN:-${ROOT_DIR}/target/release/voxel-server}"
+CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/target/release/telos}"
+SERVER_BIN="${SERVER_BIN:-${ROOT_DIR}/target/release/telos-server}"
 
-if [[ ! -f "${CLIENT_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/voxel" ]]; then
-    CLIENT_BIN="${ROOT_DIR}/target/debug/voxel"
+if [[ ! -f "${CLIENT_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/telos" ]]; then
+    CLIENT_BIN="${ROOT_DIR}/target/debug/telos"
 fi
-if [[ ! -f "${SERVER_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/voxel-server" ]]; then
-    SERVER_BIN="${ROOT_DIR}/target/debug/voxel-server"
+if [[ ! -f "${SERVER_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/telos-server" ]]; then
+    SERVER_BIN="${ROOT_DIR}/target/debug/telos-server"
 fi
 
 if [[ ! -f "${CLIENT_BIN}" ]] || [[ ! -f "${SERVER_BIN}" ]]; then
     echo "Error: Binaries not found. Build them first with:"
-    echo "  cargo build --release --bin voxel --bin voxel-server"
+    echo "  cargo build --release --bin telos --bin telos-server"
     exit 1
 fi
 
-echo "==> Building Debian packages for Voxel v${VERSION}..."
+echo "==> Building Debian packages for Telos v${VERSION}..."
 
 # 1. Build Client DEB
-CLIENT_DEB_DIR="${ROOT_DIR}/target/deb/voxel_${VERSION}_amd64"
+CLIENT_DEB_DIR="${ROOT_DIR}/target/deb/telos_${VERSION}_amd64"
 rm -rf "${CLIENT_DEB_DIR}"
 mkdir -p "${CLIENT_DEB_DIR}/DEBIAN"
 mkdir -p "${CLIENT_DEB_DIR}/usr/bin"
 mkdir -p "${CLIENT_DEB_DIR}/usr/share/applications"
 mkdir -p "${CLIENT_DEB_DIR}/usr/share/pixmaps"
 mkdir -p "${CLIENT_DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
-mkdir -p "${CLIENT_DEB_DIR}/usr/share/voxel/assets"
+mkdir -p "${CLIENT_DEB_DIR}/usr/share/telos/assets"
 
-install -m 755 "${CLIENT_BIN}" "${CLIENT_DEB_DIR}/usr/bin/voxel"
-install -m 644 "${SCRIPT_DIR}/voxel.desktop" "${CLIENT_DEB_DIR}/usr/share/applications/voxel.desktop"
-install -m 644 "${SCRIPT_DIR}/voxel.png" "${CLIENT_DEB_DIR}/usr/share/pixmaps/voxel.png"
-install -m 644 "${SCRIPT_DIR}/voxel.png" "${CLIENT_DEB_DIR}/usr/share/icons/hicolor/256x256/apps/voxel.png"
-if [[ -d "${ROOT_DIR}/assets/voxel" ]]; then
-    cp -r "${ROOT_DIR}/assets/voxel"/* "${CLIENT_DEB_DIR}/usr/share/voxel/assets/" 2>/dev/null || true
+install -m 755 "${CLIENT_BIN}" "${CLIENT_DEB_DIR}/usr/bin/telos"
+install -m 644 "${SCRIPT_DIR}/telos.desktop" "${CLIENT_DEB_DIR}/usr/share/applications/telos.desktop"
+install -m 644 "${SCRIPT_DIR}/telos.png" "${CLIENT_DEB_DIR}/usr/share/pixmaps/telos.png"
+install -m 644 "${SCRIPT_DIR}/telos.png" "${CLIENT_DEB_DIR}/usr/share/icons/hicolor/256x256/apps/telos.png"
+if [[ -d "${ROOT_DIR}/assets/telos" ]]; then
+    cp -r "${ROOT_DIR}/assets/telos"/* "${CLIENT_DEB_DIR}/usr/share/telos/assets/" 2>/dev/null || true
 fi
 
 cat > "${CLIENT_DEB_DIR}/DEBIAN/control" << EOF
-Package: voxel
+Package: telos
 Version: ${VERSION}
 Section: games
 Priority: optional
@@ -60,24 +60,24 @@ Description: High-performance voxel engine and game
  and deterministic procedural terrain generation.
 EOF
 
-dpkg-deb --build --root-owner-group "${CLIENT_DEB_DIR}" "${DIST_DIR}/voxel_${VERSION}_amd64.deb"
-echo "Created: ${DIST_DIR}/voxel_${VERSION}_amd64.deb"
+dpkg-deb --build --root-owner-group "${CLIENT_DEB_DIR}" "${DIST_DIR}/telos_${VERSION}_amd64.deb"
+echo "Created: ${DIST_DIR}/telos_${VERSION}_amd64.deb"
 
 # 2. Build Server DEB
-SERVER_DEB_DIR="${ROOT_DIR}/target/deb/voxel-server_${VERSION}_amd64"
+SERVER_DEB_DIR="${ROOT_DIR}/target/deb/telos-server_${VERSION}_amd64"
 rm -rf "${SERVER_DEB_DIR}"
 mkdir -p "${SERVER_DEB_DIR}/DEBIAN"
 mkdir -p "${SERVER_DEB_DIR}/usr/bin"
 mkdir -p "${SERVER_DEB_DIR}/usr/lib/systemd/system"
-mkdir -p "${SERVER_DEB_DIR}/etc/voxel"
-mkdir -p "${SERVER_DEB_DIR}/var/lib/voxel"
+mkdir -p "${SERVER_DEB_DIR}/etc/telos"
+mkdir -p "${SERVER_DEB_DIR}/var/lib/telos"
 
-install -m 755 "${SERVER_BIN}" "${SERVER_DEB_DIR}/usr/bin/voxel-server"
-install -m 644 "${SCRIPT_DIR}/voxel-server.service" "${SERVER_DEB_DIR}/usr/lib/systemd/system/voxel-server.service"
-install -m 644 "${SCRIPT_DIR}/../server.toml" "${SERVER_DEB_DIR}/etc/voxel/server.toml"
+install -m 755 "${SERVER_BIN}" "${SERVER_DEB_DIR}/usr/bin/telos-server"
+install -m 644 "${SCRIPT_DIR}/telos-server.service" "${SERVER_DEB_DIR}/usr/lib/systemd/system/telos-server.service"
+install -m 644 "${SCRIPT_DIR}/../server.toml" "${SERVER_DEB_DIR}/etc/telos/server.toml"
 
 cat > "${SERVER_DEB_DIR}/DEBIAN/control" << EOF
-Package: voxel-server
+Package: telos-server
 Version: ${VERSION}
 Section: games
 Priority: optional
@@ -92,18 +92,18 @@ EOF
 cat > "${SERVER_DEB_DIR}/DEBIAN/postinst" << 'EOF'
 #!/bin/sh
 set -e
-if ! getent group voxel >/dev/null; then
-    groupadd --system voxel
+if ! getent group telos >/dev/null; then
+    groupadd --system telos
 fi
-if ! getent passwd voxel >/dev/null; then
-    useradd --system --ingroup voxel --home /var/lib/voxel --shell /usr/sbin/nologin voxel
+if ! getent passwd telos >/dev/null; then
+    useradd --system --ingroup telos --home /var/lib/telos --shell /usr/sbin/nologin telos
 fi
-chown -R voxel:voxel /var/lib/voxel
+chown -R telos:telos /var/lib/telos
 exit 0
 EOF
 chmod 755 "${SERVER_DEB_DIR}/DEBIAN/postinst"
 
-dpkg-deb --build --root-owner-group "${SERVER_DEB_DIR}" "${DIST_DIR}/voxel-server_${VERSION}_amd64.deb"
-echo "Created: ${DIST_DIR}/voxel-server_${VERSION}_amd64.deb"
+dpkg-deb --build --root-owner-group "${SERVER_DEB_DIR}" "${DIST_DIR}/telos-server_${VERSION}_amd64.deb"
+echo "Created: ${DIST_DIR}/telos-server_${VERSION}_amd64.deb"
 
 echo "==> Debian packages built successfully in ${DIST_DIR}"

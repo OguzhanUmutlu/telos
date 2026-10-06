@@ -1,0 +1,42 @@
+[package]
+name = "telos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Telos game client executable"
+
+[[bin]]
+name = "telos"
+path = "src/main.rs"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-gpu = { workspace = true }
+telos-voxel = { workspace = true }
+telos-mesh = { workspace = true }
+telos-assets = { workspace = true }
+telos-worldgen = { workspace = true }
+telos-server = { workspace = true }
+telos-net = { workspace = true }
+telos-protocol = { workspace = true }
+telos-lod = { workspace = true }
+telos-ui = { workspace = true }
+telos-sim = { workspace = true }
+telos-content = { workspace = true }
+telos-audio = { workspace = true }
+hashbrown = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+winit = { workspace = true }
+raw-window-handle = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+mimalloc = { workspace = true }
+anyhow = { workspace = true }
+image = { workspace = true }
+
+[lints]
+workspace = true

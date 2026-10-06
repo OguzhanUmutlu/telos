@@ -1,0 +1,26 @@
+[package]
+name = "telos-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pure, deterministic ECS gameplay simulation core for voxel (health, hunger, XP, inventory)"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-voxel = { workspace = true }
+telos-protocol = { workspace = true }
+bevy_ecs = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

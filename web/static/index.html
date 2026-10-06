@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOXEL — Rust + WebAssembly Voxel Engine</title>
+    <title>TELOS — Rust + WebAssembly Voxel Engine</title>
     <meta name="description" content="World-class voxel engine written in Rust and WebAssembly with real-time procedural terrain, 64-bit binary greedy mesher, and WebGL2 rendering.">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <canvas id="voxel-canvas"></canvas>
+    <canvas id="telos-canvas"></canvas>
     <div id="crosshair"></div>
 
     <!-- HUD -->
     <div id="hud">
-        <h1>VOXEL <span class="badge">WASM + WebGL2</span></h1>
+        <h1>TELOS <span class="badge">WASM + WebGL2</span></h1>
         <div id="fps-text" class="info-line">FPS: --</div>
         <div id="pos-text" class="info-line">Pos: --, --, --</div>
         <div class="subtext">
-            GitHub: <a href="https://github.com/larvance/voxel" target="_blank" rel="noopener">larvance/voxel</a>
+            GitHub: <a href="https://github.com/larvance/telos" target="_blank" rel="noopener">larvance/telos</a>
         </div>
     </div>
 
@@ -67,7 +67,7 @@
     <!-- Click to play overlay -->
     <div id="lock-overlay">
         <div class="dialog">
-            <h2>VOXEL ENGINE (WEB PORT)</h2>
+            <h2>TELOS ENGINE (WEB PORT)</h2>
             <p>High-performance voxel engine ported to WebAssembly with procedural terrain generation and binary greedy meshing.</p>
             <div class="controls-table">
                 <div><span>Move</span>: <strong>W, A, S, D</strong></div>
@@ -82,7 +82,7 @@
     </div>
 
     <script type="module">
-        import init from './voxel_web.js';
+        import init from './telos_web.js';
 
         // Update active slot highlighting on number key press
         window.addEventListener('keydown', (e) => {
@@ -111,9 +111,9 @@
         async function run() {
             try {
                 await init();
-                console.log("VOXEL WebAssembly engine initialized successfully.");
+                console.log("TELOS WebAssembly engine initialized successfully.");
             } catch (err) {
-                console.error("Failed to initialize VOXEL WebAssembly:", err);
+                console.error("Failed to initialize TELOS WebAssembly:", err);
                 overlay.querySelector('p').textContent = "Initialization error: " + err;
             }
         }

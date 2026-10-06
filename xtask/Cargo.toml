@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Internal automation and CI tasks for the voxel workspace"
+description = "Internal automation and CI tasks for the Telos workspace"
 
 [dependencies]
 clap = { workspace = true }

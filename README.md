@@ -1,4 +1,4 @@
-# voxel
+# Telos
 
 A world-class, high-performance voxel engine and game written in **Rust** and **Vulkan**.
 
@@ -31,7 +31,7 @@ cargo ci
 
 ## Running the Server
 ```bash
-cargo run -p voxel-server --release
+cargo run --bin telos-server --release
 ```
 
 ## License

@@ -1,5 +1,5 @@
-# Voxel Dedicated Server Configuration
-# https://github.com/larvance/voxel
+# Telos Dedicated Server Configuration
+# https://github.com/larvance/telos
 
 [server]
 # Port to listen on (UDP for QUIC protocol)
@@ -9,7 +9,7 @@ port = 25565
 bind_address = "0.0.0.0"
 
 # Server Message Of The Day (shown in server list)
-motd = "A high-performance Voxel World"
+motd = "A high-performance Telos World"
 
 # Maximum concurrent connected players
 max_players = 64

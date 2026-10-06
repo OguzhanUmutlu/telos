@@ -1,0 +1,25 @@
+[package]
+name = "telos-server-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Authoritative headless server binary for Telos"
+
+[[bin]]
+name = "telos-server"
+path = "src/main.rs"
+
+[dependencies]
+telos-core = { workspace = true }
+telos-server = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+mimalloc = { workspace = true }
+ctrlc = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
