@@ -33,8 +33,10 @@ use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
     C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase,
-    InputFrame, PlayerCommandKind, S2cMessage, S2cPlayerMovementAck, input_buttons,
+    InputFrame, ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent,
+    S2cPlayerMovementAck, input_buttons,
 };
+use telos_sim::particle::{ParticleGpu, ParticleSystem};
 use telos_sim::{
     MoveMode, MoveState, PredictionBuffer, VisualSmoothing, quantize_pitch, quantize_yaw,
 };
@@ -389,6 +391,45 @@ pub struct WeatherPushConstants {
     pub pad2: [u32; 2],
 }
 const _: () = assert!(size_of::<WeatherPushConstants>() == 112);
+
+/// Push constants for the visual particle billboard quad pass.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ParticlePushConstants {
+    /// Combined view projection matrix.
+    pub view_proj: [f32; 16],
+    /// Camera right basis vector.
+    pub camera_right: [f32; 3],
+    /// Alignment padding.
+    pub pad0: f32,
+    /// Camera up basis vector.
+    pub camera_up: [f32; 3],
+    /// Alignment padding.
+    pub pad1: f32,
+    /// 64-bit device address of the particle buffer.
+    pub particle_buffer_address: u64,
+    /// Alignment padding.
+    pub pad2: [u32; 2],
+}
+const _: () = assert!(size_of::<ParticlePushConstants>() == 112);
+
+/// Resolves the terrain texture array layer and average tint color for a block state.
+fn block_state_to_particle_layer(state: telos_voxel::state::BlockStateId) -> (u32, [u8; 4]) {
+    match state.0 {
+        1 => (0, [128, 128, 128, 255]),     // stone
+        2 => (1, [134, 96, 67, 255]),       // dirt
+        3 => (3, [120, 180, 80, 255]),      // grass
+        4 => (4, [60, 60, 60, 255]),        // bedrock
+        5 => (5, [219, 207, 156, 255]),     // sand
+        6 => (15, [64, 100, 200, 200]),     // water
+        7 | 11 => (6, [162, 130, 78, 255]), // oak planks & stairs
+        8 => (7, [60, 140, 50, 255]),       // oak leaves
+        9 => (8, [200, 220, 240, 180]),     // glass
+        10 => (0, [120, 120, 120, 255]),    // stone slab
+        15 => (11, [255, 200, 50, 255]),    // torch
+        _ => (0, [180, 180, 180, 255]),
+    }
+}
 
 /// 16x16 RGBA8 Dynamic Lighting Lookup Table (1024 bytes).
 #[derive(Clone, Copy)]
@@ -1231,6 +1272,19 @@ struct App {
     weather_particles_count: u32,
     world_seed: u64,
 
+    // Visual Particles (Phase 35)
+    particle_pipeline: Option<GraphicsPipeline>,
+    particle_vert_shader: Option<ShaderModule>,
+    particle_frag_shader: Option<ShaderModule>,
+    particle_texture: Option<GpuTextureArray>,
+    particle_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    particle_descriptor_pool: Option<vk::DescriptorPool>,
+    particle_descriptor_set: Option<vk::DescriptorSet>,
+    particle_buffer: Option<GpuBuffer>,
+    particle_system: ParticleSystem,
+    active_particles_count: u32,
+    particle_seed: u64,
+
     // Entities & Mob Rendering
     entity_store: ClientEntityStore,
     entity_pipeline: Option<GraphicsPipeline>,
@@ -1592,6 +1646,18 @@ impl App {
             weather_buffer: None,
             weather_particles_count: 0,
             world_seed: seed,
+
+            particle_pipeline: None,
+            particle_vert_shader: None,
+            particle_frag_shader: None,
+            particle_texture: None,
+            particle_descriptor_set_layout: None,
+            particle_descriptor_pool: None,
+            particle_descriptor_set: None,
+            particle_buffer: None,
+            particle_system: ParticleSystem::new(4096),
+            active_particles_count: 0,
+            particle_seed: 0xCAFE_BABE_1234_5678,
 
             entity_store: ClientEntityStore::new(),
             entity_pipeline: None,
@@ -2156,6 +2222,11 @@ impl App {
                             matches,
                         );
                     }
+                    S2cMessage::ParticleEvent(ev) => {
+                        self.particle_system.spawn_from_event(&ev, |id| {
+                            block_state_to_particle_layer(telos_voxel::state::BlockStateId(id))
+                        });
+                    }
                     _ => {}
                 },
             }
@@ -2293,6 +2364,114 @@ impl App {
             && let Some(buf) = &mut self.weather_buffer
         {
             let _ = buf.write_bytes(bytemuck::cast_slice(&particles));
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    fn update_particles(&mut self, dt: f32) {
+        // Dev/screenshot showcase burst: trigger a visual particle burst when in screenshot mode or on frame 20
+        let should_spawn_burst = if self.args.screenshot.is_some() {
+            self.total_frames >= 20
+                && self.total_frames <= 60
+                && self.total_frames.is_multiple_of(10)
+        } else {
+            self.total_frames == 20
+        };
+
+        if should_spawn_burst {
+            let forward = self.camera.forward();
+            let burst_center = self.camera.position + forward * 2.5;
+            self.particle_system.spawn_block_break(
+                burst_center - Vec3::new(0.6, 0.0, 0.0),
+                0,
+                [130, 130, 130, 255],
+                32,
+            );
+            self.particle_system.spawn_block_place(
+                burst_center + Vec3::new(0.6, 0.0, 0.0),
+                3,
+                [110, 175, 75, 255],
+                16,
+            );
+            self.particle_system
+                .spawn_torch_flame(burst_center + Vec3::new(0.0, -0.3, 0.0));
+            self.particle_system
+                .spawn_torch_smoke(burst_center + Vec3::new(0.0, -0.3, 0.0));
+            self.particle_system
+                .spawn_crit(burst_center + Vec3::new(0.0, 0.3, 0.0), 16);
+            let heart_ev = S2cParticleEvent {
+                x: burst_center.x,
+                y: burst_center.y + 0.6,
+                z: burst_center.z,
+                effect: ParticleEffectKind::Heart,
+                count: 4,
+                speed: 1.0,
+                block_state_id: 0,
+            };
+            self.particle_system
+                .spawn_from_event(&heart_ev, |_| (0, [255, 100, 120, 255]));
+        }
+
+        // Ambient torch particles: sample a few positions around camera
+        let cam_pos = self.camera.position;
+        let cx = cam_pos.x.floor() as i32;
+        let cy = cam_pos.y.floor() as i32;
+        let cz = cam_pos.z.floor() as i32;
+        for _ in 0..8 {
+            self.particle_seed = self
+                .particle_seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let rx = ((self.particle_seed >> 16) & 0x1F) as i32 - 16;
+            let ry = ((self.particle_seed >> 24) & 0x0F) as i32 - 8;
+            let rz = ((self.particle_seed >> 32) & 0x1F) as i32 - 16;
+            let pos = BlockPos::new(cx + rx, cy + ry, cz + rz);
+            let state = self.get_block_at(pos);
+            if state.0 == 15 {
+                let tpos = Vec3::new(
+                    pos.x() as f32 + 0.5,
+                    pos.y() as f32 + 0.5,
+                    pos.z() as f32 + 0.5,
+                );
+                if (self.particle_seed & 1) == 0 {
+                    self.particle_system.spawn_torch_flame(tpos);
+                } else {
+                    self.particle_system.spawn_torch_smoke(tpos);
+                }
+            }
+        }
+
+        // Physics tick with solid block collision check
+        let chunks = &self.chunks;
+        let is_solid = |bx: i32, by: i32, bz: i32| -> bool {
+            let (chunk_pos, local_idx) =
+                telos_voxel::coords::split_block_pos(BlockPos::new(bx, by, bz));
+            if let Some(snap) = chunks.get(&chunk_pos) {
+                let state = snap.blocks().get(local_idx);
+                state.0 != 0 && state.0 != 6
+            } else {
+                false
+            }
+        };
+        self.particle_system.tick(dt, is_solid);
+
+        // Extract active particles to GPU format and upload to device-addressable buffer
+        let mut gpu_particles = Vec::new();
+        self.particle_system
+            .extract_gpu_particles(&mut gpu_particles);
+        self.active_particles_count = gpu_particles.len() as u32;
+
+        if self.active_particles_count > 0
+            && let Some(buf) = &mut self.particle_buffer
+        {
+            let _ = buf.write_bytes(bytemuck::cast_slice(&gpu_particles));
+            if self.total_frames.is_multiple_of(20) {
+                tracing::info!(
+                    count = self.active_particles_count,
+                    frame = self.total_frames,
+                    "Active particles simulated and uploaded to GPU"
+                );
+            }
         }
     }
 
@@ -2942,6 +3121,9 @@ impl App {
                     self.camera.position - Vec3::new(0.0, 1.5, 0.0),
                     pitch,
                 );
+                let (_layer, tint) = block_state_to_particle_layer(ground_block);
+                self.particle_system
+                    .spawn_footstep(self.camera.position - Vec3::new(0.0, 1.5, 0.0), tint);
             }
         }
 
@@ -2978,6 +3160,7 @@ impl App {
         }
 
         self.generate_weather_particles(dt);
+        self.update_particles(dt);
 
         // Entity simulation update & mesh generation (Phase 21)
         self.entity_store.update(dt);
@@ -4372,6 +4555,42 @@ impl App {
                     bytemuck::bytes_of(&weather_pc),
                 );
                 device.cmd_draw(cmd, 6, self.weather_particles_count, 0, 0);
+            }
+
+            // Pass 17a: Visual Billboard Particles (Block debris, dust, torch smoke/flame, sparks, hearts)
+            if self.active_particles_count > 0
+                && let (Some(particle_pipe), Some(particle_set), Some(particle_buf)) = (
+                    &self.particle_pipeline,
+                    self.particle_descriptor_set,
+                    &self.particle_buffer,
+                )
+            {
+                let particle_pc = ParticlePushConstants {
+                    view_proj,
+                    camera_right: self.camera.right().to_array(),
+                    pad0: 0.0,
+                    camera_up: self.camera.up().to_array(),
+                    pad1: 0.0,
+                    particle_buffer_address: particle_buf.device_address(),
+                    pad2: [0, 0],
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, particle_pipe.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    particle_pipe.layout(),
+                    0,
+                    &[particle_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    particle_pipe.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&particle_pc),
+                );
+                device.cmd_draw(cmd, 6, self.active_particles_count, 0, 0);
             }
 
             // Pass 6: Block selection wireframe highlight
@@ -5826,6 +6045,175 @@ impl ApplicationHandler for App {
         };
 
         // ---------------------------------------------------------------------
+        // Initialize Visual Particle Billboard Pipeline (Phase 35)
+        // ---------------------------------------------------------------------
+        let particle_texture = match load_and_upload_particle_textures(&gpu_context) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::error!("Failed to load particle textures: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let particle_binding_part = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let particle_binding_terr = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let particle_bindings = [particle_binding_part, particle_binding_terr];
+        let particle_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&particle_bindings);
+        let particle_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&particle_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create particle descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let particle_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(2);
+        let particle_pool_sizes = [particle_pool_size];
+        let particle_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&particle_pool_sizes);
+        let particle_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&particle_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create particle descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let particle_set_layouts = [particle_descriptor_set_layout];
+        let particle_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(particle_descriptor_pool)
+            .set_layouts(&particle_set_layouts);
+        let particle_descriptor_set = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&particle_alloc_info)
+            {
+                Ok(sets) => sets[0],
+                Err(err) => {
+                    tracing::error!("Failed to allocate particle descriptor set: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let particle_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(particle_texture.sampler())
+            .image_view(particle_texture.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let terrain_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(texture_array.sampler())
+            .image_view(texture_array.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let particle_descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(particle_descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&particle_image_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(particle_descriptor_set)
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&terrain_image_info),
+        ];
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&particle_descriptor_writes, &[]);
+        }
+
+        let particle_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/particle.vert.spv"));
+        let particle_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/particle.frag.spv"));
+        let particle_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), particle_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create particle vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let particle_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), particle_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create particle fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let particle_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<ParticlePushConstants>() as u32);
+        let particle_pipeline = match GraphicsPipeline::create_dynamic_translucent(
+            gpu_context.device().raw(),
+            particle_vert_module.raw(),
+            particle_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[particle_descriptor_set_layout],
+            &[particle_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create particle graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let particle_buffer = match GpuBuffer::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            "visual_particle_buffer",
+            (4096 * size_of::<ParticleGpu>()) as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        ) {
+            Ok(buf) => buf,
+            Err(err) => {
+                tracing::error!("Failed to allocate visual particle buffer: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // ---------------------------------------------------------------------
         // Initialize Dynamic Entity & Mob Rendering Resources (Phase 21)
         // ---------------------------------------------------------------------
         let entity_textures = match load_and_upload_entity_textures(&gpu_context) {
@@ -6024,6 +6412,15 @@ impl ApplicationHandler for App {
         self.weather_frag_shader = Some(weather_frag_module);
         self.weather_pipeline = Some(weather_pipeline);
         self.weather_buffer = Some(weather_buffer);
+
+        self.particle_texture = Some(particle_texture);
+        self.particle_descriptor_set_layout = Some(particle_descriptor_set_layout);
+        self.particle_descriptor_pool = Some(particle_descriptor_pool);
+        self.particle_descriptor_set = Some(particle_descriptor_set);
+        self.particle_vert_shader = Some(particle_vert_module);
+        self.particle_frag_shader = Some(particle_frag_module);
+        self.particle_pipeline = Some(particle_pipeline);
+        self.particle_buffer = Some(particle_buffer);
 
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
@@ -6410,6 +6807,8 @@ impl ApplicationHandler for App {
                                     .get(target_net_id)
                                     .map_or(origin + forward * 2.0, |e| e.pos.as_vec3());
                                 self.audio.play_procedural_hurt(ent_pos, 1.0);
+                                self.particle_system
+                                    .spawn_crit(ent_pos + Vec3::new(0.0, 1.0, 0.0), 16);
                                 return;
                             }
 
@@ -6424,6 +6823,7 @@ impl ApplicationHandler for App {
                                     input_tick: self.frame_counter,
                                 });
                                 let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                let broken_state = self.get_block_at(hit.pos);
                                 self.apply_block_update(hit.pos, BlockStateId::AIR);
 
                                 let hit_pos_f = Vec3::new(
@@ -6431,6 +6831,10 @@ impl ApplicationHandler for App {
                                     hit.pos.y() as f32 + 0.5,
                                     hit.pos.z() as f32 + 0.5,
                                 );
+                                let (layer, tint) = block_state_to_particle_layer(broken_state);
+                                self.particle_system
+                                    .spawn_block_break(hit_pos_f, layer, tint, 32);
+
                                 let pitch = 0.92
                                     + (hit.pos.x().abs() as f32 * 0.1
                                         + hit.pos.z().abs() as f32 * 0.2)
@@ -6466,6 +6870,14 @@ impl ApplicationHandler for App {
                                     place_pos.x() as f32 + 0.5,
                                     place_pos.y() as f32 + 0.5,
                                     place_pos.z() as f32 + 0.5,
+                                );
+                                let (layer, tint) =
+                                    block_state_to_particle_layer(self.selected_block_state);
+                                self.particle_system.spawn_block_place(
+                                    place_pos_f,
+                                    layer,
+                                    tint,
+                                    12,
                                 );
                                 let pitch = 0.95
                                     + (place_pos.x().abs() as f32 * 0.13
@@ -7170,6 +7582,32 @@ impl ApplicationHandler for App {
                 buf.destroy(device, allocator);
             }
 
+            if let Some(mut pipeline) = self.particle_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.particle_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.particle_frag_shader.take() {
+                frag.destroy(device);
+            }
+            if let Some(pool) = self.particle_descriptor_pool.take() {
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+            if let Some(layout) = self.particle_descriptor_set_layout.take() {
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+            if let Some(mut tex) = self.particle_texture.take() {
+                tex.destroy(device, allocator);
+            }
+            if let Some(mut buf) = self.particle_buffer.take() {
+                buf.destroy(device, allocator);
+            }
+
             if let Some(mut pipeline) = self.entity_pipeline.take() {
                 pipeline.destroy(device);
             }
@@ -7838,6 +8276,164 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
 
     info!("Celestial texture array loaded (9 layers, 32x32)");
 
+    Ok(texture_array)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+fn load_and_upload_particle_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    const PARTICLE_RES: u32 = 16;
+    const LAYER_COUNT: u32 = 11;
+
+    let mut pixel_data = vec![0u8; (PARTICLE_RES * PARTICLE_RES * 4 * LAYER_COUNT) as usize];
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &telos_assets::RgbaImage| {
+        let layer_offset = layer * (PARTICLE_RES * PARTICLE_RES * 4) as usize;
+        for y in 0..PARTICLE_RES {
+            let src_y = if img.height > 0 {
+                (y * img.height) / PARTICLE_RES
+            } else {
+                0
+            };
+            for x in 0..PARTICLE_RES {
+                let src_x = if img.width > 0 {
+                    (x * img.width) / PARTICLE_RES
+                } else {
+                    0
+                };
+                let src_idx = ((src_y * img.width + src_x) * 4) as usize;
+                let dst_idx = layer_offset + ((y * PARTICLE_RES + x) * 4) as usize;
+                if src_idx + 4 <= img.data.len() && dst_idx + 4 <= dest.len() {
+                    dest[dst_idx..dst_idx + 4].copy_from_slice(&img.data[src_idx..src_idx + 4]);
+                }
+            }
+        }
+    };
+
+    let mut stack = ResourcePackStack::new();
+    mount_asset_roots(&mut stack);
+
+    // Layer 0..=7: generic puffs
+    for i in 0..8 {
+        let path = format!("textures/particle/generic_{i}.png");
+        let puff_img = stack
+            .find_texture(&path)
+            .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+            .unwrap_or_else(|| {
+                let mut img = telos_assets::RgbaImage::new(PARTICLE_RES, PARTICLE_RES);
+                let radius = 2.5 + (i as f32) * 0.7;
+                let center = 7.5f32;
+                for y in 0..PARTICLE_RES {
+                    for x in 0..PARTICLE_RES {
+                        let dx = x as f32 - center;
+                        let dy = y as f32 - center;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist <= radius {
+                            let idx = ((y * PARTICLE_RES + x) * 4) as usize;
+                            let alpha =
+                                (230.0 * (1.0 - dist / (radius + 1.0)).clamp(0.0, 1.0)) as u8;
+                            img.data[idx] = 230;
+                            img.data[idx + 1] = 230;
+                            img.data[idx + 2] = 230;
+                            img.data[idx + 3] = alpha;
+                        }
+                    }
+                }
+                img
+            });
+        copy_to_layer(&mut pixel_data, i, &puff_img);
+    }
+
+    // Layer 8: Flame
+    let flame_img = stack
+        .find_texture("textures/particle/flame.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = telos_assets::RgbaImage::new(PARTICLE_RES, PARTICLE_RES);
+            for y in 0..PARTICLE_RES {
+                for x in 0..PARTICLE_RES {
+                    let dx = (x as f32 - 7.5).abs();
+                    let dy = y as f32;
+                    let idx = ((y * PARTICLE_RES + x) * 4) as usize;
+                    if dy > 3.0 && dx <= (dy - 3.0) * 0.7 && dy < 14.0 {
+                        img.data[idx] = 255;
+                        img.data[idx + 1] = if dy < 8.0 { 240 } else { 120 };
+                        img.data[idx + 2] = if dy < 6.0 { 180 } else { 30 };
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer(&mut pixel_data, 8, &flame_img);
+
+    // Layer 9: Spark / Crit
+    let spark_img = stack
+        .find_texture("textures/particle/spark_0.png")
+        .or_else(|| stack.find_texture("textures/particle/critical_hit.png"))
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = telos_assets::RgbaImage::new(PARTICLE_RES, PARTICLE_RES);
+            for y in 0..PARTICLE_RES {
+                for x in 0..PARTICLE_RES {
+                    let idx = ((y * PARTICLE_RES + x) * 4) as usize;
+                    let is_cross = (x == 7 || x == 8) || (y == 7 || y == 8);
+                    let is_center = (6..=9).contains(&x) && (6..=9).contains(&y);
+                    if is_cross || is_center {
+                        img.data[idx] = 255;
+                        img.data[idx + 1] = 245;
+                        img.data[idx + 2] = 160;
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer(&mut pixel_data, 9, &spark_img);
+
+    // Layer 10: Heart
+    let heart_img = stack
+        .find_texture("textures/particle/heart.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = telos_assets::RgbaImage::new(PARTICLE_RES, PARTICLE_RES);
+            for y in 0..PARTICLE_RES {
+                for x in 0..PARTICLE_RES {
+                    let idx = ((y * PARTICLE_RES + x) * 4) as usize;
+                    let is_heart = ((4..=11).contains(&y) && (3..=12).contains(&x))
+                        && !(y == 4 && (x == 7 || x == 8))
+                        && !(y > 8 && (x < (y - 8) + 3 || x > 12 - (y - 8)));
+                    if is_heart {
+                        img.data[idx] = 235;
+                        img.data[idx + 1] = 35;
+                        img.data[idx + 2] = 55;
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer(&mut pixel_data, 10, &heart_img);
+
+    let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
+        .map(|layer| TextureMipRegion {
+            buffer_offset: u64::from(layer * PARTICLE_RES * PARTICLE_RES * 4),
+            layer,
+            mip_level: 0,
+            width: PARTICLE_RES,
+            height: PARTICLE_RES,
+        })
+        .collect();
+
+    let texture_array =
+        gpu_context.create_texture_array(PARTICLE_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
+
+    info!(
+        "Particle billboard texture array loaded (11 layers: 0..7 puff, 8 flame, 9 spark, 10 heart, 16x16)"
+    );
     Ok(texture_array)
 }
 

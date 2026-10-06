@@ -12,9 +12,10 @@ use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart,
     C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason,
-    LodPayload, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cUniformChunk,
+    LodPayload, ParticleEffectKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame,
+    S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent,
+    S2cRegistryData, S2cUniformChunk,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -255,6 +256,15 @@ fn test_s2c_messages_roundtrip() {
             version: 12,
         }),
         S2cMessage::BlockActionAck(S2cBlockActionAck { sequence: 43 }),
+        S2cMessage::ParticleEvent(S2cParticleEvent {
+            effect: ParticleEffectKind::Smoke,
+            x: 15.0,
+            y: 70.5,
+            z: -3.5,
+            count: 12,
+            speed: 0.25,
+            block_state_id: 15,
+        }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,
             message: BoundedString::new("Server is full").unwrap(),

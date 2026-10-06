@@ -31,9 +31,10 @@ pub use messages::{
     hello::{C2sHello, S2cHelloReply},
     login::{AuthMode, C2sLoginStart, S2cLoginSuccess},
     play::{
-        C2sChatMessage, C2sInteractEntity, C2sKeepAlive, LodPayload, S2cChatMessage,
-        S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cKeepAlive, S2cLodNodeData,
-        S2cLodNodeUnload, S2cSpawnEntity, S2cUpdateWeather,
+        C2sChatMessage, C2sInteractEntity, C2sKeepAlive, LodPayload, ParticleEffectKind,
+        S2cChatMessage, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cKeepAlive,
+        S2cLodNodeData, S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity,
+        S2cUpdateWeather,
     },
 };
 

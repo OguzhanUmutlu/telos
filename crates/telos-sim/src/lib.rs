@@ -15,6 +15,7 @@ pub mod experience;
 pub mod hunger;
 pub mod inventory;
 pub mod movement;
+pub mod particle;
 pub mod prediction;
 pub mod schedule;
 pub mod weather;
@@ -46,6 +47,7 @@ pub use movement::{
     MAX_LEGAL_SPEED, MoveMode, MoveState, angles_to_direction, dequantize_pitch, dequantize_yaw,
     quantize_pitch, quantize_yaw, simulate_movement_step,
 };
+pub use particle::{Particle, ParticleGpu, ParticleKind, ParticleSystem};
 pub use prediction::{
     PREDICTION_BUFFER_CAPACITY, PredictionBuffer, PredictionEntry, ReconciliationResult,
     VisualSmoothing,

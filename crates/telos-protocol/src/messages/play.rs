@@ -2218,6 +2218,145 @@ impl C2sTeleportAck {
     }
 }
 
+/// Visual particle effect categories for network replication and client-side simulation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ParticleEffectKind {
+    /// Block breaking debris burst.
+    BlockBreak = 0,
+    /// Block placement dust puff.
+    BlockPlace = 1,
+    /// Material footstep dust puff.
+    Footstep = 2,
+    /// Smoke puff (e.g. torch or campfire).
+    Smoke = 3,
+    /// Flame particle (e.g. torch or fire).
+    Flame = 4,
+    /// Attack critical strike sparks.
+    Crit = 5,
+    /// Explosion shockwave and smoke.
+    Explosion = 6,
+    /// Entity status heart particles.
+    Heart = 7,
+}
+
+impl ParticleEffectKind {
+    /// Converts a wire byte code into `ParticleEffectKind`.
+    #[must_use]
+    pub const fn from_wire(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::BlockBreak),
+            1 => Some(Self::BlockPlace),
+            2 => Some(Self::Footstep),
+            3 => Some(Self::Smoke),
+            4 => Some(Self::Flame),
+            5 => Some(Self::Crit),
+            6 => Some(Self::Explosion),
+            7 => Some(Self::Heart),
+            _ => None,
+        }
+    }
+}
+
+/// Server broadcasts a visual particle emission event to clients in Play phase.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cParticleEvent {
+    /// Effect kind.
+    pub effect: ParticleEffectKind,
+    /// World position X.
+    pub x: f32,
+    /// World position Y.
+    pub y: f32,
+    /// World position Z.
+    pub z: f32,
+    /// Number of particles to spawn (bounded to max 256).
+    pub count: u16,
+    /// Velocity / spread multiplier factor.
+    pub speed: f32,
+    /// Associated block state ID (for debris/dust), or auxiliary parameter.
+    pub block_state_id: u32,
+}
+
+impl Eq for S2cParticleEvent {}
+
+impl S2cParticleEvent {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.effect as u8);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        encode_varint(u32::from(self.count), buf);
+        buf.extend_from_slice(&self.speed.to_le_bytes());
+        encode_varint(self.block_state_id, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let effect_byte = cursor[0];
+        *cursor = &cursor[1..];
+        let effect = ParticleEffectKind::from_wire(effect_byte).ok_or_else(|| {
+            ProtocolError::InvalidValue {
+                field: "particle.effect",
+                reason: format!("Unknown particle effect code: {effect_byte}"),
+            }
+        })?;
+
+        if cursor.len() < 12 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        let y = f32::from_le_bytes(cursor[4..8].try_into().unwrap());
+        let z = f32::from_le_bytes(cursor[8..12].try_into().unwrap());
+        *cursor = &cursor[12..];
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "particle.pos",
+                reason: "Coordinates must be finite".to_string(),
+            });
+        }
+
+        let count_raw = decode_varint(cursor)?;
+        if count_raw > 256 {
+            return Err(ProtocolError::InvalidValue {
+                field: "particle.count",
+                reason: format!("Particle count {count_raw} exceeds maximum 256"),
+            });
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let count = count_raw as u16;
+
+        if cursor.len() < 4 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let speed = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        *cursor = &cursor[4..];
+
+        if !speed.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "particle.speed",
+                reason: "Particle speed must be finite".to_string(),
+            });
+        }
+
+        let block_state_id = decode_varint(cursor)?;
+
+        Ok(Self {
+            effect,
+            x,
+            y,
+            z,
+            count,
+            speed,
+            block_state_id,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2434,5 +2573,21 @@ mod tests {
         let decoded_tp =
             C2sTeleportAck::decode(&mut cursor).expect("failed to decode C2sTeleportAck");
         assert_eq!(tp_ack, decoded_tp);
+
+        let particle_ev = S2cParticleEvent {
+            effect: ParticleEffectKind::BlockBreak,
+            x: 10.5,
+            y: 64.0,
+            z: -5.25,
+            count: 32,
+            speed: 1.5,
+            block_state_id: 2,
+        };
+        let mut buf = Vec::new();
+        particle_ev.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_ev =
+            S2cParticleEvent::decode(&mut cursor).expect("failed to decode S2cParticleEvent");
+        assert_eq!(particle_ev, decoded_ev);
     }
 }

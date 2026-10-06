@@ -16,11 +16,12 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
     C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload,
-    PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
-    S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity, S2cEntityMove,
-    S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cPlayerMovementAck, S2cRegistryData,
-    S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity,
+    S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck,
+    S2cRegistryData, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -1529,12 +1530,46 @@ impl Server {
                         version,
                     });
 
-                    // Broadcast block update to players in the same world in Play phase
+                    let particle_msg = match action.action {
+                        BlockActionKind::Break => {
+                            Some(S2cMessage::ParticleEvent(S2cParticleEvent {
+                                effect: ParticleEffectKind::BlockBreak,
+                                x: target_pos.x() as f32 + 0.5,
+                                y: target_pos.y() as f32 + 0.5,
+                                z: target_pos.z() as f32 + 0.5,
+                                count: 24,
+                                speed: 1.0,
+                                block_state_id: old_state.0,
+                            }))
+                        }
+                        BlockActionKind::Place { .. } => {
+                            Some(S2cMessage::ParticleEvent(S2cParticleEvent {
+                                effect: ParticleEffectKind::BlockPlace,
+                                x: target_pos.x() as f32 + 0.5,
+                                y: target_pos.y() as f32 + 0.5,
+                                z: target_pos.z() as f32 + 0.5,
+                                count: 10,
+                                speed: 0.5,
+                                block_state_id: new_state.0,
+                            }))
+                        }
+                    };
+
+                    // Broadcast block update and particle effects to players in the same world in Play phase
                     for s in self.sessions.values_mut() {
                         if s.phase == ConnectionPhase::Play && s.world_name == session_world_name {
                             let _ = s
                                 .connection
                                 .send(Lane::Control, Payload::Msg(update_msg.clone()));
+
+                            // Broadcast visual particle bursts to other players (local player predicts immediately)
+                            if s.session_id != session_id
+                                && let Some(ref p_msg) = particle_msg
+                            {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(p_msg.clone()));
+                            }
                         }
                     }
                 }

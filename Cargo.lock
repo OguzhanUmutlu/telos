@@ -3458,6 +3458,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "bitflags 2.13.2",
+ "bytemuck",
  "glam",
  "hashbrown 0.15.5",
  "proptest",
