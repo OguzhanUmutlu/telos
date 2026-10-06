@@ -15,6 +15,7 @@ vx-worldgen = { workspace = true }
 vx-protocol = { workspace = true }
 vx-net = { workspace = true }
 vx-lod = { workspace = true }
+vx-storage = { workspace = true }
 tracing = { workspace = true }
 hashbrown = { workspace = true }
 glam = { workspace = true }
@@ -22,6 +23,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

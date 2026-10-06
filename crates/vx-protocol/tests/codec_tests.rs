@@ -9,11 +9,12 @@ use vx_protocol::codec::{
 };
 use vx_protocol::error::ProtocolError;
 use vx_protocol::messages::{
-    AuthMode, C2sChatMessage, C2sClientSettings, C2sConfigAck, C2sHello, C2sKeepAlive,
-    C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload,
-    ConnectionPhase, Disconnect, DisconnectReason, LodPayload, S2cChatMessage, S2cChunkData,
-    S2cChunkUnload, S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cUniformChunk,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings, C2sConfigAck,
+    C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sPlayerPosition,
+    ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload, S2cBlockActionAck,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cConfigDone, S2cHelloReply,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cRegistryData, S2cUniformChunk,
 };
 use vx_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -144,6 +145,25 @@ fn test_c2s_messages_roundtrip() {
             pitch: -15.5,
             on_ground: true,
         }),
+        C2sMessage::BlockAction(C2sBlockAction {
+            sequence: 42,
+            action: BlockActionKind::Break,
+            x: -15,
+            y: 64,
+            z: 200,
+            input_tick: 105,
+        }),
+        C2sMessage::BlockAction(C2sBlockAction {
+            sequence: 43,
+            action: BlockActionKind::Place {
+                state_id: BlockStateId::new(4),
+                hit_face: 1,
+            },
+            x: -15,
+            y: 65,
+            z: 200,
+            input_tick: 106,
+        }),
         C2sMessage::Disconnect(Disconnect {
             reason: DisconnectReason::Normal,
             message: BoundedString::new("Quitting game").unwrap(),
@@ -226,6 +246,14 @@ fn test_s2c_messages_roundtrip() {
             node_y: 1,
             node_z: 12,
         }),
+        S2cMessage::BlockUpdate(S2cBlockUpdate {
+            x: -15,
+            y: 65,
+            z: 200,
+            state_id: BlockStateId::new(4),
+            version: 12,
+        }),
+        S2cMessage::BlockActionAck(S2cBlockActionAck { sequence: 43 }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,
             message: BoundedString::new("Server is full").unwrap(),

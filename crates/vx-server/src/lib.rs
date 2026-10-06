@@ -8,10 +8,12 @@ pub mod config;
 pub mod priority;
 pub mod server;
 pub mod session;
+pub mod storage;
 pub mod world;
 
 pub use config::ServerConfig;
 pub use priority::{QueuedChunk, compute_chunk_priority};
 pub use server::Server;
 pub use session::PlayerSession;
-pub use world::ServerWorld;
+pub use storage::WorldStorage;
+pub use world::{ServerChunk, ServerWorld};

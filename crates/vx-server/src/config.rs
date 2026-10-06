@@ -15,6 +15,10 @@ pub struct ServerConfig {
     pub max_lod_level: u8,
     /// Maximum LOD nodes delivered to a player per tick (default: 4).
     pub lod_nodes_per_tick_per_player: usize,
+    /// Optional world save directory path (e.g. `saves/world`). If `None`, persistence is in-memory only.
+    pub save_directory: Option<std::path::PathBuf>,
+    /// Autosave interval in server ticks (default: 600 = 30 seconds at 20 TPS).
+    pub autosave_interval_ticks: u32,
 }
 
 impl Default for ServerConfig {
@@ -26,6 +30,8 @@ impl Default for ServerConfig {
             chunks_per_tick_per_player: 16,
             max_lod_level: 2,
             lod_nodes_per_tick_per_player: 4,
+            save_directory: None,
+            autosave_interval_ticks: 600,
         }
     }
 }

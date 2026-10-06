@@ -13,9 +13,10 @@ pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
-    C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload, LodPayload, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cUniformChunk, decode_chunk_snapshot, encode_chunk_snapshot,
+    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload,
+    LodPayload, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cUniformChunk,
+    decode_chunk_snapshot, encode_chunk_snapshot,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -66,6 +67,8 @@ pub enum C2sMessage {
     ChatMessage(C2sChatMessage),
     /// Play phase updated player position and orientation.
     PlayerPosition(C2sPlayerPosition),
+    /// Play phase block break or place action.
+    BlockAction(C2sBlockAction),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -82,9 +85,10 @@ impl C2sMessage {
             Self::KnownRegistries(_) | Self::ClientSettings(_) | Self::ConfigAck(_) => {
                 Some(ConnectionPhase::Config)
             }
-            Self::KeepAlive(_) | Self::ChatMessage(_) | Self::PlayerPosition(_) => {
-                Some(ConnectionPhase::Play)
-            }
+            Self::KeepAlive(_)
+            | Self::ChatMessage(_)
+            | Self::PlayerPosition(_)
+            | Self::BlockAction(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -99,6 +103,7 @@ impl C2sMessage {
             | Self::KeepAlive(_) => 0,
             Self::ClientSettings(_) | Self::ChatMessage(_) => 1,
             Self::ConfigAck(_) | Self::PlayerPosition(_) => 2,
+            Self::BlockAction(_) => 3,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -114,6 +119,7 @@ impl C2sMessage {
             Self::KeepAlive(m) => m.encode(buf),
             Self::ChatMessage(m) => m.encode(buf),
             Self::PlayerPosition(m) => m.encode(buf),
+            Self::BlockAction(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -146,6 +152,10 @@ pub enum S2cMessage {
     LodNodeData(S2cLodNodeData),
     /// Play phase LOD node unload notification.
     LodNodeUnload(S2cLodNodeUnload),
+    /// Play phase world block state update.
+    BlockUpdate(S2cBlockUpdate),
+    /// Play phase acknowledgment of client block predictions.
+    BlockActionAck(S2cBlockActionAck),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -167,7 +177,9 @@ impl S2cMessage {
             | Self::UniformChunk(_)
             | Self::ChunkUnload(_)
             | Self::LodNodeData(_)
-            | Self::LodNodeUnload(_) => Some(ConnectionPhase::Play),
+            | Self::LodNodeUnload(_)
+            | Self::BlockUpdate(_)
+            | Self::BlockActionAck(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -187,6 +199,8 @@ impl S2cMessage {
             Self::ChunkUnload(_) => 5,
             Self::LodNodeData(_) => 6,
             Self::LodNodeUnload(_) => 7,
+            Self::BlockUpdate(_) => 8,
+            Self::BlockActionAck(_) => 9,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -206,6 +220,8 @@ impl S2cMessage {
             Self::ChunkUnload(m) => m.encode(buf),
             Self::LodNodeData(m) => m.encode(buf),
             Self::LodNodeUnload(m) => m.encode(buf),
+            Self::BlockUpdate(m) => m.encode(buf),
+            Self::BlockActionAck(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

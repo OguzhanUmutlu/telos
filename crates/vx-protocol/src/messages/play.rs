@@ -860,3 +860,164 @@ impl S2cLodNodeUnload {
         })
     }
 }
+
+/// Kind of block action initiated by client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockActionKind {
+    /// Destroy the targeted block.
+    Break,
+    /// Place a block against the targeted face.
+    Place {
+        /// Target block state to place.
+        state_id: BlockStateId,
+        /// Face index against which the block was placed.
+        hit_face: u8,
+    },
+}
+
+impl BlockActionKind {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Break => buf.push(0),
+            Self::Place { state_id, hit_face } => {
+                buf.push(1);
+                encode_varint(state_id.as_u32(), buf);
+                buf.push(*hit_face);
+            }
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let kind = cursor[0];
+        *cursor = &cursor[1..];
+        match kind {
+            0 => Ok(Self::Break),
+            1 => {
+                let state_id = BlockStateId::new(decode_varint(cursor)?);
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let hit_face = cursor[0];
+                *cursor = &cursor[1..];
+                Ok(Self::Place { state_id, hit_face })
+            }
+            other => Err(ProtocolError::Malformed(format!(
+                "Unknown block action kind {other}"
+            ))),
+        }
+    }
+}
+
+/// Client sends block break or place action to server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C2sBlockAction {
+    /// Monotonically increasing sequence number for prediction reconciliation.
+    pub sequence: u32,
+    /// Action kind: break or place.
+    pub action: BlockActionKind,
+    /// World block X coordinate.
+    pub x: i32,
+    /// World block Y coordinate.
+    pub y: i32,
+    /// World block Z coordinate.
+    pub z: i32,
+    /// Client simulation tick at the moment the action was triggered.
+    pub input_tick: u32,
+}
+
+impl C2sBlockAction {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.sequence, buf);
+        self.action.encode(buf);
+        encode_varint(zigzag_i32(self.x), buf);
+        encode_varint(zigzag_i32(self.y), buf);
+        encode_varint(zigzag_i32(self.z), buf);
+        encode_varint(self.input_tick, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let sequence = decode_varint(cursor)?;
+        let action = BlockActionKind::decode(cursor)?;
+        let x = unzigzag_i32(decode_varint(cursor)?);
+        let y = unzigzag_i32(decode_varint(cursor)?);
+        let z = unzigzag_i32(decode_varint(cursor)?);
+        let input_tick = decode_varint(cursor)?;
+        Ok(Self {
+            sequence,
+            action,
+            x,
+            y,
+            z,
+            input_tick,
+        })
+    }
+}
+
+/// Server notifies client of an updated block state in the world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cBlockUpdate {
+    /// World block X coordinate.
+    pub x: i32,
+    /// World block Y coordinate.
+    pub y: i32,
+    /// World block Z coordinate.
+    pub z: i32,
+    /// Updated block state ID.
+    pub state_id: BlockStateId,
+    /// Chunk content version.
+    pub version: u64,
+}
+
+impl S2cBlockUpdate {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(zigzag_i32(self.x), buf);
+        encode_varint(zigzag_i32(self.y), buf);
+        encode_varint(zigzag_i32(self.z), buf);
+        encode_varint(self.state_id.as_u32(), buf);
+        encode_varlong(self.version, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let x = unzigzag_i32(decode_varint(cursor)?);
+        let y = unzigzag_i32(decode_varint(cursor)?);
+        let z = unzigzag_i32(decode_varint(cursor)?);
+        let state_id = BlockStateId::new(decode_varint(cursor)?);
+        let version = decode_varlong(cursor)?;
+        Ok(Self {
+            x,
+            y,
+            z,
+            state_id,
+            version,
+        })
+    }
+}
+
+/// Server acknowledges client predicted block actions up to a given sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cBlockActionAck {
+    /// Highest acknowledged action sequence number.
+    pub sequence: u32,
+}
+
+impl S2cBlockActionAck {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.sequence, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let sequence = decode_varint(cursor)?;
+        Ok(Self { sequence })
+    }
+}

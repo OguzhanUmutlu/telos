@@ -4,13 +4,15 @@ use glam::DVec3;
 use hashbrown::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
+use vx_core::coords::{BlockPos, Face};
 use vx_net::{Connection, Lane, Payload};
 use vx_protocol::messages::{
-    C2sMessage, ChunkPayload, ConnectionPhase, LodPayload, S2cChunkData, S2cChunkUnload,
-    S2cHelloReply, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cUniformChunk,
+    BlockActionKind, C2sBlockAction, C2sMessage, ChunkPayload, ConnectionPhase, LodPayload,
+    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cHelloReply, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cUniformChunk,
 };
 use vx_voxel::registry::BlockRegistry;
+use vx_voxel::state::BlockStateId;
 use vx_voxel::storage::Blocks;
 
 use crate::config::ServerConfig;
@@ -32,7 +34,19 @@ impl Server {
     #[must_use]
     pub fn new(seed: u64, config: ServerConfig) -> Self {
         let registry = BlockRegistry::standard();
-        let world = ServerWorld::new(seed, registry);
+        let world = if let Some(dir) = &config.save_directory {
+            match ServerWorld::with_storage(seed, registry.clone(), dir) {
+                Ok(w) => w,
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to initialize storage at {dir:?}: {err}; falling back to memory"
+                    );
+                    ServerWorld::new(seed, registry)
+                }
+            }
+        } else {
+            ServerWorld::new(seed, registry)
+        };
 
         Self {
             config,
@@ -50,7 +64,13 @@ impl Server {
         &self.config
     }
 
-    /// Accesses the server's world container.
+    /// Accesses the server's world container immutably.
+    #[must_use]
+    pub fn world(&self) -> &ServerWorld {
+        &self.world
+    }
+
+    /// Accesses the server's world container mutably.
     pub fn world_mut(&mut self) -> &mut ServerWorld {
         &mut self.world
     }
@@ -83,6 +103,7 @@ impl Server {
 
         // 1. Process inbound network packets across all sessions
         let mut disconnected = Vec::new();
+        let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -160,6 +181,9 @@ impl Server {
                                 pos.on_ground,
                             );
                         }
+                        C2sMessage::BlockAction(action) => {
+                            block_actions.push((*session_id, action));
+                        }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
                         }
@@ -174,7 +198,94 @@ impl Server {
             info!(session_id = id, "Session disconnected");
         }
 
-        // 2. Process active chunk subscriptions and deliveries
+        // 2. Process block actions (authoritative validation & simulation)
+        for (session_id, action) in block_actions {
+            let Some(session) = self.sessions.get(&session_id) else {
+                continue;
+            };
+
+            let (target_pos, new_state) = match action.action {
+                BlockActionKind::Break => (
+                    BlockPos::new(action.x, action.y, action.z),
+                    BlockStateId::AIR,
+                ),
+                BlockActionKind::Place { state_id, hit_face } => {
+                    let clicked_pos = BlockPos::new(action.x, action.y, action.z);
+                    let face = match hit_face {
+                        0 => Face::Down,
+                        1 => Face::Up,
+                        2 => Face::North,
+                        3 => Face::South,
+                        4 => Face::West,
+                        _ => Face::East,
+                    };
+                    let norm = face.normal_ivec();
+                    (
+                        BlockPos::new(
+                            clicked_pos.x() + norm.x,
+                            clicked_pos.y() + norm.y,
+                            clicked_pos.z() + norm.z,
+                        ),
+                        state_id,
+                    )
+                }
+            };
+
+            // Reach validation: squared distance from player pos to block center <= reach^2
+            let block_center = DVec3::new(
+                f64::from(target_pos.x()) + 0.5,
+                f64::from(target_pos.y()) + 0.5,
+                f64::from(target_pos.z()) + 0.5,
+            );
+            let dist_sq = (session.position - block_center).length_squared();
+            let max_reach = 6.0; // 5.0 blocks + 1.0 tolerance for latency
+            let is_in_reach = dist_sq <= max_reach * max_reach;
+            let is_in_bounds = target_pos.y() >= -1024 && target_pos.y() < 2048;
+
+            if is_in_reach && is_in_bounds {
+                if let Some((_snapshot, version)) = self.world.set_block(target_pos, new_state) {
+                    let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                        x: target_pos.x(),
+                        y: target_pos.y(),
+                        z: target_pos.z(),
+                        state_id: new_state,
+                        version,
+                    });
+
+                    // Broadcast block update to all players in Play phase
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                        }
+                    }
+                }
+            } else {
+                // Out of reach or invalid: send true block state to revert client prediction
+                let real_state = self.world.get_block(target_pos);
+                let rollback_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                    x: target_pos.x(),
+                    y: target_pos.y(),
+                    z: target_pos.z(),
+                    state_id: real_state,
+                    version: 0,
+                });
+                if let Some(s) = self.sessions.get_mut(&session_id) {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(rollback_msg));
+                }
+            }
+
+            // Always acknowledge action sequence to the client
+            let ack_msg = S2cMessage::BlockActionAck(S2cBlockActionAck {
+                sequence: action.sequence,
+            });
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                let _ = s.connection.send(Lane::Control, Payload::Msg(ack_msg));
+            }
+        }
+
+        // 3. Process active chunk subscriptions and deliveries
         let quota = self.config.chunks_per_tick_per_player;
 
         for session in self.sessions.values_mut() {
@@ -277,5 +388,29 @@ impl Server {
                     .send(Lane::Chunk { priority: 1 }, Payload::Msg(data_msg));
             }
         }
+
+        // 4. Periodic autosave
+        if self.config.autosave_interval_ticks > 0
+            && self
+                .tick_count
+                .is_multiple_of(u64::from(self.config.autosave_interval_ticks))
+            && let Err(err) = self.world.save_dirty_chunks()
+        {
+            tracing::error!("Autosave failed: {err}");
+        }
+    }
+
+    /// Saves all dirty chunks to `.vxr` region files and syncs data to disk.
+    pub fn save_and_flush(&mut self) -> Result<usize, vx_storage::StorageError> {
+        let saved = self.world.save_dirty_chunks()?;
+        self.world.flush_storage()?;
+        Ok(saved)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.world.save_dirty_chunks();
+        let _ = self.world.flush_storage();
     }
 }

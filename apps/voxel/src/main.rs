@@ -2,6 +2,7 @@
 
 pub mod camera;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -14,7 +15,10 @@ use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
 use tracing::info;
 use vx_assets::{ResourcePackStack, TextureArrayBuilder};
-use vx_core::{FixedTimestep, TelemetryConfig, coords::ChunkPos, init_telemetry};
+use vx_core::{
+    BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos, init_telemetry,
+    raycast_voxels,
+};
 use vx_gpu::{
     DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline, ShaderModule,
     TextureMipRegion, vk,
@@ -22,10 +26,10 @@ use vx_gpu::{
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
-    AuthMode, C2sClientSettings, C2sConfigAck, C2sHello, C2sLoginStart, C2sMessage,
-    C2sPlayerPosition, ChunkPayload, ConnectionPhase, S2cMessage,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
+    C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, S2cMessage,
 };
-use vx_voxel::chunk::ChunkSnapshot;
+use vx_voxel::chunk::{Chunk, ChunkSnapshot};
 use vx_voxel::coords::LocalIdx;
 use vx_voxel::light::ChunkLight;
 use vx_voxel::registry::BlockRegistry;
@@ -60,6 +64,10 @@ struct Args {
     /// Enable Vulkan validation layers.
     #[arg(long, default_value_t = false)]
     validation: bool,
+
+    /// World save directory for singleplayer server.
+    #[arg(short, long, default_value = "worlds/default")]
+    world_dir: PathBuf,
 }
 
 #[repr(C)]
@@ -82,6 +90,24 @@ struct LodPushConstants {
     camera_pos: Vec3,
     max_distance: f32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HighlightPushConstants {
+    view_proj: glam::Mat4,
+    min_bound: [f32; 4],
+    max_bound: [f32; 4],
+    color: [f32; 4],
+}
+
+const HOTBAR_ITEMS: [(&str, BlockStateId); 6] = [
+    ("Stone", BlockStateId::new(1)),
+    ("Dirt", BlockStateId::new(2)),
+    ("Grass", BlockStateId::new(3)),
+    ("Bedrock", BlockStateId::new(4)),
+    ("Sand", BlockStateId::new(5)),
+    ("Water", BlockStateId::new(6)),
+];
 
 struct GpuChunkMesh {
     pos: [i32; 3],
@@ -119,6 +145,15 @@ struct App {
     lod_vert_shader: Option<ShaderModule>,
     lod_frag_shader: Option<ShaderModule>,
 
+    highlight_pipeline: Option<GraphicsPipeline>,
+    highlight_vert_shader: Option<ShaderModule>,
+    highlight_frag_shader: Option<ShaderModule>,
+
+    targeted_block: Option<RaycastHit>,
+    selected_hotbar_slot: usize,
+    selected_block_state: BlockStateId,
+    action_sequence: u32,
+
     server_running: Arc<AtomicBool>,
     server_handle: Option<std::thread::JoinHandle<()>>,
     client_conn: Box<dyn Connection<C2sMessage, S2cMessage>>,
@@ -144,7 +179,7 @@ struct App {
 }
 
 impl App {
-    fn new(validation: bool, seed: u64, view_distance: u32) -> Self {
+    fn new(validation: bool, seed: u64, view_distance: u32, world_dir: PathBuf) -> Self {
         let spawn_pos = Vec3::new(128.0, 45.0, 160.0);
         let mut camera = Camera::new(spawn_pos);
         camera.pitch = -0.3;
@@ -164,6 +199,7 @@ impl App {
                     view_distance,
                     vertical_view_distance: 2,
                     chunks_per_tick_per_player: 16,
+                    save_directory: Some(world_dir),
                     ..Default::default()
                 };
                 let mut server = vx_server::Server::new(seed, config);
@@ -207,6 +243,15 @@ impl App {
             lod_vert_shader: None,
             lod_frag_shader: None,
 
+            highlight_pipeline: None,
+            highlight_vert_shader: None,
+            highlight_frag_shader: None,
+
+            targeted_block: None,
+            selected_hotbar_slot: 0,
+            selected_block_state: HOTBAR_ITEMS[0].1,
+            action_sequence: 0,
+
             server_running,
             server_handle: Some(server_handle),
             client_conn,
@@ -229,6 +274,44 @@ impl App {
             frame_counter: 0,
             visible_chunks_last: 0,
             visible_lod_nodes_last: 0,
+        }
+    }
+
+    fn select_hotbar_slot(&mut self, slot: usize) {
+        if slot < HOTBAR_ITEMS.len() {
+            self.selected_hotbar_slot = slot;
+            self.selected_block_state = HOTBAR_ITEMS[slot].1;
+            info!(
+                slot = slot + 1,
+                item = HOTBAR_ITEMS[slot].0,
+                state_id = self.selected_block_state.as_u32(),
+                "Selected hotbar slot"
+            );
+        }
+    }
+
+    fn apply_block_update(&mut self, pos: BlockPos, state_id: BlockStateId) {
+        let (chunk_pos, local_idx) = vx_voxel::coords::split_block_pos(pos);
+        if let Some(snap) = self.chunks.get(&chunk_pos) {
+            let old_state = snap.blocks().get(local_idx);
+            if old_state == state_id {
+                return;
+            }
+
+            let registry = &self.block_registry;
+            let mut chunk = Chunk::from_blocks(chunk_pos, snap.blocks().clone(), |s| {
+                registry
+                    .flags(s)
+                    .contains(vx_voxel::state::StateFlags::OPAQUE_FULL)
+            });
+            if let Some(light) = snap.light() {
+                chunk.set_light(Some(light.clone()));
+            }
+            let old_flags = registry.flags(old_state);
+            let new_flags = registry.flags(state_id);
+            chunk.set(local_idx, state_id, old_flags, new_flags, 1);
+            self.chunks.insert(chunk_pos, chunk.publish_snapshot());
+            self.mark_dirty_with_neighbors(chunk_pos);
         }
     }
 
@@ -361,6 +444,16 @@ impl App {
                         {
                             mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
                         }
+                    }
+                    S2cMessage::BlockUpdate(upd) => {
+                        let pos = BlockPos::new(upd.x, upd.y, upd.z);
+                        self.apply_block_update(pos, upd.state_id);
+                    }
+                    S2cMessage::BlockActionAck(ack) => {
+                        tracing::trace!(
+                            sequence = ack.sequence,
+                            "Server acknowledged block action"
+                        );
                     }
                     _ => {}
                 },
@@ -601,6 +694,24 @@ impl App {
 
         self.controller.update(&mut self.camera, dt);
 
+        // Voxel DDA Raycast for block aiming & selection
+        let origin = self.camera.position;
+        let forward = self.camera.forward();
+        let max_reach = 5.0;
+        let is_solid = |pos: BlockPos| -> bool {
+            let (chunk_pos, local_idx) = vx_voxel::coords::split_block_pos(pos);
+            if let Some(snap) = self.chunks.get(&chunk_pos) {
+                let state = snap.blocks().get(local_idx);
+                !self
+                    .block_registry
+                    .flags(state)
+                    .contains(vx_voxel::state::StateFlags::AIR)
+            } else {
+                false
+            }
+        };
+        self.targeted_block = raycast_voxels(origin, forward, max_reach, is_solid);
+
         self.frame_counter += 1;
         if now.duration_since(self.last_fps_time) >= Duration::from_secs(1) {
             let fps = self.frame_counter;
@@ -811,6 +922,37 @@ impl App {
                 }
 
                 self.visible_lod_nodes_last = visible_lods;
+            }
+
+            // Block selection wireframe highlight
+            if let (Some(hit), Some(highlight_pipeline)) =
+                (self.targeted_block, &self.highlight_pipeline)
+            {
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    highlight_pipeline.raw(),
+                );
+                #[allow(clippy::cast_precision_loss)]
+                let (bx, by, bz) = (hit.pos.x() as f32, hit.pos.y() as f32, hit.pos.z() as f32);
+                let pc = HighlightPushConstants {
+                    view_proj,
+                    min_bound: [bx - 0.002, by - 0.002, bz - 0.002, 0.0],
+                    max_bound: [bx + 1.002, by + 1.002, bz + 1.002, 0.0],
+                    color: [0.05, 0.05, 0.05, 0.75],
+                };
+                let pc_bytes = std::slice::from_raw_parts(
+                    std::ptr::from_ref(&pc).cast::<u8>(),
+                    size_of::<HighlightPushConstants>(),
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    highlight_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    pc_bytes,
+                );
+                device.cmd_draw(cmd, 24, 1, 0, 0);
             }
 
             device.cmd_end_rendering(cmd);
@@ -1054,6 +1196,52 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Load highlight SPIR-V bytecode
+        let highlight_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/highlight.vert.spv"));
+        let highlight_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/highlight.frag.spv"));
+
+        let highlight_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), highlight_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create highlight vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let highlight_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), highlight_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create highlight fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let highlight_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<HighlightPushConstants>() as u32);
+
+        let highlight_pipeline = match GraphicsPipeline::create_dynamic_lines(
+            gpu_context.device().raw(),
+            highlight_vert_module.raw(),
+            highlight_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            &[highlight_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic highlight graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
         self.pipeline = Some(pipeline);
@@ -1062,6 +1250,9 @@ impl ApplicationHandler for App {
         self.lod_pipeline = Some(lod_pipeline);
         self.lod_vert_shader = Some(lod_vert_module);
         self.lod_frag_shader = Some(lod_frag_module);
+        self.highlight_pipeline = Some(highlight_pipeline);
+        self.highlight_vert_shader = Some(highlight_vert_module);
+        self.highlight_frag_shader = Some(highlight_frag_module);
         self.depth_buffer = Some(depth_buffer);
         self.texture_array = Some(texture_array);
         self.descriptor_pool = Some(descriptor_pool);
@@ -1082,6 +1273,7 @@ impl ApplicationHandler for App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1100,10 +1292,53 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button,
                 ..
             } => {
-                if !self.controller.mouse_captured {
+                if self.controller.mouse_captured {
+                    match button {
+                        MouseButton::Left => {
+                            if let Some(hit) = self.targeted_block {
+                                self.action_sequence += 1;
+                                let msg = C2sMessage::BlockAction(C2sBlockAction {
+                                    sequence: self.action_sequence,
+                                    action: BlockActionKind::Break,
+                                    x: hit.pos.x(),
+                                    y: hit.pos.y(),
+                                    z: hit.pos.z(),
+                                    input_tick: self.frame_counter,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                self.apply_block_update(hit.pos, BlockStateId::AIR);
+                            }
+                        }
+                        MouseButton::Right => {
+                            if let Some(hit) = self.targeted_block {
+                                let norm = hit.face.normal_ivec();
+                                let place_pos = BlockPos::new(
+                                    hit.pos.x() + norm.x,
+                                    hit.pos.y() + norm.y,
+                                    hit.pos.z() + norm.z,
+                                );
+                                self.action_sequence += 1;
+                                let msg = C2sMessage::BlockAction(C2sBlockAction {
+                                    sequence: self.action_sequence,
+                                    action: BlockActionKind::Place {
+                                        state_id: self.selected_block_state,
+                                        hit_face: hit.face as u8,
+                                    },
+                                    x: hit.pos.x(),
+                                    y: hit.pos.y(),
+                                    z: hit.pos.z(),
+                                    input_tick: self.frame_counter,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                self.apply_block_update(place_pos, self.selected_block_state);
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if button == MouseButton::Left {
                     self.controller.mouse_captured = true;
                     let _ = window
                         .set_cursor_grab(winit::window::CursorGrabMode::Locked)
@@ -1133,6 +1368,12 @@ impl ApplicationHandler for App {
                     KeyCode::ControlLeft | KeyCode::ControlRight => {
                         self.controller.sprint = pressed;
                     }
+                    KeyCode::Digit1 if pressed => self.select_hotbar_slot(0),
+                    KeyCode::Digit2 if pressed => self.select_hotbar_slot(1),
+                    KeyCode::Digit3 if pressed => self.select_hotbar_slot(2),
+                    KeyCode::Digit4 if pressed => self.select_hotbar_slot(3),
+                    KeyCode::Digit5 if pressed => self.select_hotbar_slot(4),
+                    KeyCode::Digit6 if pressed => self.select_hotbar_slot(5),
                     KeyCode::Escape if pressed => {
                         if self.controller.mouse_captured {
                             self.controller.mouse_captured = false;
@@ -1200,6 +1441,16 @@ impl ApplicationHandler for App {
                 vert.destroy(gpu_context.device().raw());
             }
             if let Some(mut frag) = self.lod_frag_shader.take() {
+                frag.destroy(gpu_context.device().raw());
+            }
+
+            if let Some(mut pipeline) = self.highlight_pipeline.take() {
+                pipeline.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut vert) = self.highlight_vert_shader.take() {
+                vert.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut frag) = self.highlight_frag_shader.take() {
                 frag.destroy(gpu_context.device().raw());
             }
 
@@ -1323,13 +1574,19 @@ fn main() -> Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         seed = args.seed,
         view_distance = args.view_distance,
+        world_dir = ?args.world_dir,
         "Starting Voxel client"
     );
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(args.validation, args.seed, args.view_distance);
+    let mut app = App::new(
+        args.validation,
+        args.seed,
+        args.view_distance,
+        args.world_dir,
+    );
     event_loop.run_app(&mut app)?;
 
     Ok(())

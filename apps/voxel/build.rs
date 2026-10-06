@@ -10,6 +10,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../shaders/chunk.frag");
     println!("cargo:rerun-if-changed=../../shaders/lod.vert");
     println!("cargo:rerun-if-changed=../../shaders/lod.frag");
+    println!("cargo:rerun-if-changed=../../shaders/highlight.vert");
+    println!("cargo:rerun-if-changed=../../shaders/highlight.frag");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -27,6 +29,8 @@ fn main() {
         ("../../shaders/chunk.frag", "chunk.frag.spv"),
         ("../../shaders/lod.vert", "lod.vert.spv"),
         ("../../shaders/lod.frag", "lod.frag.spv"),
+        ("../../shaders/highlight.vert", "highlight.vert.spv"),
+        ("../../shaders/highlight.frag", "highlight.frag.spv"),
     ];
 
     for (src, dst) in shaders {
