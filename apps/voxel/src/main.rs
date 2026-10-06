@@ -29,13 +29,14 @@ use vx_gpu::{
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
-    AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sInteractEntity, C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand,
-    C2sPlayerPosition, ChunkPayload, ConnectionPhase, PlayerCommandKind, S2cMessage,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
+    C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
+    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
+    PlayerCommandKind, S2cMessage,
 };
 use vx_ui::{
-    BitmapFont, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale, render_hud,
-    render_inventory_screen, slot_at_pos,
+    BitmapFont, ChatHudState, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale,
+    render_chat_hud, render_hud, render_inventory_screen, slot_at_pos,
 };
 use vx_voxel::chunk::{Chunk, ChunkSnapshot};
 use vx_voxel::coords::LocalIdx;
@@ -1108,6 +1109,10 @@ struct App {
     entity_buffer: Option<GpuBuffer>,
     entity_vertex_count: u32,
     mob_spawn_type_cycle: u8,
+    start_time: Instant,
+    chat_state: ChatHudState,
+    lan_listener: Option<vx_net::LanDiscoveryListener>,
+    suggest_query_id: u32,
 }
 
 impl App {
@@ -1306,6 +1311,26 @@ impl App {
             entity_buffer: None,
             entity_vertex_count: 0,
             mob_spawn_type_cycle: 1,
+            start_time: Instant::now(),
+            chat_state: ChatHudState::new(),
+            lan_listener: vx_net::LanDiscoveryListener::new().ok(),
+            suggest_query_id: 0,
+        }
+    }
+
+    fn request_command_suggestions(&mut self) {
+        if !self.chat_state.input_buffer.starts_with('/') {
+            return;
+        }
+        self.suggest_query_id = self.suggest_query_id.wrapping_add(1);
+        if let Ok(bounded) = BoundedString::new(self.chat_state.input_buffer.clone()) {
+            #[allow(clippy::cast_possible_truncation)]
+            let req = C2sMessage::CommandSuggest(C2sCommandSuggest {
+                id: self.suggest_query_id,
+                command: bounded,
+                cursor: self.chat_state.cursor_pos as u32,
+            });
+            let _ = self.client_conn.send(Lane::Control, Payload::Msg(req));
         }
     }
 
@@ -1601,9 +1626,30 @@ impl App {
                     S2cMessage::EntityStatus(s) => {
                         self.entity_store.on_status(s.net_id, s.status);
                     }
+                    S2cMessage::ChatMessage(chat) => {
+                        let now_secs = self.start_time.elapsed().as_secs_f64();
+                        self.chat_state.add_message(
+                            chat.sender.as_str(),
+                            chat.message.as_str(),
+                            now_secs,
+                        );
+                    }
+                    S2cMessage::CommandSuggestions(sug) => {
+                        let matches: Vec<String> =
+                            sug.matches.iter().map(|s| s.as_str().to_string()).collect();
+                        self.chat_state.set_suggestions(
+                            sug.start as usize,
+                            sug.length as usize,
+                            matches,
+                        );
+                    }
                     _ => {}
                 },
             }
+        }
+
+        if let Some(listener) = &mut self.lan_listener {
+            listener.poll();
         }
     }
 
@@ -3698,6 +3744,17 @@ impl App {
                     );
                 }
 
+                let now_secs = self.start_time.elapsed().as_secs_f64();
+                render_chat_hud(
+                    &self.chat_state,
+                    font,
+                    swapchain_extent.width,
+                    swapchain_extent.height,
+                    gui_scale,
+                    now_secs,
+                    &mut ui_quads,
+                );
+
                 if !ui_quads.is_empty() {
                     let required_bytes =
                         (ui_quads.len() * std::mem::size_of::<UiQuad>()) as vk::DeviceSize;
@@ -5001,7 +5058,7 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if self.inventory_open {
+        if self.inventory_open || self.chat_state.is_open {
             return;
         }
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
@@ -5044,6 +5101,9 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } => {
+                if self.chat_state.is_open {
+                    return;
+                }
                 if self.inventory_open {
                     let click_btn = match button {
                         MouseButton::Left => 0u8,
@@ -5167,6 +5227,7 @@ impl ApplicationHandler for App {
                     winit::event::KeyEvent {
                         physical_key: PhysicalKey::Code(code),
                         state,
+                        text,
                         ..
                     },
                 ..
@@ -5174,6 +5235,98 @@ impl ApplicationHandler for App {
                 let pressed = state.is_pressed();
                 if code == KeyCode::ShiftLeft || code == KeyCode::ShiftRight {
                     self.shift_held = pressed;
+                }
+
+                if self.chat_state.is_open {
+                    if pressed {
+                        match code {
+                            KeyCode::Escape => {
+                                self.chat_state.close();
+                                self.controller.mouse_captured = true;
+                                let _ = window
+                                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                    .or_else(|_| {
+                                        window.set_cursor_grab(
+                                            winit::window::CursorGrabMode::Confined,
+                                        )
+                                    });
+                                window.set_cursor_visible(false);
+                            }
+                            KeyCode::Enter => {
+                                if let Some(msg) = self.chat_state.take_submitted_message()
+                                    && let Ok(bounded) = BoundedString::new(msg)
+                                {
+                                    let _ = self.client_conn.send(
+                                        Lane::Control,
+                                        Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                                            message: bounded,
+                                        })),
+                                    );
+                                }
+                                self.controller.mouse_captured = true;
+                                let _ = window
+                                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                    .or_else(|_| {
+                                        window.set_cursor_grab(
+                                            winit::window::CursorGrabMode::Confined,
+                                        )
+                                    });
+                                window.set_cursor_visible(false);
+                            }
+                            KeyCode::Backspace => {
+                                self.chat_state.handle_backspace();
+                                self.request_command_suggestions();
+                            }
+                            KeyCode::Delete => {
+                                self.chat_state.handle_delete();
+                                self.request_command_suggestions();
+                            }
+                            KeyCode::ArrowLeft => {
+                                self.chat_state.move_cursor_left();
+                            }
+                            KeyCode::ArrowRight => {
+                                self.chat_state.move_cursor_right();
+                            }
+                            KeyCode::Home => {
+                                self.chat_state.move_cursor_start();
+                            }
+                            KeyCode::End => {
+                                self.chat_state.move_cursor_end();
+                            }
+                            KeyCode::ArrowUp => {
+                                if self.chat_state.suggestions.is_empty() {
+                                    self.chat_state.history_up();
+                                } else {
+                                    self.chat_state.select_prev_suggestion();
+                                }
+                            }
+                            KeyCode::ArrowDown => {
+                                if self.chat_state.suggestions.is_empty() {
+                                    self.chat_state.history_down();
+                                } else {
+                                    self.chat_state.select_next_suggestion();
+                                }
+                            }
+                            KeyCode::Tab => {
+                                if self.chat_state.suggestions.is_empty() {
+                                    self.request_command_suggestions();
+                                } else {
+                                    self.chat_state.apply_selected_suggestion();
+                                }
+                            }
+                            _ => {
+                                if let Some(txt) = text {
+                                    for c in txt.chars() {
+                                        if !c.is_control() {
+                                            self.chat_state.handle_char(c);
+                                        }
+                                    }
+                                    self.request_command_suggestions();
+                                }
+                            }
+                        }
+                    }
+                    return;
                 }
 
                 if self.inventory_open {
@@ -5234,6 +5387,31 @@ impl ApplicationHandler for App {
                             win_size.height,
                             gui_scale,
                         );
+                    }
+                    KeyCode::KeyT if pressed => {
+                        self.chat_state.open(None);
+                        self.controller.mouse_captured = false;
+                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                    }
+                    KeyCode::Slash if pressed => {
+                        self.chat_state.open(Some("/"));
+                        self.controller.mouse_captured = false;
+                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                        self.request_command_suggestions();
                     }
                     KeyCode::KeyW => self.controller.forward = pressed,
                     KeyCode::KeyS => self.controller.backward = pressed,

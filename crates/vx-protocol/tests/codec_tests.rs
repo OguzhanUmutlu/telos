@@ -9,12 +9,12 @@ use vx_protocol::codec::{
 };
 use vx_protocol::error::ProtocolError;
 use vx_protocol::messages::{
-    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings, C2sConfigAck,
-    C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sPlayerPosition,
-    ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload, S2cBlockActionAck,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cConfigDone, S2cHelloReply,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cRegistryData, S2cUniformChunk,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
+    C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart,
+    C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason,
+    LodPayload, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cUniformChunk,
 };
 use vx_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -635,6 +635,51 @@ fn test_transparent_lz4_compression_on_large_payload() {
     let decoded = decode_s2c(ConnectionPhase::Config, &mut decode_cursor).unwrap();
     assert_eq!(decoded, msg);
     assert!(decode_cursor.is_empty());
+}
+
+#[test]
+fn test_command_suggestion_packets_roundtrip() {
+    // 1. C2sCommandSuggest
+    let req = C2sMessage::CommandSuggest(C2sCommandSuggest {
+        id: 42,
+        command: BoundedString::new("/tp @p ~10 ~ ").unwrap(),
+        cursor: 13,
+    });
+
+    let mut buf = Vec::new();
+    encode_c2s(&req, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded =
+        decode_c2s(ConnectionPhase::Play, &mut cursor).expect("failed to decode C2sCommandSuggest");
+    assert_eq!(decoded, req);
+    assert!(cursor.is_empty());
+
+    // 2. S2cCommandSuggestions
+    let matches = vec![
+        BoundedString::new("~").unwrap(),
+        BoundedString::new("~10").unwrap(),
+    ];
+    let tooltips = vec![
+        BoundedString::new("current y").unwrap(),
+        BoundedString::new("offset y").unwrap(),
+    ];
+    let resp = S2cMessage::CommandSuggestions(S2cCommandSuggestions {
+        id: 42,
+        start: 13,
+        length: 0,
+        matches: BoundedVec::new(matches).unwrap(),
+        tooltips: BoundedVec::new(tooltips).unwrap(),
+    });
+
+    let mut buf_s2c = Vec::new();
+    encode_s2c(&resp, &mut buf_s2c);
+
+    let mut cursor_s2c = &buf_s2c[..];
+    let decoded_s2c = decode_s2c(ConnectionPhase::Play, &mut cursor_s2c)
+        .expect("failed to decode S2cCommandSuggestions");
+    assert_eq!(decoded_s2c, resp);
+    assert!(cursor_s2c.is_empty());
 }
 
 proptest! {

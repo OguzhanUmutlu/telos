@@ -1903,6 +1903,82 @@ impl C2sPlayerCommand {
     }
 }
 
+/// Client requests command completion suggestions from the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct C2sCommandSuggest {
+    /// Opaque request transaction ID.
+    pub id: u32,
+    /// Current input string (up to 256 bytes).
+    pub command: BoundedString<256>,
+    /// Cursor position in the command string.
+    pub cursor: u32,
+}
+
+impl C2sCommandSuggest {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.id, buf);
+        self.command.encode(buf);
+        encode_varint(self.cursor, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let id = decode_varint(cursor)?;
+        let command = BoundedString::<256>::decode(cursor)?;
+        let cursor_pos = decode_varint(cursor)?;
+        Ok(Self {
+            id,
+            command,
+            cursor: cursor_pos,
+        })
+    }
+}
+
+/// Server provides command auto-completion suggestions for a given input range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cCommandSuggestions {
+    /// Request transaction ID matching client's query.
+    pub id: u32,
+    /// Start character/byte index in command string to be replaced.
+    pub start: u32,
+    /// Length of range in command string to be replaced.
+    pub length: u32,
+    /// List of suggestion completions (up to 16 matches, each <= 64 bytes).
+    pub matches: BoundedVec<BoundedString<64>, 16>,
+    /// Optional tooltips or argument hints for each match.
+    pub tooltips: BoundedVec<BoundedString<64>, 16>,
+}
+
+impl S2cCommandSuggestions {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.id, buf);
+        encode_varint(self.start, buf);
+        encode_varint(self.length, buf);
+        self.matches.encode_with(buf, BoundedString::encode);
+        self.tooltips.encode_with(buf, BoundedString::encode);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let id = decode_varint(cursor)?;
+        let start = decode_varint(cursor)?;
+        let length = decode_varint(cursor)?;
+        let matches =
+            BoundedVec::<BoundedString<64>, 16>::decode_with(cursor, BoundedString::decode)?;
+        let tooltips =
+            BoundedVec::<BoundedString<64>, 16>::decode_with(cursor, BoundedString::decode)?;
+        Ok(Self {
+            id,
+            start,
+            length,
+            matches,
+            tooltips,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

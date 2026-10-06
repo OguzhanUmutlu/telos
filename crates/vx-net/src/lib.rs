@@ -10,12 +10,14 @@
 //! - `QuicEndpoint`: Real remote QUIC/UDP transport over TLS 1.3 using Quinn.
 
 pub mod error;
+pub mod lan;
 pub mod loopback;
 pub mod memory;
 pub mod quic;
 pub mod transport;
 
 pub use error::{NetError, Result};
+pub use lan::{DiscoveredLanServer, LanBeacon, LanBeaconEmitter, LanDiscoveryListener};
 pub use loopback::{
     ClientCodec, LoopbackClient, LoopbackConnection, LoopbackServer, ServerCodec, WireCodec,
     loopback_pair,

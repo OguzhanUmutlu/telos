@@ -9,13 +9,15 @@ use vx_core::coords::{BlockPos, Face};
 use vx_net::{Connection, Lane, Payload};
 use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::messages::{
-    BlockActionKind, C2sBlockAction, C2sInteractEntity, C2sInventoryClick, C2sMessage,
-    C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload, PlayerCommandKind,
-    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cConfigDone,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cSpawnEntity,
+    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
+    C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload,
+    PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
+    S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity, S2cEntityMove,
+    S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cSpawnEntity,
     S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
+use vx_sim::command::{CommandContext, CommandDispatcher, register_builtins};
 use vx_sim::{
     CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
     ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams, Velocity,
@@ -51,6 +53,8 @@ pub struct Server {
     pub mob_yaws: HashMap<u32, f32>,
     /// Tick count when natural mob spawning last ran.
     pub last_mob_spawn_tick: u64,
+    /// Authoritative command dispatcher and syntax tree.
+    pub command_dispatcher: Arc<CommandDispatcher>,
 }
 
 impl Server {
@@ -103,6 +107,10 @@ impl Server {
         ecs_world.insert_resource(SimParams::default());
         let sim_schedule = build_sim_schedule();
 
+        let mut dispatcher = CommandDispatcher::new();
+        register_builtins(&mut dispatcher);
+        let command_dispatcher = Arc::new(dispatcher);
+
         Self {
             config,
             world,
@@ -119,6 +127,7 @@ impl Server {
             mob_positions: HashMap::new(),
             mob_yaws: HashMap::new(),
             last_mob_spawn_tick: 0,
+            command_dispatcher,
         }
     }
 
@@ -343,6 +352,8 @@ impl Server {
         let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
         let mut player_commands: Vec<(u64, C2sPlayerCommand)> = Vec::new();
         let mut entity_interactions: Vec<(u64, C2sInteractEntity)> = Vec::new();
+        let mut chat_messages: Vec<(u64, C2sChatMessage)> = Vec::new();
+        let mut command_suggests: Vec<(u64, C2sCommandSuggest)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -372,6 +383,7 @@ impl Server {
                                 username = login.username.as_str(),
                                 "Client login"
                             );
+                            session.username = login.username.to_string();
                             let success = S2cMessage::LoginSuccess(S2cLoginSuccess {
                                 player_uuid: [0x42; 16],
                                 username: login.username,
@@ -563,6 +575,12 @@ impl Server {
                         }
                         C2sMessage::InteractEntity(interact) => {
                             entity_interactions.push((*session_id, interact));
+                        }
+                        C2sMessage::ChatMessage(chat) => {
+                            chat_messages.push((*session_id, chat));
+                        }
+                        C2sMessage::CommandSuggest(suggest) => {
+                            command_suggests.push((*session_id, suggest));
                         }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
@@ -757,7 +775,182 @@ impl Server {
             }
         }
 
-        // 3. Process inventory clicks
+        // 3. Process command tab-completion suggestions
+        for (session_id, req) in command_suggests {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                #[allow(clippy::cast_possible_truncation)]
+                let suggestions = self
+                    .command_dispatcher
+                    .suggest(&req.command, req.cursor as usize);
+                let mut matches = Vec::new();
+                let mut tooltips = Vec::new();
+                for cand in suggestions.candidates.into_iter().take(16) {
+                    if let Ok(val) = BoundedString::new(cand.value) {
+                        matches.push(val);
+                        let tip = cand.tooltip.unwrap_or_default();
+                        let tip_bounded = BoundedString::new(tip)
+                            .unwrap_or_else(|_| BoundedString::new("").unwrap());
+                        tooltips.push(tip_bounded);
+                    }
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let resp = S2cMessage::CommandSuggestions(S2cCommandSuggestions {
+                    id: req.id,
+                    start: suggestions.start as u32,
+                    length: suggestions.length as u32,
+                    matches: BoundedVec::new(matches).unwrap_or_default(),
+                    tooltips: BoundedVec::new(tooltips).unwrap_or_default(),
+                });
+                let _ = session.connection.send(Lane::Control, Payload::Msg(resp));
+            }
+        }
+
+        // 4. Process chat messages and commands
+        for (session_id, chat) in chat_messages {
+            let Some(session) = self.sessions.get_mut(&session_id) else {
+                continue;
+            };
+
+            // Security SKILL §4: Rate limiting on chat messages (burst cap 5, 200ms window)
+            if self.tick_count.saturating_sub(session.last_chat_tick) < 4 {
+                session.chat_burst_count += 1;
+                if session.chat_burst_count > 5 {
+                    debug!(session_id, "Rate limit exceeded for chat messages");
+                    continue;
+                }
+            } else {
+                session.chat_burst_count = 0;
+            }
+            session.last_chat_tick = self.tick_count;
+
+            let text = chat.message.trim();
+            if text.is_empty() {
+                continue;
+            }
+
+            if text.starts_with('/') {
+                // Command execution
+                let session_pos = session.position;
+                let session_yaw = session.yaw;
+                let session_pitch = session.pitch;
+                let username = session.username.clone();
+
+                #[allow(clippy::cast_possible_truncation)]
+                let mut cmd_ctx = CommandContext {
+                    executor_id: Some(session_id),
+                    executor_pos: glam::Vec3::new(
+                        session_pos.x as f32,
+                        session_pos.y as f32,
+                        session_pos.z as f32,
+                    ),
+                    executor_rot: glam::Vec2::new(session_yaw, session_pitch),
+                    executor_name: username,
+                    args: hashbrown::HashMap::new(),
+                };
+
+                let output = self.command_dispatcher.execute(text, &mut cmd_ctx);
+
+                // Apply world side-effects for built-in commands
+                if output.success {
+                    if text.starts_with("/time set ") {
+                        let sub = text.trim_start_matches("/time set ").trim();
+                        let new_time = match sub {
+                            "day" => Some(1_000),
+                            "noon" => Some(vx_core::NOON_TICKS),
+                            "night" => Some(13_000),
+                            "midnight" => Some(vx_core::MIDNIGHT_TICKS),
+                            ticks_str => ticks_str.parse::<u64>().ok(),
+                        };
+                        if let Some(t) = new_time {
+                            self.time_of_day = t;
+                            let time_msg = S2cMessage::UpdateTime(S2cUpdateTime {
+                                world_age: self.tick_count,
+                                time_of_day: self.time_of_day,
+                            });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(time_msg.clone()));
+                                }
+                            }
+                        }
+                    } else if text.starts_with("/weather ") {
+                        let sub = text.trim_start_matches("/weather ").trim();
+                        let kind = match sub {
+                            "rain" => Some(WeatherKind::Rain),
+                            "thunder" => Some(WeatherKind::Thunder),
+                            _ => Some(WeatherKind::Clear),
+                        };
+                        if let Some(k) = kind {
+                            self.weather.set_weather(k, 24_000);
+                            let weather_msg = S2cMessage::UpdateWeather(S2cUpdateWeather {
+                                rain_level: self.weather.rain_level,
+                                thunder_level: self.weather.thunder_level,
+                                lightning_flash: self.weather.lightning_flash_ticks,
+                            });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(weather_msg.clone()));
+                                }
+                            }
+                        }
+                    } else if text.starts_with("/tp ")
+                        && let Some(pos_arg) = cmd_ctx.get_vec3("destination")
+                    {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let origin = glam::Vec3::new(
+                            session_pos.x as f32,
+                            session_pos.y as f32,
+                            session_pos.z as f32,
+                        );
+                        let target =
+                            pos_arg.resolve(origin, glam::Vec2::new(session_yaw, session_pitch));
+                        if let Some(s) = self.sessions.get_mut(&session_id) {
+                            s.position = DVec3::new(
+                                f64::from(target.x),
+                                f64::from(target.y),
+                                f64::from(target.z),
+                            );
+                        }
+                    }
+                }
+
+                // Send feedback back to executor
+                if let Some(s) = self.sessions.get_mut(&session_id)
+                    && let Ok(msg_bounded) = BoundedString::new(output.message)
+                {
+                    let reply = S2cMessage::ChatMessage(S2cChatMessage {
+                        sender: BoundedString::new("Server").unwrap(),
+                        message: msg_bounded,
+                        timestamp: self.tick_count,
+                    });
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(reply));
+                }
+            } else {
+                // Broadcast standard chat message: <username> message
+                let sender_bounded = BoundedString::new(session.username.clone())
+                    .unwrap_or_else(|_| BoundedString::new("Player").unwrap());
+                if let Ok(msg_bounded) = BoundedString::new(text.to_string()) {
+                    let chat_msg = S2cMessage::ChatMessage(S2cChatMessage {
+                        sender: sender_bounded,
+                        message: msg_bounded,
+                        timestamp: self.tick_count,
+                    });
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(chat_msg.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Process inventory clicks
         for (session_id, click) in inventory_clicks {
             let Some(session) = self.sessions.get(&session_id) else {
                 continue;

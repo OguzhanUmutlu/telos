@@ -7,6 +7,7 @@
 
 pub mod attributes;
 pub mod bundles;
+pub mod command;
 pub mod crafting;
 pub mod entity;
 pub mod experience;
@@ -17,6 +18,10 @@ pub mod weather;
 
 pub use attributes::{CombatTracker, DamageEvent, DamageType, Health, apply_damage};
 pub use bundles::PlayerBundle;
+pub use command::{
+    CommandContext, CommandDispatcher, CommandNode, CommandOutput, CommandSuggestions,
+    register_builtins,
+};
 pub use crafting::{Recipe2x2, find_recipe_2x2};
 pub use entity::{
     AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,

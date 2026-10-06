@@ -4,9 +4,9 @@ use vx_core::coords::{BlockPos, ChunkPos, Face};
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
-    AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sInteractEntity, C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand,
-    C2sPlayerPosition, PlayerCommandKind, S2cMessage,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
+    C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
+    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, PlayerCommandKind, S2cMessage,
 };
 use vx_server::{Server, ServerConfig};
 use vx_voxel::state::BlockStateId;
@@ -1109,4 +1109,246 @@ fn test_server_mob_lifecycle_and_combat() {
 
     server.tick();
     assert_eq!(server.tracked_mobs.len(), 0);
+}
+
+fn login_test_client(
+    server: &mut Server,
+    client_conn: &MemoryConnection<C2sMessage, S2cMessage>,
+    username: &str,
+) {
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new(username).unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 1,
+                simulation_distance: 1,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_server_chat_broadcasting_and_commands() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 1,
+        vertical_view_distance: 1,
+        chunks_per_tick_per_player: 10,
+        ..Default::default()
+    };
+    let mut server = Server::new(777, config);
+
+    // Connect Alice and Bob
+    let (alice_srv, alice_cli) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(alice_srv));
+    login_test_client(&mut server, &alice_cli, "Alice");
+
+    let (bob_srv, bob_cli) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(bob_srv));
+    login_test_client(&mut server, &bob_cli, "Bob");
+
+    // 1. Alice sends a chat message
+    alice_cli
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("Hello everyone!").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify Bob received Alice's chat message
+    let mut bob_chat = None;
+    while let Ok(Some(incoming)) = bob_cli.try_recv() {
+        if let Some(S2cMessage::ChatMessage(c)) = incoming.into_msg() {
+            bob_chat = Some(c);
+        }
+    }
+    assert!(
+        bob_chat.is_some(),
+        "Bob should receive Alice's chat message"
+    );
+    let chat = bob_chat.unwrap();
+    assert_eq!(chat.sender.as_str(), "Alice");
+    assert_eq!(chat.message.as_str(), "Hello everyone!");
+
+    // Verify Alice also received her chat message (broadcast)
+    let mut alice_chat = None;
+    while let Ok(Some(incoming)) = alice_cli.try_recv() {
+        if let Some(S2cMessage::ChatMessage(c)) = incoming.into_msg() {
+            alice_chat = Some(c);
+        }
+    }
+    assert!(
+        alice_chat.is_some(),
+        "Alice should receive her own chat message"
+    );
+
+    // 2. Alice executes a command: /weather rain
+    alice_cli
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/weather rain").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify server weather state updated
+    assert_eq!(server.weather.kind, vx_sim::WeatherKind::Rain);
+    for _ in 0..100 {
+        server.tick();
+    }
+    assert!(server.weather.rain_level > 0.9, "Rain level should be 1.0");
+
+    // Alice should receive command feedback from "Server"
+    let mut alice_feedback = None;
+    let mut alice_weather_update = false;
+    while let Ok(Some(incoming)) = alice_cli.try_recv() {
+        if let Some(msg) = incoming.into_msg() {
+            match msg {
+                S2cMessage::ChatMessage(c) => alice_feedback = Some(c),
+                S2cMessage::UpdateWeather(_) => alice_weather_update = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        alice_feedback.is_some(),
+        "Alice should receive command feedback"
+    );
+    let fb = alice_feedback.unwrap();
+    assert_eq!(fb.sender.as_str(), "Server");
+    assert!(
+        fb.message.as_str().contains("Set weather to rain"),
+        "Feedback should confirm weather set"
+    );
+    assert!(
+        alice_weather_update,
+        "Alice should receive weather update packet"
+    );
+
+    // Bob should also receive weather update packet
+    let mut bob_weather_update = false;
+    while let Ok(Some(incoming)) = bob_cli.try_recv() {
+        if let Some(S2cMessage::UpdateWeather(_)) = incoming.into_msg() {
+            bob_weather_update = true;
+        }
+    }
+    assert!(
+        bob_weather_update,
+        "Bob should receive weather update packet"
+    );
+
+    // 3. Alice executes /time set noon
+    alice_cli
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/time set noon").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    assert_eq!(server.time_of_day(), vx_core::NOON_TICKS + 1);
+
+    // 4. Alice requests command suggestions for "/time "
+    alice_cli
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::CommandSuggest(C2sCommandSuggest {
+                id: 42,
+                command: BoundedString::new("/time ").unwrap(),
+                cursor: 6,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut suggestions_received = None;
+    while let Ok(Some(incoming)) = alice_cli.try_recv() {
+        if let Some(S2cMessage::CommandSuggestions(s)) = incoming.into_msg() {
+            suggestions_received = Some(s);
+        }
+    }
+    assert!(
+        suggestions_received.is_some(),
+        "Alice should receive command suggestions"
+    );
+    let s = suggestions_received.unwrap();
+    assert_eq!(s.id, 42);
+    let match_strs: Vec<&str> = s.matches.iter().map(BoundedString::as_str).collect();
+    assert!(
+        match_strs.contains(&"set"),
+        "Suggestions should contain 'set'"
+    );
+    assert!(
+        match_strs.contains(&"query"),
+        "Suggestions should contain 'query'"
+    );
+
+    // 5. Rate limiting test: Alice sends 8 messages in a single tick (burst limit is 5)
+    while let Ok(Some(_)) = bob_cli.try_recv() {}
+    for i in 0..8 {
+        let msg = format!("Spam message {i}");
+        alice_cli
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                    message: BoundedString::new(msg).unwrap(),
+                })),
+            )
+            .unwrap();
+    }
+    server.tick();
+
+    let mut bob_chat_count = 0;
+    while let Ok(Some(incoming)) = bob_cli.try_recv() {
+        if let Some(S2cMessage::ChatMessage(_)) = incoming.into_msg() {
+            bob_chat_count += 1;
+        }
+    }
+    // Only at most 5 messages should have been delivered due to burst limit
+    assert!(
+        bob_chat_count <= 5,
+        "Bob should have received at most 5 messages due to burst rate limit, got {bob_chat_count}"
+    );
 }

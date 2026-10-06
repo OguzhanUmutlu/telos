@@ -4,14 +4,17 @@
 //! ensuring complete headless testability. It produces GPU-ready 48-byte `UiQuad`
 //! instances for single-draw-call instanced rendering.
 
+pub mod chat;
 pub mod font;
 pub mod frame;
 pub mod hud;
 pub mod inventory;
 pub mod quad;
 pub mod scale;
+pub mod server_list;
 pub mod tree;
 
+pub use chat::{ChatEntry, ChatHudState, render_chat_hud};
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;
 pub use hud::{HudState, UiLayers, render_hud};
@@ -21,4 +24,5 @@ pub use inventory::{
 };
 pub use quad::{QuadKind, UiQuad};
 pub use scale::{compute_gui_scale, snap_to_physical, to_physical_pixels};
+pub use server_list::{ServerEntry, ServerListScreen, render_server_list};
 pub use tree::{DirtyFlags, NodeId, UiTree, WidgetKind, WidgetNode};

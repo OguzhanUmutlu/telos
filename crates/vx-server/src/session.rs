@@ -66,6 +66,12 @@ pub struct PlayerSession {
     pub cached_xp_level: u32,
     /// Cached experience progress fraction sent to client.
     pub cached_xp_progress: f32,
+    /// Player display username.
+    pub username: String,
+    /// Tick count when client last sent a chat or command message.
+    pub last_chat_tick: u64,
+    /// Number of chat messages sent in current burst window.
+    pub chat_burst_count: u32,
 }
 
 impl PlayerSession {
@@ -113,6 +119,9 @@ impl PlayerSession {
             cached_saturation: 5.0,
             cached_xp_level: 0,
             cached_xp_progress: 0.0,
+            username: format!("Player{session_id}"),
+            last_chat_tick: 0,
+            chat_burst_count: 0,
         }
     }
 

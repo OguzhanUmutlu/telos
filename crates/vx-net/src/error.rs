@@ -23,6 +23,10 @@ pub enum NetError {
     #[error("Protocol error: {0}")]
     Protocol(#[from] ProtocolError),
 
+    /// Invalid packet or beacon data received.
+    #[error("Invalid packet: {0}")]
+    InvalidPacket(String),
+
     /// QUIC transport failure from Quinn.
     #[error("QUIC error: {0}")]
     Quic(String),

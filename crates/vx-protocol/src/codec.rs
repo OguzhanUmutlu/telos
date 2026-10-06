@@ -8,12 +8,12 @@ use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
 use crate::messages::login::{C2sLoginStart, S2cLoginSuccess};
 use crate::messages::play::{
-    C2sBlockAction, C2sChatMessage, C2sInteractEntity, C2sInventoryClick, C2sKeepAlive,
-    C2sPlayerCommand, C2sPlayerPosition, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather,
+    C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick,
+    C2sKeepAlive, C2sPlayerCommand, C2sPlayerPosition, S2cBlockActionAck, S2cBlockUpdate,
+    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity,
+    S2cEntityMove, S2cEntityStatus, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive,
+    S2cLodNodeData, S2cLodNodeUnload, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats,
+    S2cUpdateTime, S2cUpdateWeather,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -271,6 +271,7 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
                 4 => C2sMessage::InventoryClick(C2sInventoryClick::decode(&mut frame_cur)?),
                 5 => C2sMessage::PlayerCommand(C2sPlayerCommand::decode(&mut frame_cur)?),
                 6 => C2sMessage::InteractEntity(C2sInteractEntity::decode(&mut frame_cur)?),
+                7 => C2sMessage::CommandSuggest(C2sCommandSuggest::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
@@ -376,6 +377,9 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 16 => S2cMessage::DespawnEntity(S2cDespawnEntity::decode(&mut frame_cur)?),
                 17 => S2cMessage::EntityMove(S2cEntityMove::decode(&mut frame_cur)?),
                 18 => S2cMessage::EntityStatus(S2cEntityStatus::decode(&mut frame_cur)?),
+                19 => {
+                    S2cMessage::CommandSuggestions(S2cCommandSuggestions::decode(&mut frame_cur)?)
+                }
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
