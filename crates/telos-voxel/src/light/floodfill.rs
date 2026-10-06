@@ -75,6 +75,12 @@ impl LightBfs {
         self.remove_queue.clear();
     }
 
+    /// Enqueues a coordinate for light addition propagation.
+    #[inline]
+    pub fn enqueue_add(&mut self, x: i32, y: i32, z: i32) {
+        self.add_queue.push_back(pack_coord(x, y, z));
+    }
+
     /// Propagates block light additions within a single chunk.
     ///
     /// - `light`: Mutable reference to the chunk's block light layer.

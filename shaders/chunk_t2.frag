@@ -98,7 +98,14 @@ void main() {
         float ao_factor = mix(0.40, 1.0, ao_raw / 3.0);
         vec2 lightmap_uv = clamp(vec2(block_raw + 0.5, sky_raw + 0.5) / 16.0, 0.0, 1.0);
         vec3 sampled_light = texture(u_lightmap, lightmap_uv).rgb;
-        light_color = clamp(sampled_light * face_shade * ao_factor, 0.0, 1.0);
+
+        // Daylight ambient floor: prevents outdoor side faces from turning pitch black
+        vec3 sky_day_color = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;
+        vec3 daylight_floor = sky_day_color * 0.20;
+        float sky_exposure = clamp(sky_raw / 2.0, 0.0, 1.0);
+        vec3 final_light = mix(sampled_light, max(sampled_light, daylight_floor), sky_exposure);
+
+        light_color = clamp(final_light * face_shade * ao_factor, 0.0, 1.0);
     }
 
     if (pc.is_translucent != 0u || v_material == 6u || v_material == 8u) {

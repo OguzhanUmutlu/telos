@@ -18,9 +18,12 @@ slotmap = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
 image = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

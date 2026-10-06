@@ -9,6 +9,7 @@ Cargo.lock.d
 # World saves and runtime data
 /worlds
 /world
+settings.toml
 *.vxr
 *.vxm
 

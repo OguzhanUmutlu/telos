@@ -2,12 +2,14 @@
 
 pub mod camera;
 pub mod entity_client;
+pub mod physics;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::physics::{Aabb, GameMode, PlayerInputState, PlayerPhysicsController};
 use anyhow::Result;
 use camera::{Camera, FlyController};
 use clap::Parser;
@@ -36,10 +38,33 @@ use telos_protocol::messages::{
 use telos_sim::{
     MoveMode, MoveState, PredictionBuffer, VisualSmoothing, quantize_pitch, quantize_yaw,
 };
+use telos_ui::menu::{
+    MainMenuAction, MainMenuScreen, PauseMenuAction, PauseMenuScreen, SettingsScreen,
+    WorldCreateAction, WorldCreateWizard, WorldSelectAction, WorldSelectScreen,
+};
+use telos_ui::settings::GameSettings;
 use telos_ui::{
     BitmapFont, ChatHudState, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale,
     render_chat_hud, render_hud, render_inventory_screen, slot_at_pos,
 };
+
+/// Top-level application screen state.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppScreen {
+    /// Title main menu screen.
+    MainMenu,
+    /// Singleplayer world selection screen.
+    WorldSelect,
+    /// Interactive world creation wizard.
+    WorldCreate,
+    /// Video, audio, and controls settings screen.
+    Settings {
+        /// Whether returning from settings resumes the pause menu.
+        return_to_pause: bool,
+    },
+    /// Active 3D gameplay view.
+    InGame,
+}
 use telos_voxel::chunk::{Chunk, ChunkSnapshot};
 use telos_voxel::coords::LocalIdx;
 use telos_voxel::light::ChunkLight;
@@ -1230,6 +1255,20 @@ struct App {
     audio: telos_audio::AudioEngine,
     audio_step_dist: f32,
     last_audio_pos: Vec3,
+
+    // Menu System, Settings & Physics (Phase 33)
+    current_screen: AppScreen,
+    main_menu: MainMenuScreen,
+    world_select: WorldSelectScreen,
+    world_create: WorldCreateWizard,
+    settings_screen: SettingsScreen,
+    pause_menu: PauseMenuScreen,
+    is_paused: bool,
+    game_settings: GameSettings,
+    settings_path: PathBuf,
+    worlds_dir: PathBuf,
+    physics: PlayerPhysicsController,
+    last_frame_start: Instant,
 }
 
 impl App {
@@ -1261,13 +1300,6 @@ impl App {
         let registries = Arc::new(FrozenRegistries::new_default());
         let server_registries = Arc::clone(&registries);
 
-        let server_running = Arc::new(AtomicBool::new(true));
-        let running_clone = server_running.clone();
-
-        let (server_conn, client_conn) = MemoryConnection::pair_default();
-        let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
-        let client_conn: Box<dyn Connection<C2sMessage, S2cMessage>> = Box::new(client_conn);
-
         let app_dirs = if args.portable {
             AppDirs::portable(".")
         } else if let Some(ref data) = args.data_dir {
@@ -1292,9 +1324,26 @@ impl App {
 
         let _ = app_dirs.ensure_dirs_exist();
 
+        let is_direct_ingame = args.screenshot.is_some() || args.pos.is_some();
+        let current_screen = if is_direct_ingame {
+            AppScreen::InGame
+        } else {
+            AppScreen::MainMenu
+        };
+
+        let settings_path = app_dirs.config_dir().join("settings.toml");
+        let game_settings = GameSettings::load_or_create(&settings_path);
+
+        let worlds_dir = if std::path::Path::new("worlds").is_dir() {
+            PathBuf::from("worlds")
+        } else {
+            app_dirs.data_dir().join("worlds")
+        };
+        let _ = std::fs::create_dir_all(&worlds_dir);
+
         let view_distance = args.view_distance;
         let vertical_view_distance = args.vertical_view_distance;
-        let world_dir = args.world_dir.clone().unwrap_or_else(|| {
+        let default_save_dir = args.world_dir.clone().unwrap_or_else(|| {
             if std::path::Path::new("worlds").is_dir() {
                 PathBuf::from("worlds/default")
             } else {
@@ -1303,40 +1352,54 @@ impl App {
         });
         let seed = args.seed;
 
-        let server_handle = std::thread::Builder::new()
-            .name("telos-server".into())
-            .spawn(move || {
-                let config = telos_server::ServerConfig {
-                    tps: 20,
-                    view_distance,
-                    vertical_view_distance,
-                    chunks_per_tick_per_player: 16,
-                    save_directory: Some(world_dir),
-                    ..Default::default()
-                };
-                let mut server =
-                    telos_server::Server::with_registries(seed, config, server_registries);
-                server.add_connection(server_conn);
+        let server_running = Arc::new(AtomicBool::new(is_direct_ingame));
+        let running_clone = server_running.clone();
 
-                let mut timestep = FixedTimestep::new(20);
-                while running_clone.load(Ordering::Relaxed) {
-                    timestep.advance(|_| {
-                        server.tick();
-                    });
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            })
-            .expect("Failed to spawn background singleplayer server thread");
+        let (server_conn, client_conn) = MemoryConnection::pair_default();
+        let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
+        let client_conn: Box<dyn Connection<C2sMessage, S2cMessage>> = Box::new(client_conn);
 
-        // Send initial Hello handshake
-        let _ = client_conn.send(
-            Lane::Control,
-            Payload::Msg(C2sMessage::Hello(C2sHello {
-                protocol: 1,
-                build: BoundedString::new("0.1.0").unwrap(),
-                features: 0,
-            })),
-        );
+        let server_handle = if is_direct_ingame {
+            let s_registries = Arc::clone(&server_registries);
+            let handle = std::thread::Builder::new()
+                .name("telos-server".into())
+                .spawn(move || {
+                    let config = telos_server::ServerConfig {
+                        tps: 20,
+                        view_distance,
+                        vertical_view_distance,
+                        chunks_per_tick_per_player: 16,
+                        save_directory: Some(default_save_dir),
+                        ..Default::default()
+                    };
+                    let mut server =
+                        telos_server::Server::with_registries(seed, config, s_registries);
+                    server.add_connection(server_conn);
+
+                    let mut timestep = FixedTimestep::new(20);
+                    while running_clone.load(Ordering::Relaxed) {
+                        timestep.advance(|_| {
+                            server.tick();
+                        });
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+                .expect("Failed to spawn background singleplayer server thread");
+
+            // Send initial Hello handshake
+            let _ = client_conn.send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::Hello(C2sHello {
+                    protocol: 1,
+                    build: BoundedString::new("0.1.0").unwrap(),
+                    features: 0,
+                })),
+            );
+
+            Some(handle)
+        } else {
+            None
+        };
 
         let d_spawn = DVec3::new(
             f64::from(spawn_pos.x),
@@ -1350,6 +1413,25 @@ impl App {
             true,
         ));
         let smoothing = VisualSmoothing::default();
+
+        let controller = FlyController {
+            mouse_captured: is_direct_ingame && args.screenshot.is_none(),
+            ..Default::default()
+        };
+
+        let initial_mode = match game_settings.gameplay.game_mode.to_lowercase().as_str() {
+            "survival" => GameMode::Survival,
+            _ => GameMode::Creative,
+        };
+        let mut physics = PlayerPhysicsController::new(d_spawn, initial_mode);
+        physics.set_pos_from_eye(camera.position);
+
+        let main_menu = MainMenuScreen::new();
+        let mut world_select = WorldSelectScreen::new();
+        world_select.scan_worlds(&worlds_dir);
+        let world_create = WorldCreateWizard::new();
+        let settings_screen = SettingsScreen::new(game_settings.clone());
+        let pause_menu = PauseMenuScreen::new();
 
         Self {
             validation: args.validation,
@@ -1403,7 +1485,7 @@ impl App {
             action_sequence: 0,
 
             server_running,
-            server_handle: Some(server_handle),
+            server_handle,
             client_conn,
             client_phase: ConnectionPhase::Hello,
 
@@ -1417,7 +1499,7 @@ impl App {
             pending_lod_uploads: HashMap::new(),
 
             camera,
-            controller: FlyController::default(),
+            controller,
             last_frame_time: Instant::now(),
             last_fps_time: Instant::now(),
             frame_counter: 0,
@@ -1516,7 +1598,148 @@ impl App {
             audio: telos_audio::AudioEngine::new(),
             audio_step_dist: 0.0,
             last_audio_pos: spawn_pos,
+
+            current_screen,
+            main_menu,
+            world_select,
+            world_create,
+            settings_screen,
+            pause_menu,
+            is_paused: false,
+            game_settings,
+            settings_path,
+            worlds_dir,
+            physics,
+            last_frame_start: Instant::now(),
         }
+    }
+
+    fn start_singleplayer_server(&mut self, world_dir: PathBuf, seed: u64, generator: &str) {
+        self.stop_singleplayer_server();
+
+        self.chunks.clear();
+        self.chunk_meshes.clear();
+        self.dirty_chunks.clear();
+        self.lod_meshes.clear();
+        self.pending_lod_uploads.clear();
+        self.entity_store = ClientEntityStore::new();
+
+        let gen_kind = match generator.to_lowercase().as_str() {
+            "flat" => telos_worldgen::GeneratorKind::Flat,
+            "void" => telos_worldgen::GeneratorKind::Void,
+            _ => telos_worldgen::GeneratorKind::Standard,
+        };
+
+        let world_cfg = telos_server::WorldConfig {
+            name: "overworld".to_string(),
+            seed,
+            generator: gen_kind,
+            save_directory: Some(world_dir.clone()),
+        };
+
+        let config = telos_server::ServerConfig {
+            tps: 20,
+            view_distance: self.game_settings.video.view_distance,
+            vertical_view_distance: self.game_settings.video.vertical_view_distance,
+            chunks_per_tick_per_player: 16,
+            save_directory: Some(world_dir),
+            worlds: vec![world_cfg],
+            ..Default::default()
+        };
+
+        let (server_conn, client_conn) = MemoryConnection::pair_default();
+        let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
+        self.client_conn = Box::new(client_conn);
+
+        let server_running = Arc::new(AtomicBool::new(true));
+        self.server_running = server_running.clone();
+        let running_clone = server_running;
+        let server_registries = Arc::clone(&self.registries);
+
+        let server_handle = std::thread::Builder::new()
+            .name("telos-server".into())
+            .spawn(move || {
+                let mut server =
+                    telos_server::Server::with_registries(seed, config, server_registries);
+                server.add_connection(server_conn);
+
+                let mut timestep = FixedTimestep::new(20);
+                while running_clone.load(Ordering::Relaxed) {
+                    timestep.advance(|_| {
+                        server.tick();
+                    });
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .expect("Failed to spawn singleplayer server thread");
+
+        self.server_handle = Some(server_handle);
+
+        let _ = self.client_conn.send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        );
+
+        let initial_mode = match self
+            .game_settings
+            .gameplay
+            .game_mode
+            .to_lowercase()
+            .as_str()
+        {
+            "survival" => GameMode::Survival,
+            _ => GameMode::Creative,
+        };
+        self.physics = PlayerPhysicsController::new(DVec3::new(0.0, 70.0, 0.0), initial_mode);
+        self.camera.position = self.physics.eye_pos();
+        self.client_phase = ConnectionPhase::Hello;
+        self.is_paused = false;
+        info!(seed, generator, "Started singleplayer server session");
+    }
+
+    fn stop_singleplayer_server(&mut self) {
+        if let Ok(message) = BoundedString::new("Quit to title") {
+            let _ = self.client_conn.send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::Disconnect(
+                    telos_protocol::messages::Disconnect {
+                        reason: telos_protocol::messages::DisconnectReason::Normal,
+                        message,
+                    },
+                )),
+            );
+        }
+        self.server_running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.server_handle.take() {
+            let _ = handle.join();
+        }
+        self.client_phase = ConnectionPhase::Hello;
+        info!("Stopped singleplayer server session");
+    }
+
+    fn set_cursor_captured(&self, captured: bool) {
+        if let Some(window) = &self.window {
+            if captured {
+                let _ = window
+                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                window.set_cursor_visible(false);
+            } else {
+                window.set_cursor_visible(true);
+                let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            }
+        }
+    }
+
+    fn window_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.window.as_ref().map_or_else(
+            || winit::dpi::PhysicalSize::new(1280, 720),
+            winit::window::Window::inner_size,
+        )
     }
 
     fn request_command_suggestions(&mut self) {
@@ -2094,8 +2317,18 @@ impl App {
             hotbar: self.selected_hotbar_slot as u8,
         };
 
-        self.prediction
-            .push_and_predict(frame, MoveMode::NoClipFly, 0.05);
+        let mode = match self.physics.game_mode {
+            GameMode::Survival => MoveMode::Walk,
+            GameMode::Creative => {
+                if self.physics.flying {
+                    MoveMode::NoClipFly
+                } else {
+                    MoveMode::Walk
+                }
+            }
+        };
+
+        self.prediction.push_and_predict(frame, mode, 0.05);
 
         let unacked = self.prediction.unacked_frames(self.last_acked_server_tick);
         if let Ok(bounded_frames) = BoundedVec::new(unacked) {
@@ -2137,11 +2370,21 @@ impl App {
                 teleport_id: ack.teleport_id,
             });
             let _ = self.client_conn.send(Lane::Control, Payload::Msg(tp_ack));
-        } else if let Some(reconciliation) =
-            self.prediction.reconcile(&ack, MoveMode::NoClipFly, 0.05)
-        {
-            self.smoothing
-                .add_error(reconciliation.error, reconciliation.is_teleport);
+        } else {
+            let mode = match self.physics.game_mode {
+                GameMode::Survival => MoveMode::Walk,
+                GameMode::Creative => {
+                    if self.physics.flying {
+                        MoveMode::NoClipFly
+                    } else {
+                        MoveMode::Walk
+                    }
+                }
+            };
+            if let Some(reconciliation) = self.prediction.reconcile(&ack, mode, 0.05) {
+                self.smoothing
+                    .add_error(reconciliation.error, reconciliation.is_teleport);
+            }
         }
     }
 
@@ -2569,33 +2812,79 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn render(&mut self) -> bool {
-        self.poll_network();
-        self.rebuild_dirty_meshes(16);
-        self.upload_pending_lod_meshes();
+        let fps_limit = self.game_settings.video.fps_limit;
+        if fps_limit > 0 {
+            let target_frame_dur = Duration::from_secs_f64(1.0 / f64::from(fps_limit));
+            let elapsed = self.last_frame_start.elapsed();
+            if elapsed < target_frame_dur {
+                std::thread::sleep(target_frame_dur.checked_sub(elapsed).unwrap());
+            }
+        }
+        self.last_frame_start = Instant::now();
+
+        if self.current_screen == AppScreen::InGame {
+            self.poll_network();
+            self.rebuild_dirty_meshes(16);
+            self.upload_pending_lod_meshes();
+        }
 
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
 
-        if self.client_phase == ConnectionPhase::Play {
-            self.sim_time_acc += dt;
-            while self.sim_time_acc >= 0.05 {
-                self.sim_time_acc -= 0.05;
-                self.tick_movement_prediction();
-            }
-            self.smoothing.update(dt);
-            let visual_pos =
-                self.prediction.current_state().pos + self.smoothing.render_offset.as_dvec3();
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                self.camera.position = Vec3::new(
-                    visual_pos.x as f32,
-                    visual_pos.y as f32,
-                    visual_pos.z as f32,
+        if self.current_screen == AppScreen::InGame {
+            if !self.is_paused {
+                let input_state = PlayerInputState {
+                    forward: self.controller.forward && self.controller.mouse_captured,
+                    backward: self.controller.backward && self.controller.mouse_captured,
+                    left: self.controller.left && self.controller.mouse_captured,
+                    right: self.controller.right && self.controller.mouse_captured,
+                    jump: self.controller.up && self.controller.mouse_captured,
+                    sneak: self.controller.down && self.controller.mouse_captured,
+                    sprint: self.controller.sprint && self.controller.mouse_captured,
+                };
+                let reg = &self.block_registry;
+                let chunks = &self.chunks;
+                self.physics.update(
+                    dt,
+                    self.camera.yaw.to_degrees(),
+                    &input_state,
+                    |bx, by, bz, out| {
+                        let (cpos, lidx) =
+                            telos_voxel::coords::split_block_pos(BlockPos::new(bx, by, bz));
+                        let block = if let Some(snap) = chunks.get(&cpos) {
+                            snap.blocks().get(lidx)
+                        } else {
+                            BlockStateId::AIR
+                        };
+                        if block == BlockStateId::AIR {
+                            return;
+                        }
+                        match reg.shape(block) {
+                            BlockShape::Cube => {
+                                out.push(Aabb::from_block(bx, by, bz));
+                            }
+                            BlockShape::Boxes(boxes) => {
+                                for b in boxes {
+                                    out.push(Aabb::from_sub_box(bx, by, bz, b.min, b.max));
+                                }
+                            }
+                            _ => {}
+                        }
+                    },
                 );
+                self.camera.position = self.physics.eye_pos();
+                self.hud_state.game_mode = self.physics.game_mode.name().to_string();
+                self.hud_state.is_flying = self.physics.flying;
+
+                self.sim_time_acc += dt;
+                while self.sim_time_acc >= 0.05 {
+                    self.sim_time_acc -= 0.05;
+                    self.tick_movement_prediction();
+                }
             }
-        } else {
-            self.controller.update(&mut self.camera, dt);
+        } else if self.current_screen == AppScreen::MainMenu {
+            self.camera.yaw += 0.05 * dt;
         }
 
         // Update spatial audio listener
@@ -4214,63 +4503,125 @@ impl App {
                 }
 
                 let mut ui_quads = Vec::with_capacity(512);
-                render_hud(
-                    &self.hud_state,
-                    font,
-                    &self.ui_layers,
-                    swapchain_extent.width,
-                    swapchain_extent.height,
-                    gui_scale,
-                    &mut ui_quads,
-                );
+                let width_gui = swapchain_extent.width as f32 / gui_scale as f32;
+                let height_gui = swapchain_extent.height as f32 / gui_scale as f32;
 
-                if self.inventory_open {
-                    let mut ui_slots = [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
-                    for (i, slot) in self
-                        .inventory_sim
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .take(telos_ui::INVENTORY_SLOT_COUNT)
-                    {
-                        ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                match &mut self.current_screen {
+                    AppScreen::MainMenu => {
+                        self.main_menu.update_layout(width_gui, height_gui);
+                        self.main_menu.render(
+                            font,
+                            width_gui,
+                            height_gui,
+                            gui_scale,
+                            u64::from(self.frame_counter),
+                            &mut ui_quads,
+                        );
                     }
-                    let ui_carried = UiSlotItem::new(
-                        self.inventory_sim.carried.item,
-                        self.inventory_sim.carried.count,
-                    );
-                    let item_lookup = |id: u32| {
-                        if let Some(def) = self.registries.item_registry().get_by_id(id) {
-                            def.name.as_str()
+                    AppScreen::WorldSelect => {
+                        self.world_select.update_layout(width_gui, height_gui);
+                        self.world_select.render(
+                            font,
+                            width_gui,
+                            height_gui,
+                            gui_scale,
+                            &mut ui_quads,
+                        );
+                    }
+                    AppScreen::WorldCreate => {
+                        self.world_create.update_layout(width_gui, height_gui);
+                        self.world_create.render(
+                            font,
+                            width_gui,
+                            height_gui,
+                            gui_scale,
+                            u64::from(self.frame_counter),
+                            &mut ui_quads,
+                        );
+                    }
+                    AppScreen::Settings { .. } => {
+                        self.settings_screen.update_layout(width_gui, height_gui);
+                        self.settings_screen.render(
+                            font,
+                            width_gui,
+                            height_gui,
+                            gui_scale,
+                            &mut ui_quads,
+                        );
+                    }
+                    AppScreen::InGame => {
+                        if self.is_paused {
+                            self.pause_menu.update_layout(width_gui, height_gui);
+                            self.pause_menu.render(
+                                font,
+                                width_gui,
+                                height_gui,
+                                gui_scale,
+                                &mut ui_quads,
+                            );
                         } else {
-                            telos_sim::item_name(id)
-                        }
-                    };
-                    render_inventory_screen(
-                        &ui_slots,
-                        ui_carried,
-                        self.inventory_hovered_slot,
-                        swapchain_extent.width,
-                        swapchain_extent.height,
-                        gui_scale,
-                        font,
-                        &self.ui_layers,
-                        item_lookup,
-                        self.mouse_cursor_pos,
-                        &mut ui_quads,
-                    );
-                }
+                            render_hud(
+                                &self.hud_state,
+                                font,
+                                &self.ui_layers,
+                                swapchain_extent.width,
+                                swapchain_extent.height,
+                                gui_scale,
+                                &mut ui_quads,
+                            );
 
-                let now_secs = self.start_time.elapsed().as_secs_f64();
-                render_chat_hud(
-                    &self.chat_state,
-                    font,
-                    swapchain_extent.width,
-                    swapchain_extent.height,
-                    gui_scale,
-                    now_secs,
-                    &mut ui_quads,
-                );
+                            if self.inventory_open {
+                                let mut ui_slots =
+                                    [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
+                                for (i, slot) in self
+                                    .inventory_sim
+                                    .slots
+                                    .iter()
+                                    .enumerate()
+                                    .take(telos_ui::INVENTORY_SLOT_COUNT)
+                                {
+                                    ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                                }
+                                let ui_carried = UiSlotItem::new(
+                                    self.inventory_sim.carried.item,
+                                    self.inventory_sim.carried.count,
+                                );
+                                let item_lookup = |id: u32| {
+                                    if let Some(def) = self.registries.item_registry().get_by_id(id)
+                                    {
+                                        def.name.as_str()
+                                    } else {
+                                        telos_sim::item_name(id)
+                                    }
+                                };
+                                render_inventory_screen(
+                                    &ui_slots,
+                                    ui_carried,
+                                    self.inventory_hovered_slot,
+                                    swapchain_extent.width,
+                                    swapchain_extent.height,
+                                    gui_scale,
+                                    font,
+                                    &self.ui_layers,
+                                    item_lookup,
+                                    self.mouse_cursor_pos,
+                                    &mut ui_quads,
+                                );
+                            }
+
+                            let now_secs = self.start_time.elapsed().as_secs_f64();
+                            render_chat_hud(
+                                &self.chat_state,
+                                font,
+                                swapchain_extent.width,
+                                swapchain_extent.height,
+                                gui_scale,
+                                now_secs,
+                                &mut ui_quads,
+                            );
+                        }
+                    }
+                }
 
                 if !ui_quads.is_empty() {
                     let required_bytes =
@@ -5699,11 +6050,23 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if self.inventory_open || self.chat_state.is_open {
+        if self.current_screen != AppScreen::InGame
+            || self.is_paused
+            || self.inventory_open
+            || self.chat_state.is_open
+            || !self.controller.mouse_captured
+        {
             return;
         }
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            self.controller.on_mouse_move(&mut self.camera, dx, dy);
+            let sens = f64::from(self.game_settings.controls.mouse_sensitivity);
+            let invert_y = if self.game_settings.controls.invert_mouse_y {
+                -1.0
+            } else {
+                1.0
+            };
+            self.controller
+                .on_mouse_move(&mut self.camera, dx * sens, dy * sens * invert_y);
         }
     }
 
@@ -5714,8 +6077,7 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = &self.window else { return };
-        if window.id() != window_id {
+        if self.window.as_ref().is_none_or(|w| w.id() != window_id) {
             return;
         }
 
@@ -5726,22 +6088,196 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_cursor_pos = [position.x as f32, position.y as f32];
-                if self.inventory_open {
-                    let win_size = window.inner_size();
-                    let gui_scale = compute_gui_scale(win_size.width, win_size.height);
-                    self.inventory_hovered_slot = slot_at_pos(
-                        self.mouse_cursor_pos,
-                        win_size.width,
-                        win_size.height,
-                        gui_scale,
-                    );
+                let win_size = self.window_size();
+                let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                let (mx, my) = (
+                    position.x as f32 / gui_scale as f32,
+                    position.y as f32 / gui_scale as f32,
+                );
+
+                match &mut self.current_screen {
+                    AppScreen::MainMenu => {
+                        self.main_menu.handle_mouse_move(mx, my);
+                    }
+                    AppScreen::WorldSelect => {
+                        self.world_select.handle_mouse_move(mx, my);
+                    }
+                    AppScreen::WorldCreate => {
+                        self.world_create.handle_mouse_move(mx, my);
+                    }
+                    AppScreen::Settings { .. } => {
+                        self.settings_screen.handle_mouse_move(mx, my);
+                    }
+                    AppScreen::InGame => {
+                        if self.is_paused {
+                            self.pause_menu.handle_mouse_move(mx, my);
+                        } else if self.inventory_open {
+                            self.inventory_hovered_slot = slot_at_pos(
+                                self.mouse_cursor_pos,
+                                win_size.width,
+                                win_size.height,
+                                gui_scale,
+                            );
+                        }
+                    }
                 }
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
+                let win_size = self.window_size();
+                let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                let width_gui = win_size.width as f32 / gui_scale as f32;
+                let height_gui = win_size.height as f32 / gui_scale as f32;
+                let (mx, my) = (
+                    self.mouse_cursor_pos[0] / gui_scale as f32,
+                    self.mouse_cursor_pos[1] / gui_scale as f32,
+                );
+
+                if state == ElementState::Released {
+                    if let AppScreen::Settings { .. } = self.current_screen {
+                        self.settings_screen.handle_mouse_up();
+                    }
+                    return;
+                }
+
+                match &mut self.current_screen {
+                    AppScreen::MainMenu => {
+                        if button == MouseButton::Left
+                            && let Some(action) = self.main_menu.handle_mouse_click(mx, my)
+                        {
+                            match action {
+                                MainMenuAction::Singleplayer => {
+                                    self.world_select.scan_worlds(&self.worlds_dir);
+                                    self.current_screen = AppScreen::WorldSelect;
+                                }
+                                MainMenuAction::Multiplayer => {
+                                    info!("Multiplayer screen requested (placeholder)");
+                                }
+                                MainMenuAction::Options => {
+                                    self.settings_screen =
+                                        SettingsScreen::new(self.game_settings.clone());
+                                    self.settings_screen.update_layout(width_gui, height_gui);
+                                    self.current_screen = AppScreen::Settings {
+                                        return_to_pause: false,
+                                    };
+                                }
+                                MainMenuAction::Quit => {
+                                    info!("Quit button clicked on Main Menu");
+                                    event_loop.exit();
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::WorldSelect => {
+                        if button == MouseButton::Left
+                            && let Some(action) =
+                                self.world_select.handle_mouse_click(mx, my, width_gui)
+                        {
+                            match action {
+                                WorldSelectAction::PlayWorld(entry) => {
+                                    self.start_singleplayer_server(
+                                        entry.path,
+                                        entry.seed,
+                                        &entry.generator,
+                                    );
+                                    self.current_screen = AppScreen::InGame;
+                                    self.is_paused = false;
+                                    self.controller.mouse_captured = true;
+                                    self.set_cursor_captured(true);
+                                }
+                                WorldSelectAction::CreateNewWorld => {
+                                    self.world_create = WorldCreateWizard::new();
+                                    self.current_screen = AppScreen::WorldCreate;
+                                }
+                                WorldSelectAction::DeleteWorld(entry) => {
+                                    info!(world = %entry.name, path = ?entry.path, "Deleting world");
+                                    let _ = std::fs::remove_dir_all(&entry.path);
+                                    self.world_select.scan_worlds(&self.worlds_dir);
+                                }
+                                WorldSelectAction::BackToTitle => {
+                                    self.current_screen = AppScreen::MainMenu;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::WorldCreate => {
+                        if button == MouseButton::Left
+                            && let Some(action) =
+                                self.world_create
+                                    .handle_mouse_click(mx, my, &self.worlds_dir)
+                        {
+                            match action {
+                                WorldCreateAction::CreateWorld {
+                                    path,
+                                    seed,
+                                    generator,
+                                    ..
+                                } => {
+                                    self.start_singleplayer_server(path, seed, &generator);
+                                    self.current_screen = AppScreen::InGame;
+                                    self.is_paused = false;
+                                    self.controller.mouse_captured = true;
+                                    self.set_cursor_captured(true);
+                                }
+                                WorldCreateAction::Cancel => {
+                                    self.world_select.scan_worlds(&self.worlds_dir);
+                                    self.current_screen = AppScreen::WorldSelect;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::Settings { return_to_pause } => {
+                        let to_pause = *return_to_pause;
+                        if button == MouseButton::Left
+                            && self
+                                .settings_screen
+                                .handle_mouse_click(mx, my, width_gui, height_gui)
+                        {
+                            self.game_settings = self.settings_screen.settings.clone();
+                            let _ = self.game_settings.save(&self.settings_path);
+                            if to_pause {
+                                self.current_screen = AppScreen::InGame;
+                                self.is_paused = true;
+                            } else {
+                                self.current_screen = AppScreen::MainMenu;
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::InGame => {
+                        if self.is_paused {
+                            if button == MouseButton::Left
+                                && let Some(action) = self.pause_menu.handle_mouse_click(mx, my)
+                            {
+                                match action {
+                                    PauseMenuAction::Resume => {
+                                        self.is_paused = false;
+                                        self.controller.mouse_captured = true;
+                                        self.set_cursor_captured(true);
+                                    }
+                                    PauseMenuAction::Options => {
+                                        self.settings_screen =
+                                            SettingsScreen::new(self.game_settings.clone());
+                                        self.settings_screen.update_layout(width_gui, height_gui);
+                                        self.current_screen = AppScreen::Settings {
+                                            return_to_pause: true,
+                                        };
+                                    }
+                                    PauseMenuAction::SaveAndQuit => {
+                                        self.stop_singleplayer_server();
+                                        self.is_paused = false;
+                                        self.current_screen = AppScreen::MainMenu;
+                                        self.set_cursor_captured(false);
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+
                 if self.chat_state.is_open {
                     return;
                 }
@@ -5885,12 +6421,7 @@ impl ApplicationHandler for App {
                     }
                 } else if button == MouseButton::Left {
                     self.controller.mouse_captured = true;
-                    let _ = window
-                        .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                        .or_else(|_| {
-                            window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
-                        });
-                    window.set_cursor_visible(false);
+                    self.set_cursor_captured(true);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -5904,6 +6435,69 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = state.is_pressed();
+
+                match &mut self.current_screen {
+                    AppScreen::WorldCreate => {
+                        if pressed {
+                            match code {
+                                KeyCode::Escape => {
+                                    self.world_select.scan_worlds(&self.worlds_dir);
+                                    self.current_screen = AppScreen::WorldSelect;
+                                }
+                                KeyCode::Backspace => {
+                                    self.world_create.handle_backspace();
+                                }
+                                _ => {
+                                    if let Some(txt) = text {
+                                        for ch in txt.chars() {
+                                            if !ch.is_control() {
+                                                self.world_create.handle_char(ch);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::Settings { return_to_pause } => {
+                        let to_pause = *return_to_pause;
+                        if pressed && code == KeyCode::Escape {
+                            self.game_settings = self.settings_screen.settings.clone();
+                            let _ = self.game_settings.save(&self.settings_path);
+                            if to_pause {
+                                self.current_screen = AppScreen::InGame;
+                                self.is_paused = true;
+                            } else {
+                                self.current_screen = AppScreen::MainMenu;
+                            }
+                        }
+                        return;
+                    }
+                    AppScreen::WorldSelect => {
+                        if pressed && code == KeyCode::Escape {
+                            self.current_screen = AppScreen::MainMenu;
+                        }
+                        return;
+                    }
+                    AppScreen::MainMenu => {
+                        if pressed && code == KeyCode::Escape {
+                            event_loop.exit();
+                        }
+                        return;
+                    }
+                    AppScreen::InGame => {}
+                }
+
+                if self.is_paused {
+                    if pressed && code == KeyCode::Escape {
+                        self.is_paused = false;
+                        self.controller.mouse_captured = true;
+                        self.set_cursor_captured(true);
+                    }
+                    return;
+                }
+
                 if code == KeyCode::ShiftLeft || code == KeyCode::ShiftRight {
                     self.shift_held = pressed;
                 }
@@ -5914,14 +6508,7 @@ impl ApplicationHandler for App {
                             KeyCode::Escape => {
                                 self.chat_state.close();
                                 self.controller.mouse_captured = true;
-                                let _ = window
-                                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                                    .or_else(|_| {
-                                        window.set_cursor_grab(
-                                            winit::window::CursorGrabMode::Confined,
-                                        )
-                                    });
-                                window.set_cursor_visible(false);
+                                self.set_cursor_captured(true);
                             }
                             KeyCode::Enter => {
                                 if let Some(msg) = self.chat_state.take_submitted_message()
@@ -5935,14 +6522,7 @@ impl ApplicationHandler for App {
                                     );
                                 }
                                 self.controller.mouse_captured = true;
-                                let _ = window
-                                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                                    .or_else(|_| {
-                                        window.set_cursor_grab(
-                                            winit::window::CursorGrabMode::Confined,
-                                        )
-                                    });
-                                window.set_cursor_visible(false);
+                                self.set_cursor_captured(true);
                             }
                             KeyCode::Backspace => {
                                 self.chat_state.handle_backspace();
@@ -6002,26 +6582,10 @@ impl ApplicationHandler for App {
 
                 if self.inventory_open {
                     match code {
-                        KeyCode::KeyE if pressed => {
+                        KeyCode::KeyE | KeyCode::Escape if pressed => {
                             self.inventory_open = false;
                             self.controller.mouse_captured = true;
-                            let _ = window
-                                .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                                .or_else(|_| {
-                                    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
-                                });
-                            window.set_cursor_visible(false);
-                            self.inventory_hovered_slot = None;
-                        }
-                        KeyCode::Escape if pressed => {
-                            self.inventory_open = false;
-                            self.controller.mouse_captured = true;
-                            let _ = window
-                                .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                                .or_else(|_| {
-                                    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
-                                });
-                            window.set_cursor_visible(false);
+                            self.set_cursor_captured(true);
                             self.inventory_hovered_slot = None;
                         }
                         KeyCode::Digit1 if pressed => self.handle_inventory_swap_hotbar(0),
@@ -6042,15 +6606,14 @@ impl ApplicationHandler for App {
                     KeyCode::KeyE if pressed => {
                         self.inventory_open = true;
                         self.controller.mouse_captured = false;
-                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                        window.set_cursor_visible(true);
+                        self.set_cursor_captured(false);
                         self.controller.forward = false;
                         self.controller.backward = false;
                         self.controller.left = false;
                         self.controller.right = false;
                         self.controller.up = false;
                         self.controller.down = false;
-                        let win_size = window.inner_size();
+                        let win_size = self.window_size();
                         let gui_scale = compute_gui_scale(win_size.width, win_size.height);
                         self.inventory_hovered_slot = slot_at_pos(
                             self.mouse_cursor_pos,
@@ -6062,8 +6625,7 @@ impl ApplicationHandler for App {
                     KeyCode::KeyT if pressed => {
                         self.chat_state.open(None);
                         self.controller.mouse_captured = false;
-                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                        window.set_cursor_visible(true);
+                        self.set_cursor_captured(false);
                         self.controller.forward = false;
                         self.controller.backward = false;
                         self.controller.left = false;
@@ -6074,8 +6636,7 @@ impl ApplicationHandler for App {
                     KeyCode::Slash if pressed => {
                         self.chat_state.open(Some("/"));
                         self.controller.mouse_captured = false;
-                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                        window.set_cursor_visible(true);
+                        self.set_cursor_captured(false);
                         self.controller.forward = false;
                         self.controller.backward = false;
                         self.controller.left = false;
@@ -6109,6 +6670,20 @@ impl ApplicationHandler for App {
                     KeyCode::F3 if pressed => {
                         self.hud_state.f3_open = !self.hud_state.f3_open;
                         info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
+                    }
+                    KeyCode::F4 if pressed => {
+                        let next_mode = self.physics.toggle_game_mode();
+                        let mode_u8 = match next_mode {
+                            GameMode::Survival => 0u8,
+                            GameMode::Creative => 1u8,
+                        };
+                        self.hud_state.game_mode = next_mode.name().to_string();
+                        self.hud_state.is_flying = self.physics.flying;
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::SetGameMode(mode_u8),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!(?next_mode, "Toggled game mode (F4)");
                     }
                     KeyCode::F7 if pressed => {
                         let next_kind =
@@ -6186,33 +6761,40 @@ impl ApplicationHandler for App {
                         info!("Sent test set food command (6 food)");
                     }
                     KeyCode::Escape if pressed => {
-                        if self.controller.mouse_captured {
-                            self.controller.mouse_captured = false;
-                            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                            window.set_cursor_visible(true);
-                        } else {
-                            info!("Escape pressed, exiting application");
-                            event_loop.exit();
-                        }
+                        self.is_paused = true;
+                        self.controller.mouse_captured = false;
+                        self.set_cursor_captured(false);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                        self.controller.sprint = false;
                     }
                     _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.inventory_open {
-                    return;
-                }
                 let scroll = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     #[allow(clippy::cast_possible_truncation)]
                     winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
                 };
-                if scroll > 0.0 {
-                    let new_slot = (self.selected_hotbar_slot + 8) % 9;
-                    self.select_hotbar_slot(new_slot);
-                } else if scroll < 0.0 {
-                    let new_slot = (self.selected_hotbar_slot + 1) % 9;
-                    self.select_hotbar_slot(new_slot);
+                if self.current_screen == AppScreen::WorldSelect {
+                    self.world_select.scroll_offset =
+                        (self.world_select.scroll_offset - scroll * 16.0).max(0.0);
+                } else if self.current_screen == AppScreen::InGame
+                    && !self.is_paused
+                    && !self.inventory_open
+                {
+                    if scroll > 0.0 {
+                        let new_slot = (self.selected_hotbar_slot + 8) % 9;
+                        self.select_hotbar_slot(new_slot);
+                    } else if scroll < 0.0 {
+                        let new_slot = (self.selected_hotbar_slot + 1) % 9;
+                        self.select_hotbar_slot(new_slot);
+                    }
                 }
             }
             WindowEvent::Resized(physical_size) => {
@@ -6237,6 +6819,31 @@ impl ApplicationHandler for App {
                     };
                     if let Err(err) = self.recreate_hiz_resources(extent) {
                         tracing::error!("Failed to recreate Hi-Z resources on resize: {err}");
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if !self.controller.mouse_captured {
+                    self.set_cursor_captured(false);
+                }
+            }
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.set_cursor_captured(false);
+                    self.controller.mouse_captured = false;
+                    self.controller.forward = false;
+                    self.controller.backward = false;
+                    self.controller.left = false;
+                    self.controller.right = false;
+                    self.controller.up = false;
+                    self.controller.down = false;
+                    self.controller.sprint = false;
+                    if self.current_screen == AppScreen::InGame
+                        && !self.inventory_open
+                        && !self.chat_state.is_open
+                        && self.args.screenshot.is_none()
+                    {
+                        self.is_paused = true;
                     }
                 }
             }

@@ -1044,6 +1044,16 @@ impl Server {
                 PlayerCommandKind::ClearMobs => {
                     self.clear_mobs();
                 }
+                PlayerCommandKind::SetGameMode(mode) => {
+                    if let Some(session) = self.sessions.get_mut(&session_id) {
+                        session.move_mode = if mode == 1 {
+                            telos_sim::MoveMode::NoClipFly
+                        } else {
+                            telos_sim::MoveMode::Walk
+                        };
+                        info!(mode, "Updated player session game mode");
+                    }
+                }
             }
         }
 

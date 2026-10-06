@@ -75,7 +75,14 @@ impl LodQuad {
         block_light: u8,
         flags: u8,
     ) -> Self {
-        let dir = face as u32;
+        let dir = match face {
+            Face::East => 0,  // PosX (+X)
+            Face::West => 1,  // NegX (-X)
+            Face::Up => 2,    // PosY (+Y)
+            Face::Down => 3,  // NegY (-Y)
+            Face::South => 4, // PosZ (+Z)
+            Face::North => 5, // NegZ (-Z)
+        };
         let w_minus_1 = width.saturating_sub(1) & 0x1F;
         let h_minus_1 = height.saturating_sub(1) & 0x1F;
         let sky = (sky_light as u32) & 0x0F;
@@ -142,12 +149,12 @@ impl LodQuad {
     #[must_use]
     pub const fn face(&self) -> Face {
         match (self.data0 >> 25) & 0x07 {
-            0 => Face::Down,
-            1 => Face::Up,
-            2 => Face::North,
-            3 => Face::South,
-            4 => Face::West,
-            _ => Face::East,
+            0 => Face::East,  // PosX (+X)
+            1 => Face::West,  // NegX (-X)
+            2 => Face::Up,    // PosY (+Y)
+            3 => Face::Down,  // NegY (-Y)
+            4 => Face::South, // PosZ (+Z)
+            _ => Face::North, // NegZ (-Z)
         }
     }
 

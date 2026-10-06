@@ -74,9 +74,12 @@ pub fn mesh_lod_node<S: LodVoxelSource>(
     // Mesh each of the 6 cardinal directions
     for face in Face::ALL {
         let (axis_u, axis_v, axis_d) = match face {
-            Face::Down | Face::Up => (0, 2, 1),     // u=X, v=Z, d=Y
-            Face::North | Face::South => (0, 1, 2), // u=X, v=Y, d=Z
-            Face::West | Face::East => (2, 1, 0),   // u=Z, v=Y, d=X
+            Face::East => (1, 2, 0),  // u=Y, v=Z, d=X
+            Face::West => (2, 1, 0),  // u=Z, v=Y, d=X
+            Face::Up => (2, 0, 1),    // u=Z, v=X, d=Y
+            Face::Down => (0, 2, 1),  // u=X, v=Z, d=Y
+            Face::South => (0, 1, 2), // u=X, v=Y, d=Z
+            Face::North => (1, 0, 2), // u=Y, v=X, d=Z
         };
 
         let is_positive = matches!(face, Face::Up | Face::South | Face::East);

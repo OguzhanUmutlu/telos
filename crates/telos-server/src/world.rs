@@ -209,6 +209,13 @@ impl ServerWorld {
                     &mut chunk_light.sky,
                     is_opaque,
                 );
+                Self::diffuse_cross_chunk_boundary(
+                    &self.chunks,
+                    pos,
+                    &mut chunk_light,
+                    &mut self.light_bfs,
+                    is_opaque,
+                );
                 chunk_light.try_collapse();
                 chunk.set_light(Some(chunk_light));
             }
@@ -250,6 +257,13 @@ impl ServerWorld {
             pos.y(),
             col_heights,
             &mut chunk_light.sky,
+            is_opaque,
+        );
+        Self::diffuse_cross_chunk_boundary(
+            &self.chunks,
+            pos,
+            &mut chunk_light,
+            &mut self.light_bfs,
             is_opaque,
         );
         chunk_light.try_collapse();
@@ -520,5 +534,135 @@ impl ServerWorld {
             );
         }
         (15, 0)
+    }
+
+    /// Propagates sky light from already generated cardinal neighbor chunks across boundaries.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
+    fn diffuse_cross_chunk_boundary<F>(
+        chunks: &HashMap<ChunkPos, ServerChunk>,
+        pos: ChunkPos,
+        chunk_light: &mut ChunkLight,
+        light_bfs: &mut LightBfs,
+        mut is_opaque: F,
+    ) where
+        F: FnMut(usize) -> u8,
+    {
+        let neighbors = [
+            (ChunkPos::new(pos.x() - 1, pos.y(), pos.z()), -1, 0, 0),
+            (ChunkPos::new(pos.x() + 1, pos.y(), pos.z()), 1, 0, 0),
+            (ChunkPos::new(pos.x(), pos.y() - 1, pos.z()), 0, -1, 0),
+            (ChunkPos::new(pos.x(), pos.y() + 1, pos.z()), 0, 1, 0),
+            (ChunkPos::new(pos.x(), pos.y(), pos.z() - 1), 0, 0, -1),
+            (ChunkPos::new(pos.x(), pos.y(), pos.z() + 1), 0, 0, 1),
+        ];
+
+        let mut seeded = false;
+        for (n_pos, dx, dy, dz) in neighbors {
+            if let Some(sc) = chunks.get(&n_pos)
+                && let Some(nl) = sc.chunk.light()
+            {
+                if dx == -1 {
+                    for y in 0..32u32 {
+                        for z in 0..32u32 {
+                            let n_idx = ((y << 10) | (z << 5) | 31) as usize;
+                            let c_idx = ((y << 10) | (z << 5)) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(0, y as i32, z as i32);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                } else if dx == 1 {
+                    for y in 0..32u32 {
+                        for z in 0..32u32 {
+                            let n_idx = ((y << 10) | (z << 5)) as usize;
+                            let c_idx = ((y << 10) | (z << 5) | 31) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(31, y as i32, z as i32);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                } else if dy == -1 {
+                    for x in 0..32u32 {
+                        for z in 0..32u32 {
+                            let n_idx = ((31 << 10) | (z << 5) | x) as usize;
+                            let c_idx = ((z << 5) | x) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(x as i32, 0, z as i32);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                } else if dy == 1 {
+                    for x in 0..32u32 {
+                        for z in 0..32u32 {
+                            let n_idx = ((z << 5) | x) as usize;
+                            let c_idx = ((31 << 10) | (z << 5) | x) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(x as i32, 31, z as i32);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                } else if dz == -1 {
+                    for y in 0..32u32 {
+                        for x in 0..32u32 {
+                            let n_idx = ((y << 10) | (31 << 5) | x) as usize;
+                            let c_idx = ((y << 10) | x) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(x as i32, y as i32, 0);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                } else if dz == 1 {
+                    for y in 0..32u32 {
+                        for x in 0..32u32 {
+                            let n_idx = ((y << 10) | x) as usize;
+                            let c_idx = ((y << 10) | (31 << 5) | x) as usize;
+                            let n_sky = nl.sky.get(n_idx);
+                            if n_sky > 1 && is_opaque(c_idx) == 0 {
+                                let target = n_sky - 1;
+                                if chunk_light.sky.get(c_idx) < target {
+                                    chunk_light.sky.set(c_idx, target);
+                                    light_bfs.enqueue_add(x as i32, y as i32, 31);
+                                    seeded = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if seeded {
+            light_bfs.propagate_block_add(&mut chunk_light.sky, is_opaque);
+        }
     }
 }

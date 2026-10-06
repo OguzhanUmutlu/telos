@@ -1438,6 +1438,8 @@ pub enum PlayerCommandKind {
     },
     /// Clear all active mobs.
     ClearMobs,
+    /// Switch player game mode (0 = Survival, 1 = Creative).
+    SetGameMode(u8),
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1791,6 +1793,10 @@ impl C2sPlayerCommand {
             PlayerCommandKind::ClearMobs => {
                 buf.push(7);
             }
+            PlayerCommandKind::SetGameMode(mode) => {
+                buf.push(8);
+                buf.push(mode);
+            }
         }
     }
 
@@ -1891,6 +1897,14 @@ impl C2sPlayerCommand {
                 PlayerCommandKind::SpawnMob { mob_type, x, y, z }
             }
             7 => PlayerCommandKind::ClearMobs,
+            8 => {
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let mode = cursor[0];
+                *cursor = &cursor[1..];
+                PlayerCommandKind::SetGameMode(mode)
+            }
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
                     enum_name: "PlayerCommandKind",

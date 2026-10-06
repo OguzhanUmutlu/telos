@@ -59,7 +59,13 @@ void main() {
 
     // Sample 16x16 lightmap LUT with bilinear filtering
     vec2 lightmap_uv = clamp(vec2(block_raw + 0.5, sky_raw + 0.5) / 16.0, 0.0, 1.0);
-    vec3 light_color = texture(u_lightmap, lightmap_uv).rgb;
+    vec3 sampled_light = texture(u_lightmap, lightmap_uv).rgb;
+
+    // Daylight ambient floor: prevents outdoor side faces from turning pitch black
+    vec3 sky_day_color = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;
+    vec3 daylight_floor = sky_day_color * 0.20;
+    float sky_exposure = clamp(sky_raw / 2.0, 0.0, 1.0);
+    vec3 light_color = mix(sampled_light, max(sampled_light, daylight_floor), sky_exposure);
 
     vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
 

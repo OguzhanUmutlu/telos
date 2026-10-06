@@ -3492,11 +3492,14 @@ dependencies = [
  "glam",
  "image",
  "proptest",
+ "serde",
  "slotmap",
  "taffy",
  "telos-assets",
  "telos-core",
+ "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

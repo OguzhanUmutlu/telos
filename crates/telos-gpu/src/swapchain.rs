@@ -234,12 +234,15 @@ impl Swapchain {
             })
             .unwrap_or(formats[0]);
 
-        // Choose Mailbox present mode if available, fallback to FIFO (vsync)
+        // Choose present mode: prefer MAILBOX (uncapped, no tearing) or IMMEDIATE (uncapped, high refresh 144Hz+) over FIFO (60Hz vsync lock)
         let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
             vk::PresentModeKHR::MAILBOX
+        } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+            vk::PresentModeKHR::IMMEDIATE
         } else {
             vk::PresentModeKHR::FIFO
         };
+        tracing::info!("Selected swapchain present mode: {present_mode:?}");
 
         let extent = if caps.current_extent.width == u32::MAX {
             vk::Extent2D {

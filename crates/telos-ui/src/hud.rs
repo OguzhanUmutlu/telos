@@ -133,6 +133,10 @@ pub struct HudState {
     pub entities_rendered: u32,
     /// Number of active audio channels playing.
     pub audio_channels: u32,
+    /// Current player game mode ("Survival", "Creative").
+    pub game_mode: String,
+    /// Whether the player is currently in flying mode.
+    pub is_flying: bool,
 }
 
 impl Default for HudState {
@@ -166,6 +170,8 @@ impl Default for HudState {
             local_precipitation: "None".to_string(),
             entities_rendered: 0,
             audio_channels: 0,
+            game_mode: "Creative".to_string(),
+            is_flying: true,
         }
     }
 }
@@ -390,7 +396,12 @@ fn render_f3_overlay(
     let minutes = total_minutes % 60;
 
     let left_lines = [
-        "§fVoxel Engine 0.1.0-dev".to_string(),
+        "§fTelos 0.1.0-dev".to_string(),
+        format!(
+            "§fMode: §d{} §f(F4 to toggle) | Flying: §b{}",
+            state.game_mode,
+            if state.is_flying { "Yes" } else { "No" }
+        ),
         format!("§fFPS: §a{} §f({:.2} ms)", state.fps, state.frame_time_ms),
         format!(
             "§fXYZ: §e{:.3} §f/ §e{:.3} §f/ §e{:.3}",
