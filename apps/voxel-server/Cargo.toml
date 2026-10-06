@@ -10,6 +10,7 @@ description = "Authoritative headless server binary for voxel"
 
 [dependencies]
 vx-core = { workspace = true }
+vx-server = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 mimalloc = { workspace = true }

@@ -23,6 +23,53 @@ pub struct ChunkSnapshot {
 }
 
 impl ChunkSnapshot {
+    /// Creates a snapshot from raw parts.
+    #[must_use]
+    pub fn from_parts(
+        position: ChunkPos,
+        blocks: Blocks,
+        occupancy: Occupancy,
+        light: Option<crate::light::ChunkLight>,
+        content_version: u64,
+        face_version: [u64; 6],
+        world_epoch: u64,
+    ) -> Self {
+        Self {
+            position,
+            blocks,
+            occupancy,
+            light,
+            content_version,
+            face_version,
+            world_epoch,
+        }
+    }
+
+    /// Creates a snapshot representing a uniform chunk.
+    #[must_use]
+    pub fn new_uniform(
+        position: ChunkPos,
+        state: BlockStateId,
+        is_opaque: bool,
+        light: Option<crate::light::ChunkLight>,
+    ) -> Self {
+        let blocks = Blocks::Uniform(state);
+        let occupancy = if is_opaque {
+            Occupancy::solid()
+        } else {
+            Occupancy::empty()
+        };
+        Self {
+            position,
+            blocks,
+            occupancy,
+            light,
+            content_version: 0,
+            face_version: [0; 6],
+            world_epoch: 0,
+        }
+    }
+
     /// Position of the chunk in world chunk grid.
     #[must_use]
     pub const fn position(&self) -> ChunkPos {

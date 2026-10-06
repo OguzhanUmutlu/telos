@@ -1,6 +1,8 @@
 //! Integration and property tests for vx-protocol codecs and wire types.
 
 use proptest::prelude::*;
+use std::sync::Arc;
+use vx_core::coords::ChunkPos;
 use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::codec::{
     MAX_FRAME_SIZE, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
@@ -8,14 +10,16 @@ use vx_protocol::codec::{
 use vx_protocol::error::ProtocolError;
 use vx_protocol::messages::{
     AuthMode, C2sChatMessage, C2sClientSettings, C2sConfigAck, C2sHello, C2sKeepAlive,
-    C2sKnownRegistries, C2sLoginStart, C2sMessage, ConnectionPhase, Disconnect, DisconnectReason,
-    S2cChatMessage, S2cConfigDone, S2cHelloReply, S2cKeepAlive, S2cLoginSuccess, S2cMessage,
-    S2cRegistryData,
+    C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload,
+    ConnectionPhase, Disconnect, DisconnectReason, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLoginSuccess, S2cMessage,
+    S2cRegistryData, S2cUniformChunk,
 };
 use vx_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
     encode_varlong, varint_size,
 };
+use vx_voxel::{chunk::ChunkSnapshot, light::ChunkLight, state::BlockStateId};
 
 #[test]
 fn test_varint_boundary_roundtrips() {
@@ -132,6 +136,14 @@ fn test_c2s_messages_roundtrip() {
         C2sMessage::ChatMessage(C2sChatMessage {
             message: BoundedString::new("Hello server!").unwrap(),
         }),
+        C2sMessage::PlayerPosition(C2sPlayerPosition {
+            x: 100.5,
+            y: 64.0,
+            z: -250.75,
+            yaw: 180.0,
+            pitch: -15.5,
+            on_ground: true,
+        }),
         C2sMessage::Disconnect(Disconnect {
             reason: DisconnectReason::Normal,
             message: BoundedString::new("Quitting game").unwrap(),
@@ -177,6 +189,27 @@ fn test_s2c_messages_roundtrip() {
             message: BoundedString::new("Welcome!").unwrap(),
             timestamp: 123_456_789,
         }),
+        S2cMessage::JoinGame(S2cJoinGame {
+            entity_id: 1,
+            spawn_x: 0.0,
+            spawn_y: 70.0,
+            spawn_z: 0.0,
+            view_distance: 12,
+        }),
+        S2cMessage::UniformChunk(S2cUniformChunk {
+            chunk_x: 3,
+            chunk_y: 4,
+            chunk_z: 5,
+            version: 1,
+            block_state: BlockStateId(1),
+            sky_light: 15,
+            block_light: 0,
+        }),
+        S2cMessage::ChunkUnload(S2cChunkUnload {
+            chunk_x: 10,
+            chunk_y: -2,
+            chunk_z: 30,
+        }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,
             message: BoundedString::new("Server is full").unwrap(),
@@ -192,6 +225,50 @@ fn test_s2c_messages_roundtrip() {
         let decoded = decode_s2c(phase, &mut cursor).expect("failed to decode S2C message");
         assert_eq!(decoded, msg);
         assert!(cursor.is_empty());
+    }
+}
+
+#[test]
+fn test_chunk_data_snapshot_and_wire_roundtrip() {
+    let snap = ChunkSnapshot::new_uniform(
+        ChunkPos::new(10, 20, 30),
+        BlockStateId(2),
+        false,
+        Some(ChunkLight::default()),
+    );
+    let msg = S2cMessage::ChunkData(S2cChunkData {
+        chunk_x: 10,
+        chunk_y: 20,
+        chunk_z: 30,
+        version: 1,
+        epoch: 42,
+        payload: ChunkPayload::Snapshot(Arc::new(snap.clone())),
+    });
+
+    let mut buf = Vec::new();
+    encode_s2c(&msg, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded =
+        decode_s2c(ConnectionPhase::Play, &mut cursor).expect("failed to decode ChunkData");
+    assert!(cursor.is_empty());
+
+    if let S2cMessage::ChunkData(decoded_chunk) = decoded {
+        assert_eq!(decoded_chunk.chunk_x, 10);
+        assert_eq!(decoded_chunk.chunk_y, 20);
+        assert_eq!(decoded_chunk.chunk_z, 30);
+        assert_eq!(decoded_chunk.version, 1);
+        assert_eq!(decoded_chunk.epoch, 42);
+
+        let decoded_snap = decoded_chunk
+            .payload
+            .to_snapshot(decoded_chunk.pos())
+            .unwrap();
+        assert_eq!(decoded_snap.position(), snap.position());
+        assert_eq!(decoded_snap.blocks(), snap.blocks());
+        assert_eq!(decoded_snap.light(), snap.light());
+    } else {
+        panic!("Decoded unexpected message variant");
     }
 }
 

@@ -2449,6 +2449,7 @@ dependencies = [
  "anyhow",
  "clap",
  "glam",
+ "hashbrown 0.15.5",
  "mimalloc",
  "raw-window-handle",
  "tracing",
@@ -2456,6 +2457,9 @@ dependencies = [
  "vx-core",
  "vx-gpu",
  "vx-mesh",
+ "vx-net",
+ "vx-protocol",
+ "vx-server",
  "vx-voxel",
  "vx-worldgen",
  "winit",
@@ -2471,6 +2475,7 @@ dependencies = [
  "mimalloc",
  "tracing",
  "vx-core",
+ "vx-server",
 ]
 
 [[package]]
@@ -2550,6 +2555,22 @@ dependencies = [
  "vx-core",
  "vx-voxel",
  "xxhash-rust",
+]
+
+[[package]]
+name = "vx-server"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "hashbrown 0.15.5",
+ "proptest",
+ "thiserror 2.0.21",
+ "tracing",
+ "vx-core",
+ "vx-net",
+ "vx-protocol",
+ "vx-voxel",
+ "vx-worldgen",
 ]
 
 [[package]]

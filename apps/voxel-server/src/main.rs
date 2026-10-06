@@ -23,6 +23,14 @@ struct Args {
     #[arg(short, long, default_value_t = 20)]
     tps: u32,
 
+    /// Procedural world generation seed.
+    #[arg(short, long, default_value_t = 1337)]
+    seed: u64,
+
+    /// Default view distance in chunks.
+    #[arg(short, long, default_value_t = 8)]
+    view_distance: u32,
+
     /// Log level filter (e.g. info, debug, trace).
     #[arg(long, default_value = "info")]
     log: String,
@@ -40,8 +48,17 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         target_tps = args.tps,
+        seed = args.seed,
+        view_distance = args.view_distance,
         "Starting voxel dedicated server"
     );
+
+    let config = vx_server::ServerConfig {
+        tps: args.tps,
+        view_distance: args.view_distance,
+        ..Default::default()
+    };
+    let mut server = vx_server::Server::new(args.seed, config);
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -63,7 +80,7 @@ fn main() -> anyhow::Result<()> {
             let tick_start = Instant::now();
             let _span = tracing::info_span!("tick", num = tick_num).entered();
 
-            // Placeholder for simulation ticks (Phases 3+)
+            server.tick();
             tick_counter += 1;
 
             let elapsed = tick_start.elapsed();
@@ -83,6 +100,7 @@ fn main() -> anyhow::Result<()> {
             tracing::info!(
                 avg_tps = format!("{avg_tps:.2}"),
                 avg_tick_ms = format!("{avg_tick_ms:.4}"),
+                active_sessions = server.session_count(),
                 total_ticks = timestep.total_ticks(),
                 "Server tick health"
             );

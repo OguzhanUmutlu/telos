@@ -179,6 +179,31 @@ impl<T, const MAX: usize> BoundedVec<T, MAX> {
     }
 }
 
+impl<const MAX: usize> BoundedVec<u8, MAX> {
+    /// Encodes a raw byte buffer with length prefix.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.0.len() as u32, buf);
+        buf.extend_from_slice(&self.0);
+    }
+
+    /// Decodes a raw byte buffer from cursor.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let count = decode_varint(cursor)? as usize;
+        if count > MAX {
+            return Err(ProtocolError::VecTooLong {
+                actual: count,
+                limit: MAX,
+            });
+        }
+        if cursor.len() < count {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let bytes = cursor[..count].to_vec();
+        *cursor = &cursor[count..];
+        Ok(Self(bytes))
+    }
+}
+
 impl<T, const MAX: usize> Deref for BoundedVec<T, MAX> {
     type Target = [T];
 

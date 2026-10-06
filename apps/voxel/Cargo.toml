@@ -15,6 +15,10 @@ vx-voxel = { workspace = true }
 vx-mesh = { workspace = true }
 vx-assets = { workspace = true }
 vx-worldgen = { workspace = true }
+vx-server = { workspace = true }
+vx-net = { workspace = true }
+vx-protocol = { workspace = true }
+hashbrown = { workspace = true }
 glam = { workspace = true }
 winit = { workspace = true }
 raw-window-handle = { workspace = true }

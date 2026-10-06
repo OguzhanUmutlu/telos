@@ -2,21 +2,34 @@
 
 pub mod camera;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use camera::{Camera, FlyController, Frustum};
 use clap::Parser;
 use glam::Vec3;
+use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
 use tracing::info;
 use vx_assets::{ResourcePackStack, TextureArrayBuilder};
-use vx_core::{TelemetryConfig, coords::ChunkPos, init_telemetry};
+use vx_core::{FixedTimestep, TelemetryConfig, coords::ChunkPos, init_telemetry};
 use vx_gpu::{
     DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline, ShaderModule,
     TextureMipRegion, vk,
 };
+use vx_net::{Connection, Lane, MemoryConnection, Payload};
+use vx_protocol::bounded::BoundedString;
+use vx_protocol::messages::{
+    AuthMode, C2sClientSettings, C2sConfigAck, C2sHello, C2sLoginStart, C2sMessage,
+    C2sPlayerPosition, ChunkPayload, ConnectionPhase, S2cMessage,
+};
+use vx_voxel::chunk::ChunkSnapshot;
+use vx_voxel::coords::LocalIdx;
+use vx_voxel::light::ChunkLight;
 use vx_voxel::registry::BlockRegistry;
+use vx_voxel::state::BlockStateId;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
@@ -35,6 +48,14 @@ struct Args {
     /// Log level filter.
     #[arg(long, default_value = "info")]
     log: String,
+
+    /// Procedural world generation seed.
+    #[arg(short, long, default_value_t = 0x5EED_C0DE_1234_5678)]
+    seed: u64,
+
+    /// Horizontal chunk view distance radius.
+    #[arg(short, long, default_value_t = 8)]
+    view_distance: u32,
 
     /// Enable Vulkan validation layers.
     #[arg(long, default_value_t = false)]
@@ -61,6 +82,7 @@ struct GpuChunkMesh {
 
 struct App {
     validation: bool,
+    view_distance: u32,
     window: Option<Window>,
     gpu_context: Option<GpuContext>,
     depth_buffer: Option<DepthBuffer>,
@@ -71,9 +93,21 @@ struct App {
     pipeline: Option<GraphicsPipeline>,
     vert_shader: Option<ShaderModule>,
     frag_shader: Option<ShaderModule>,
-    chunk_meshes: Vec<GpuChunkMesh>,
+
+    server_running: Arc<AtomicBool>,
+    server_handle: Option<std::thread::JoinHandle<()>>,
+    client_conn: Box<dyn Connection<C2sMessage, S2cMessage>>,
+    client_phase: ConnectionPhase,
+
+    block_registry: BlockRegistry,
+    chunks: HashMap<ChunkPos, Arc<ChunkSnapshot>>,
+    chunk_meshes: HashMap<ChunkPos, GpuChunkMesh>,
+    dirty_chunks: HashSet<ChunkPos>,
+
     camera: Camera,
     controller: FlyController,
+    last_sent_pos: Vec3,
+    last_sent_time: Instant,
     last_frame_time: Instant,
     last_fps_time: Instant,
     frame_counter: u32,
@@ -81,12 +115,53 @@ struct App {
 }
 
 impl App {
-    fn new(validation: bool) -> Self {
-        let mut camera = Camera::new(Vec3::new(128.0, 45.0, 160.0));
+    fn new(validation: bool, seed: u64, view_distance: u32) -> Self {
+        let spawn_pos = Vec3::new(128.0, 45.0, 160.0);
+        let mut camera = Camera::new(spawn_pos);
         camera.pitch = -0.3;
+
+        let server_running = Arc::new(AtomicBool::new(true));
+        let running_clone = server_running.clone();
+
+        let (server_conn, client_conn) = MemoryConnection::pair_default();
+        let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
+        let client_conn: Box<dyn Connection<C2sMessage, S2cMessage>> = Box::new(client_conn);
+
+        let server_handle = std::thread::Builder::new()
+            .name("voxel-server".into())
+            .spawn(move || {
+                let config = vx_server::ServerConfig {
+                    tps: 20,
+                    view_distance,
+                    vertical_view_distance: 2,
+                    chunks_per_tick_per_player: 16,
+                };
+                let mut server = vx_server::Server::new(seed, config);
+                server.add_connection(server_conn);
+
+                let mut timestep = FixedTimestep::new(20);
+                while running_clone.load(Ordering::Relaxed) {
+                    timestep.advance(|_| {
+                        server.tick();
+                    });
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .expect("Failed to spawn background singleplayer server thread");
+
+        // Send initial Hello handshake
+        let _ = client_conn.send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        );
 
         Self {
             validation,
+            view_distance,
             window: None,
             gpu_context: None,
             depth_buffer: None,
@@ -97,9 +172,21 @@ impl App {
             pipeline: None,
             vert_shader: None,
             frag_shader: None,
-            chunk_meshes: Vec::new(),
+
+            server_running,
+            server_handle: Some(server_handle),
+            client_conn,
+            client_phase: ConnectionPhase::Hello,
+
+            block_registry: BlockRegistry::standard(),
+            chunks: HashMap::new(),
+            chunk_meshes: HashMap::new(),
+            dirty_chunks: HashSet::new(),
+
             camera,
             controller: FlyController::default(),
+            last_sent_pos: spawn_pos,
+            last_sent_time: Instant::now(),
             last_frame_time: Instant::now(),
             last_fps_time: Instant::now(),
             frame_counter: 0,
@@ -108,7 +195,284 @@ impl App {
     }
 
     #[allow(clippy::too_many_lines)]
+    fn poll_network(&mut self) {
+        while let Ok(Some(incoming)) = self.client_conn.try_recv() {
+            let Some(msg) = incoming.into_msg() else {
+                continue;
+            };
+
+            match self.client_phase {
+                ConnectionPhase::Hello => {
+                    if let S2cMessage::HelloReply(reply) = msg {
+                        info!(
+                            protocol = reply.protocol,
+                            "Server accepted Hello, logging in..."
+                        );
+                        let login = C2sMessage::LoginStart(C2sLoginStart {
+                            username: BoundedString::new("Player").unwrap(),
+                            mode: AuthMode::Offline,
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(login));
+                        self.client_phase = ConnectionPhase::Login;
+                    }
+                }
+                ConnectionPhase::Login => {
+                    if let S2cMessage::LoginSuccess(succ) = msg {
+                        info!(
+                            username = succ.username.as_str(),
+                            "Login successful, configuring client..."
+                        );
+                        let settings = C2sMessage::ClientSettings(C2sClientSettings {
+                            view_distance: self.view_distance as u16,
+                            simulation_distance: self.view_distance as u16,
+                            locale: BoundedString::new("en_US").unwrap(),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(settings));
+                        let ack = C2sMessage::ConfigAck(C2sConfigAck);
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(ack));
+                        self.client_phase = ConnectionPhase::Config;
+                    }
+                }
+                ConnectionPhase::Config => {
+                    if let S2cMessage::JoinGame(join) = msg {
+                        info!(
+                            entity_id = join.entity_id,
+                            view_distance = join.view_distance,
+                            spawn_x = join.spawn_x,
+                            spawn_y = join.spawn_y,
+                            spawn_z = join.spawn_z,
+                            "Joined world, starting chunk streaming"
+                        );
+                        self.client_phase = ConnectionPhase::Play;
+                    }
+                }
+                ConnectionPhase::Play => match msg {
+                    S2cMessage::UniformChunk(uniform) => {
+                        let pos = ChunkPos::new(uniform.chunk_x, uniform.chunk_y, uniform.chunk_z);
+                        let is_opaque = self
+                            .block_registry
+                            .flags(uniform.block_state)
+                            .contains(vx_voxel::state::StateFlags::OPAQUE_FULL);
+                        let light = Some(ChunkLight::new_uniform(
+                            uniform.sky_light,
+                            uniform.block_light,
+                        ));
+                        let snap = Arc::new(ChunkSnapshot::new_uniform(
+                            pos,
+                            uniform.block_state,
+                            is_opaque,
+                            light,
+                        ));
+
+                        self.chunks.insert(pos, snap);
+                        self.mark_dirty_with_neighbors(pos);
+                    }
+                    S2cMessage::ChunkData(data) => {
+                        let pos = ChunkPos::new(data.chunk_x, data.chunk_y, data.chunk_z);
+                        let snap = match data.payload {
+                            ChunkPayload::Snapshot(s) => s,
+                            ChunkPayload::Wire(bytes) => {
+                                let mut cursor = bytes.as_slice();
+                                match vx_protocol::messages::decode_chunk_snapshot(pos, &mut cursor)
+                                {
+                                    Ok(s) => Arc::new(s),
+                                    Err(err) => {
+                                        tracing::error!("Failed to decode wire chunk: {err}");
+                                        continue;
+                                    }
+                                }
+                            }
+                        };
+                        self.chunks.insert(pos, snap);
+                        self.mark_dirty_with_neighbors(pos);
+                    }
+                    S2cMessage::ChunkUnload(unload) => {
+                        let pos = ChunkPos::new(unload.chunk_x, unload.chunk_y, unload.chunk_z);
+                        self.chunks.remove(&pos);
+                        if let (Some(mut mesh), Some(ctx)) =
+                            (self.chunk_meshes.remove(&pos), &self.gpu_context)
+                        {
+                            mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
+                        }
+                        self.mark_dirty_neighbors(pos);
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    fn send_player_position_if_needed(&mut self) {
+        if self.client_phase != ConnectionPhase::Play {
+            return;
+        }
+
+        let moved = self.camera.position.distance_squared(self.last_sent_pos) > 0.05;
+        let time_elapsed = self.last_sent_time.elapsed() >= Duration::from_millis(50);
+
+        if moved || time_elapsed {
+            let msg = C2sMessage::PlayerPosition(C2sPlayerPosition {
+                x: f64::from(self.camera.position.x),
+                y: f64::from(self.camera.position.y),
+                z: f64::from(self.camera.position.z),
+                yaw: self.camera.yaw.to_degrees(),
+                pitch: self.camera.pitch.to_degrees(),
+                on_ground: true,
+            });
+            let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+            self.last_sent_pos = self.camera.position;
+            self.last_sent_time = Instant::now();
+        }
+    }
+
+    fn mark_dirty_with_neighbors(&mut self, pos: ChunkPos) {
+        self.dirty_chunks.insert(pos);
+        self.mark_dirty_neighbors(pos);
+    }
+
+    fn mark_dirty_neighbors(&mut self, pos: ChunkPos) {
+        let offsets = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ];
+        for (dx, dy, dz) in offsets {
+            let neighbor = ChunkPos::new(pos.x() + dx, pos.y() + dy, pos.z() + dz);
+            if self.chunks.contains_key(&neighbor) {
+                self.dirty_chunks.insert(neighbor);
+            }
+        }
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::similar_names
+    )]
+    fn rebuild_dirty_meshes(&mut self, budget: usize) {
+        let Some(gpu_context) = &self.gpu_context else {
+            return;
+        };
+        let device = gpu_context.device().raw();
+        let allocator = gpu_context.allocator();
+
+        let cam_cx = (self.camera.position.x / 32.0).floor() as i32;
+        let cam_cy = (self.camera.position.y / 32.0).floor() as i32;
+        let cam_cz = (self.camera.position.z / 32.0).floor() as i32;
+
+        let mut processed = 0;
+        while processed < budget {
+            // Prioritize dirty chunks closest to the player's view
+            let Some(&pos) = self.dirty_chunks.iter().min_by_key(|p| {
+                let dx = p.x() - cam_cx;
+                let dy = p.y() - cam_cy;
+                let dz = p.z() - cam_cz;
+                dx * dx + dy * dy * 4 + dz * dz
+            }) else {
+                break;
+            };
+
+            self.dirty_chunks.remove(&pos);
+            processed += 1;
+
+            let Some(chunk) = self.chunks.get(&pos).cloned() else {
+                if let Some(mut mesh) = self.chunk_meshes.remove(&pos) {
+                    mesh.buffer.destroy(device, allocator);
+                }
+                continue;
+            };
+
+            // Fast path: uniform air requires no mesh
+            if chunk.blocks().is_uniform()
+                && chunk.blocks().get(LocalIdx::from_coords_unchecked(0, 0, 0)) == BlockStateId::AIR
+            {
+                if let Some(mut mesh) = self.chunk_meshes.remove(&pos) {
+                    mesh.buffer.destroy(device, allocator);
+                }
+                continue;
+            }
+
+            let pos_x = self
+                .chunks
+                .get(&ChunkPos::new(pos.x() + 1, pos.y(), pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let neg_x = self
+                .chunks
+                .get(&ChunkPos::new(pos.x() - 1, pos.y(), pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let pos_y = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y() + 1, pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let neg_y = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y() - 1, pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let pos_z = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y(), pos.z() + 1))
+                .map(std::convert::AsRef::as_ref);
+            let neg_z = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y(), pos.z() - 1))
+                .map(std::convert::AsRef::as_ref);
+
+            let neighbors = [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z];
+            let mesh = vx_mesh::mesher::mesh_chunk_t0(&chunk, &neighbors);
+
+            if mesh.is_empty() {
+                if let Some(mut old_mesh) = self.chunk_meshes.remove(&pos) {
+                    old_mesh.buffer.destroy(device, allocator);
+                }
+            } else {
+                let mut buffer_data = Vec::new();
+                mesh.write_to_u32_buffer(&mut buffer_data);
+
+                match gpu_context.create_buffer_with_data(
+                    "chunk_mesh",
+                    &buffer_data,
+                    vk::BufferUsageFlags::empty(),
+                ) {
+                    Ok(buffer) => {
+                        let (cx, cy, cz) = (pos.x(), pos.y(), pos.z());
+                        let min_aabb =
+                            Vec3::new((cx * 32) as f32, (cy * 32) as f32, (cz * 32) as f32);
+                        let max_aabb = Vec3::new(
+                            ((cx + 1) * 32) as f32,
+                            ((cy + 1) * 32) as f32,
+                            ((cz + 1) * 32) as f32,
+                        );
+
+                        let new_mesh = GpuChunkMesh {
+                            pos: [cx * 32, cy * 32, cz * 32],
+                            buffer,
+                            quad_count: mesh.quads.len() as u32,
+                            pattern_offset: mesh.quads.len() as u32,
+                            min_aabb,
+                            max_aabb,
+                        };
+
+                        if let Some(mut old_mesh) = self.chunk_meshes.insert(pos, new_mesh) {
+                            old_mesh.buffer.destroy(device, allocator);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!("Failed to create GPU buffer for chunk {pos:?}: {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn render(&mut self) {
+        self.poll_network();
+        self.send_player_position_if_needed();
+        self.rebuild_dirty_meshes(16);
+
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
@@ -123,7 +487,9 @@ impl App {
             info!(
                 fps,
                 visible = self.visible_chunks_last,
-                total_chunks = self.chunk_meshes.len(),
+                loaded_chunks = self.chunks.len(),
+                gpu_meshes = self.chunk_meshes.len(),
+                dirty_queue = self.dirty_chunks.len(),
                 pos = ?self.camera.position,
                 "Performance metrics"
             );
@@ -249,7 +615,7 @@ impl App {
             // Frustum culling and BDA vertex pulling draws
             let mut visible_chunks = 0;
 
-            for mesh in &self.chunk_meshes {
+            for mesh in self.chunk_meshes.values() {
                 if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
                     continue;
                 }
@@ -298,7 +664,7 @@ impl ApplicationHandler for App {
         }
 
         let attributes = Window::default_attributes()
-            .with_title("Voxel Engine - Textured Chunk Renderer")
+            .with_title("Voxel Engine - Client (Dynamic Chunk Streaming)")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
 
         let window = match event_loop.create_window(attributes) {
@@ -473,21 +839,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        info!("Generating 8x8 chunk landscape test grid...");
-        let chunk_meshes = match generate_test_chunks(&gpu_context) {
-            Ok(m) => m,
-            Err(err) => {
-                tracing::error!("Failed to generate and upload test chunks: {err}");
-                event_loop.exit();
-                return;
-            }
-        };
-        info!(
-            chunk_count = chunk_meshes.len(),
-            "Uploaded chunk meshes to GPU memory"
-        );
-
-        info!("Renderer and window loop successfully initialized");
+        info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
         self.pipeline = Some(pipeline);
         self.vert_shader = Some(vert_module);
@@ -497,7 +849,6 @@ impl ApplicationHandler for App {
         self.descriptor_pool = Some(descriptor_pool);
         self.descriptor_set_layout = Some(descriptor_set_layout);
         self.descriptor_set = Some(descriptor_set);
-        self.chunk_meshes = chunk_meshes;
         self.gpu_context = Some(gpu_context);
         self.window = Some(window);
     }
@@ -606,6 +957,11 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.server_running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.server_handle.take() {
+            let _ = handle.join();
+        }
+
         if let Some(gpu_context) = &mut self.gpu_context {
             let _ = gpu_context.wait_idle();
 
@@ -643,11 +999,10 @@ impl ApplicationHandler for App {
                 tex.destroy(gpu_context.device().raw(), gpu_context.allocator());
             }
 
-            for mesh in &mut self.chunk_meshes {
+            for (_, mut mesh) in self.chunk_meshes.drain() {
                 mesh.buffer
                     .destroy(gpu_context.device().raw(), gpu_context.allocator());
             }
-            self.chunk_meshes.clear();
 
             if let Some(mut depth) = self.depth_buffer.take() {
                 depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
@@ -722,162 +1077,6 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
     Ok(texture_array)
 }
 
-#[allow(clippy::too_many_lines)]
-fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
-    const GRID_XZ: i32 = 8;
-    const GRID_Y: i32 = 2;
-
-    let reg = BlockRegistry::standard();
-    let generator = vx_worldgen::WorldGenerator::new(0x5EED_C0DE_1234_5678, &reg);
-
-    // 1. Generate raw chunks
-    let mut raw_chunks = Vec::with_capacity(GRID_XZ as usize);
-    for cz in 0..GRID_XZ {
-        let mut y_plane = Vec::with_capacity(GRID_Y as usize);
-        for cy in 0..GRID_Y {
-            let mut row = Vec::with_capacity(GRID_XZ as usize);
-            for cx in 0..GRID_XZ {
-                let chunk = generator.generate_chunk(ChunkPos::new(cx, cy, cz));
-                row.push(chunk);
-            }
-            y_plane.push(row);
-        }
-        raw_chunks.push(y_plane);
-    }
-
-    // 2. Compute column-wide heightmaps across stacked cubic chunks
-    let mut column_heights = Vec::with_capacity(GRID_XZ as usize);
-    for cz in 0..GRID_XZ {
-        let mut heights_row = Vec::with_capacity(GRID_XZ as usize);
-        for cx in 0..GRID_XZ {
-            let mut col_h = vx_voxel::light::ColumnHeights::new();
-            for cy in 0..GRID_Y {
-                let chunk = &raw_chunks[cz as usize][cy as usize][cx as usize];
-                let local_h = vx_voxel::light::ChunkHeightmap::from_occupancy(chunk.occupancy());
-                col_h.update_chunk(cy, &local_h);
-            }
-            heights_row.push(col_h);
-        }
-        column_heights.push(heights_row);
-    }
-
-    // 3. Propagate initial sky lighting with LightBfs
-    let mut bfs = vx_voxel::light::LightBfs::new();
-    for cz in 0..GRID_XZ {
-        for cy in 0..GRID_Y {
-            for cx in 0..GRID_XZ {
-                let chunk = &mut raw_chunks[cz as usize][cy as usize][cx as usize];
-                let col_h = &column_heights[cz as usize][cx as usize];
-
-                let mut chunk_light = vx_voxel::light::ChunkLight::default();
-                let is_opaque = |idx: usize| -> u8 {
-                    let x = (idx & 0x1F) as u32;
-                    let z = ((idx >> 5) & 0x1F) as u32;
-                    let y = ((idx >> 10) & 0x1F) as u32;
-                    if chunk.occupancy().is_solid(x, y, z) {
-                        15
-                    } else {
-                        0
-                    }
-                };
-
-                bfs.compute_initial_sky_light(cy, col_h, &mut chunk_light.sky, is_opaque);
-                chunk_light.try_collapse();
-                chunk.set_light(Some(chunk_light));
-            }
-        }
-    }
-
-    // 4. Publish immutable snapshots for meshing
-    let mut snapshots = Vec::with_capacity(GRID_XZ as usize);
-    for cz in 0..GRID_XZ {
-        let mut y_plane = Vec::with_capacity(GRID_Y as usize);
-        for cy in 0..GRID_Y {
-            let mut row = Vec::with_capacity(GRID_XZ as usize);
-            for cx in 0..GRID_XZ {
-                let chunk = &mut raw_chunks[cz as usize][cy as usize][cx as usize];
-                row.push(chunk.publish_snapshot());
-            }
-            y_plane.push(row);
-        }
-        snapshots.push(y_plane);
-    }
-
-    let mut meshes = Vec::new();
-    for cz in 0..GRID_XZ {
-        for cy in 0..GRID_Y {
-            for cx in 0..GRID_XZ {
-                let chunk = &snapshots[cz as usize][cy as usize][cx as usize];
-                let pos_x = if cx + 1 < GRID_XZ {
-                    Some(snapshots[cz as usize][cy as usize][(cx + 1) as usize].as_ref())
-                } else {
-                    None
-                };
-                let neg_x = if cx > 0 {
-                    Some(snapshots[cz as usize][cy as usize][(cx - 1) as usize].as_ref())
-                } else {
-                    None
-                };
-                let pos_y = if cy + 1 < GRID_Y {
-                    Some(snapshots[cz as usize][(cy + 1) as usize][cx as usize].as_ref())
-                } else {
-                    None
-                };
-                let neg_y = if cy > 0 {
-                    Some(snapshots[cz as usize][(cy - 1) as usize][cx as usize].as_ref())
-                } else {
-                    None
-                };
-                let pos_z = if cz + 1 < GRID_XZ {
-                    Some(snapshots[(cz + 1) as usize][cy as usize][cx as usize].as_ref())
-                } else {
-                    None
-                };
-                let neg_z = if cz > 0 {
-                    Some(snapshots[(cz - 1) as usize][cy as usize][cx as usize].as_ref())
-                } else {
-                    None
-                };
-
-                let neighbors = [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z];
-                let mesh = vx_mesh::mesher::mesh_chunk_t0(chunk, &neighbors);
-
-                if !mesh.is_empty() {
-                    let mut buffer_data = Vec::new();
-                    mesh.write_to_u32_buffer(&mut buffer_data);
-
-                    let buffer = gpu_context.create_buffer_with_data(
-                        "chunk_mesh",
-                        &buffer_data,
-                        vk::BufferUsageFlags::empty(),
-                    )?;
-
-                    #[allow(clippy::cast_precision_loss)]
-                    let min_aabb = Vec3::new((cx * 32) as f32, (cy * 32) as f32, (cz * 32) as f32);
-                    #[allow(clippy::cast_precision_loss)]
-                    let max_aabb = Vec3::new(
-                        ((cx + 1) * 32) as f32,
-                        ((cy + 1) * 32) as f32,
-                        ((cz + 1) * 32) as f32,
-                    );
-
-                    #[allow(clippy::cast_possible_truncation)]
-                    meshes.push(GpuChunkMesh {
-                        pos: [cx * 32, cy * 32, cz * 32],
-                        buffer,
-                        quad_count: mesh.quads.len() as u32,
-                        pattern_offset: mesh.quads.len() as u32,
-                        min_aabb,
-                        max_aabb,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(meshes)
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -887,12 +1086,17 @@ fn main() -> Result<()> {
         ansi_colors: true,
     });
 
-    info!(version = env!("CARGO_PKG_VERSION"), "Starting Voxel client");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        seed = args.seed,
+        view_distance = args.view_distance,
+        "Starting Voxel client"
+    );
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(args.validation);
+    let mut app = App::new(args.validation, args.seed, args.view_distance);
     event_loop.run_app(&mut app)?;
 
     Ok(())

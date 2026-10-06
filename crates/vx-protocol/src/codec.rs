@@ -7,7 +7,10 @@ use crate::messages::config::{
 use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
 use crate::messages::login::{C2sLoginStart, S2cLoginSuccess};
-use crate::messages::play::{C2sChatMessage, C2sKeepAlive, S2cChatMessage, S2cKeepAlive};
+use crate::messages::play::{
+    C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cJoinGame, S2cKeepAlive, S2cUniformChunk,
+};
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint, varint_size};
 
@@ -69,6 +72,7 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
             ConnectionPhase::Play => match msg_id {
                 0 => C2sMessage::KeepAlive(C2sKeepAlive::decode(&mut frame_cur)?),
                 1 => C2sMessage::ChatMessage(C2sChatMessage::decode(&mut frame_cur)?),
+                2 => C2sMessage::PlayerPosition(C2sPlayerPosition::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
@@ -138,6 +142,10 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
             ConnectionPhase::Play => match msg_id {
                 0 => S2cMessage::KeepAlive(S2cKeepAlive::decode(&mut frame_cur)?),
                 1 => S2cMessage::ChatMessage(S2cChatMessage::decode(&mut frame_cur)?),
+                2 => S2cMessage::JoinGame(S2cJoinGame::decode(&mut frame_cur)?),
+                3 => S2cMessage::ChunkData(S2cChunkData::decode(&mut frame_cur)?),
+                4 => S2cMessage::UniformChunk(S2cUniformChunk::decode(&mut frame_cur)?),
+                5 => S2cMessage::ChunkUnload(S2cChunkUnload::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

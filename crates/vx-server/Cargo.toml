@@ -1,0 +1,26 @@
+[package]
+name = "vx-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Authoritative server runtime, session management, and chunk delivery pipeline for voxel"
+
+[dependencies]
+vx-core = { workspace = true }
+vx-voxel = { workspace = true }
+vx-worldgen = { workspace = true }
+vx-protocol = { workspace = true }
+vx-net = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

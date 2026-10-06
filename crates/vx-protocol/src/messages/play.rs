@@ -1,8 +1,20 @@
-//! Play phase messages for active in-game communication and heartbeats.
+//! Play phase messages for active in-game communication, chunk streaming, and player replication.
 
-use crate::bounded::BoundedString;
-use crate::error::Result;
-use crate::varint::{decode_varlong, encode_varlong};
+use std::sync::Arc;
+use vx_core::coords::ChunkPos;
+use vx_voxel::{
+    chunk::ChunkSnapshot,
+    light::{ChunkLight, LIGHT_LAYER_BYTES, LightLayer},
+    occupancy::Occupancy,
+    state::BlockStateId,
+    storage::{Blocks, Packed},
+};
+
+use crate::bounded::{BoundedString, BoundedVec};
+use crate::error::{ProtocolError, Result};
+use crate::varint::{
+    decode_varint, decode_varlong, encode_varint, encode_varlong, unzigzag_i32, zigzag_i32,
+};
 
 /// Client responds to server heartbeat challenge to measure RTT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +104,604 @@ impl S2cChatMessage {
             sender,
             message,
             timestamp,
+        })
+    }
+}
+
+/// Client notifies server of updated player position and view angles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct C2sPlayerPosition {
+    /// Player world X coordinate.
+    pub x: f64,
+    /// Player world Y coordinate.
+    pub y: f64,
+    /// Player world Z coordinate.
+    pub z: f64,
+    /// Player camera yaw in degrees.
+    pub yaw: f32,
+    /// Player camera pitch in degrees.
+    pub pitch: f32,
+    /// Whether player is currently touching ground.
+    pub on_ground: bool,
+}
+
+impl Eq for C2sPlayerPosition {}
+
+impl C2sPlayerPosition {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+        buf.push(u8::from(self.on_ground));
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 33 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f64::from_le_bytes(cursor[0..8].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        let yaw = f32::from_le_bytes(cursor[24..28].try_into().unwrap());
+        let pitch = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
+        let on_ground = cursor[32] != 0;
+        *cursor = &cursor[33..];
+        Ok(Self {
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            on_ground,
+        })
+    }
+}
+
+/// Server sends game join confirmation and initial spawn configuration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cJoinGame {
+    /// Server-assigned player entity ID.
+    pub entity_id: u32,
+    /// Initial spawn position X.
+    pub spawn_x: f64,
+    /// Initial spawn position Y.
+    pub spawn_y: f64,
+    /// Initial spawn position Z.
+    pub spawn_z: f64,
+    /// Server-enforced view distance in chunks.
+    pub view_distance: u32,
+}
+
+impl Eq for S2cJoinGame {}
+
+impl S2cJoinGame {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.entity_id, buf);
+        buf.extend_from_slice(&self.spawn_x.to_le_bytes());
+        buf.extend_from_slice(&self.spawn_y.to_le_bytes());
+        buf.extend_from_slice(&self.spawn_z.to_le_bytes());
+        encode_varint(self.view_distance, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let entity_id = decode_varint(cursor)?;
+        if cursor.len() < 24 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let spawn_x = f64::from_le_bytes(cursor[0..8].try_into().unwrap());
+        let spawn_y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let spawn_z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        *cursor = &cursor[24..];
+        let view_distance = decode_varint(cursor)?;
+        Ok(Self {
+            entity_id,
+            spawn_x,
+            spawn_y,
+            spawn_z,
+            view_distance,
+        })
+    }
+}
+
+/// Serializes an in-memory `ChunkSnapshot` into a compact wire byte representation.
+pub fn encode_chunk_snapshot(snapshot: &ChunkSnapshot, buf: &mut Vec<u8>) {
+    // 1. Version tag
+    buf.push(1);
+
+    // 2. Blocks
+    match snapshot.blocks() {
+        Blocks::Uniform(state) => {
+            buf.push(0);
+            encode_varint(state.0, buf);
+        }
+        Blocks::Packed(packed) => {
+            buf.push(1);
+            buf.push(packed.log2());
+            let palette = packed.palette();
+            encode_varint(palette.len() as u32, buf);
+            for s in palette {
+                encode_varint(s.0, buf);
+            }
+            let words = packed.words();
+            encode_varint(words.len() as u32, buf);
+            for w in words {
+                buf.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+    }
+
+    // 3. Occupancy
+    match snapshot.blocks() {
+        Blocks::Uniform(_) => {
+            let is_solid = snapshot.occupancy().col_y[0] != 0;
+            buf.push(u8::from(is_solid));
+        }
+        Blocks::Packed(_) => {
+            for col in snapshot.occupancy().col_y.iter() {
+                buf.extend_from_slice(&col.to_le_bytes());
+            }
+            for col in snapshot.occupancy().col_x.iter() {
+                buf.extend_from_slice(&col.to_le_bytes());
+            }
+            for col in snapshot.occupancy().col_z.iter() {
+                buf.extend_from_slice(&col.to_le_bytes());
+            }
+        }
+    }
+
+    // 4. Light
+    if let Some(light) = snapshot.light() {
+        buf.push(1);
+        match &light.sky {
+            LightLayer::Uniform(val) => {
+                buf.push(0);
+                buf.push(*val);
+            }
+            LightLayer::Nibbles(bytes) => {
+                buf.push(1);
+                buf.extend_from_slice(&**bytes);
+            }
+        }
+        match &light.block {
+            LightLayer::Uniform(val) => {
+                buf.push(0);
+                buf.push(*val);
+            }
+            LightLayer::Nibbles(bytes) => {
+                buf.push(1);
+                buf.extend_from_slice(&**bytes);
+            }
+        }
+    } else {
+        buf.push(0);
+    }
+}
+
+/// Deserializes a `ChunkSnapshot` from a wire byte slice.
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+pub fn decode_chunk_snapshot(pos: ChunkPos, cursor: &mut &[u8]) -> Result<ChunkSnapshot> {
+    if cursor.is_empty() {
+        return Err(ProtocolError::UnexpectedEof);
+    }
+    let version = cursor[0];
+    *cursor = &cursor[1..];
+    if version != 1 {
+        return Err(ProtocolError::Malformed(format!(
+            "Unsupported chunk snapshot codec version: {version}"
+        )));
+    }
+
+    // Blocks
+    if cursor.is_empty() {
+        return Err(ProtocolError::UnexpectedEof);
+    }
+    let blocks_tag = cursor[0];
+    *cursor = &cursor[1..];
+
+    let (blocks, is_uniform) = match blocks_tag {
+        0 => {
+            let state_id = decode_varint(cursor)?;
+            (Blocks::Uniform(BlockStateId(state_id)), true)
+        }
+        1 => {
+            if cursor.is_empty() {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+            let log2 = cursor[0];
+            *cursor = &cursor[1..];
+            if log2 > 4 {
+                return Err(ProtocolError::Malformed(format!(
+                    "Invalid log2 bit width: {log2}"
+                )));
+            }
+
+            let palette_len = decode_varint(cursor)? as usize;
+            let mut palette = Vec::with_capacity(palette_len);
+            for _ in 0..palette_len {
+                let id = decode_varint(cursor)?;
+                palette.push(BlockStateId(id));
+            }
+
+            let words_len = decode_varint(cursor)? as usize;
+            let expected_words = 512usize << log2;
+            if words_len != expected_words {
+                return Err(ProtocolError::Malformed(format!(
+                    "Words length mismatch: got {words_len}, expected {expected_words}"
+                )));
+            }
+
+            let required_bytes = words_len * 8;
+            if cursor.len() < required_bytes {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+
+            let mut words = Vec::with_capacity(words_len);
+            for _ in 0..words_len {
+                let w = u64::from_le_bytes(cursor[..8].try_into().unwrap());
+                *cursor = &cursor[8..];
+                words.push(w);
+            }
+
+            let packed =
+                Packed::from_raw_parts(log2, palette.into_boxed_slice(), words.into_boxed_slice());
+            (Blocks::Packed(Box::new(packed)), false)
+        }
+        tag => {
+            return Err(ProtocolError::Malformed(format!(
+                "Invalid blocks tag: {tag}"
+            )));
+        }
+    };
+
+    // Occupancy
+    let occupancy = if is_uniform {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let is_solid = cursor[0] != 0;
+        *cursor = &cursor[1..];
+        if is_solid {
+            Occupancy::solid()
+        } else {
+            Occupancy::empty()
+        }
+    } else {
+        if cursor.len() < 12288 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mut col_y = vec![0u32; 1024];
+        for item in &mut col_y {
+            *item = u32::from_le_bytes(cursor[..4].try_into().unwrap());
+            *cursor = &cursor[4..];
+        }
+        let mut col_x = vec![0u32; 1024];
+        for item in &mut col_x {
+            *item = u32::from_le_bytes(cursor[..4].try_into().unwrap());
+            *cursor = &cursor[4..];
+        }
+        let mut col_z = vec![0u32; 1024];
+        for item in &mut col_z {
+            *item = u32::from_le_bytes(cursor[..4].try_into().unwrap());
+            *cursor = &cursor[4..];
+        }
+        Occupancy {
+            col_y: col_y.into_boxed_slice().try_into().unwrap(),
+            col_x: col_x.into_boxed_slice().try_into().unwrap(),
+            col_z: col_z.into_boxed_slice().try_into().unwrap(),
+        }
+    };
+
+    // Light
+    if cursor.is_empty() {
+        return Err(ProtocolError::UnexpectedEof);
+    }
+    let light_tag = cursor[0];
+    *cursor = &cursor[1..];
+
+    let light = match light_tag {
+        0 => None,
+        1 => {
+            if cursor.is_empty() {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+            let sky_tag = cursor[0];
+            *cursor = &cursor[1..];
+            let sky = match sky_tag {
+                0 => {
+                    if cursor.is_empty() {
+                        return Err(ProtocolError::UnexpectedEof);
+                    }
+                    let val = cursor[0];
+                    *cursor = &cursor[1..];
+                    LightLayer::Uniform(val)
+                }
+                1 => {
+                    if cursor.len() < LIGHT_LAYER_BYTES {
+                        return Err(ProtocolError::UnexpectedEof);
+                    }
+                    let mut bytes = Box::new([0u8; LIGHT_LAYER_BYTES]);
+                    bytes.copy_from_slice(&cursor[..LIGHT_LAYER_BYTES]);
+                    *cursor = &cursor[LIGHT_LAYER_BYTES..];
+                    LightLayer::Nibbles(bytes)
+                }
+                tag => {
+                    return Err(ProtocolError::Malformed(format!(
+                        "Invalid sky light tag: {tag}"
+                    )));
+                }
+            };
+
+            if cursor.is_empty() {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+            let block_tag = cursor[0];
+            *cursor = &cursor[1..];
+            let block = match block_tag {
+                0 => {
+                    if cursor.is_empty() {
+                        return Err(ProtocolError::UnexpectedEof);
+                    }
+                    let val = cursor[0];
+                    *cursor = &cursor[1..];
+                    LightLayer::Uniform(val)
+                }
+                1 => {
+                    if cursor.len() < LIGHT_LAYER_BYTES {
+                        return Err(ProtocolError::UnexpectedEof);
+                    }
+                    let mut bytes = Box::new([0u8; LIGHT_LAYER_BYTES]);
+                    bytes.copy_from_slice(&cursor[..LIGHT_LAYER_BYTES]);
+                    *cursor = &cursor[LIGHT_LAYER_BYTES..];
+                    LightLayer::Nibbles(bytes)
+                }
+                tag => {
+                    return Err(ProtocolError::Malformed(format!(
+                        "Invalid block light tag: {tag}"
+                    )));
+                }
+            };
+
+            Some(ChunkLight { sky, block })
+        }
+        tag => {
+            return Err(ProtocolError::Malformed(format!(
+                "Invalid light tag: {tag}"
+            )));
+        }
+    };
+
+    Ok(ChunkSnapshot::from_parts(
+        pos, blocks, occupancy, light, 0, [0; 6], 0,
+    ))
+}
+
+/// Chunk data payload carrier supporting zero-copy in-memory snapshots and bounded wire bytes.
+#[derive(Debug, Clone)]
+pub enum ChunkPayload {
+    /// Zero-copy snapshot reference for in-process singleplayer transport.
+    Snapshot(Arc<ChunkSnapshot>),
+    /// Serialized byte buffer for network transport.
+    Wire(BoundedVec<u8, 262_144>),
+}
+
+impl ChunkPayload {
+    /// Resolves or decodes this payload into an `Arc<ChunkSnapshot>`.
+    pub fn to_snapshot(&self, pos: ChunkPos) -> Result<Arc<ChunkSnapshot>> {
+        match self {
+            Self::Snapshot(snap) => Ok(snap.clone()),
+            Self::Wire(wire) => {
+                let mut cursor = wire.as_slice();
+                let snap = decode_chunk_snapshot(pos, &mut cursor)?;
+                Ok(Arc::new(snap))
+            }
+        }
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Snapshot(snap) => {
+                let mut wire_bytes = Vec::new();
+                encode_chunk_snapshot(snap, &mut wire_bytes);
+                let bounded = BoundedVec::<u8, 262_144>::new(wire_bytes)
+                    .expect("Chunk snapshot serialization exceeded 262 KiB limit");
+                bounded.encode(buf);
+            }
+            Self::Wire(wire) => {
+                wire.encode(buf);
+            }
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let wire = BoundedVec::<u8, 262_144>::decode(cursor)?;
+        Ok(Self::Wire(wire))
+    }
+}
+
+impl PartialEq for ChunkPayload {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Snapshot(a), Self::Snapshot(b)) => {
+                Arc::ptr_eq(a, b)
+                    || (a.position() == b.position()
+                        && a.blocks() == b.blocks()
+                        && a.light() == b.light())
+            }
+            (Self::Wire(a), Self::Wire(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ChunkPayload {}
+
+/// Server sends chunk voxel and light data to client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cChunkData {
+    /// Chunk coordinate X.
+    pub chunk_x: i32,
+    /// Chunk coordinate Y.
+    pub chunk_y: i32,
+    /// Chunk coordinate Z.
+    pub chunk_z: i32,
+    /// Chunk content mutation version.
+    pub version: u32,
+    /// Server world epoch tick counter.
+    pub epoch: u32,
+    /// Chunk payload (snapshot or wire bytes).
+    pub payload: ChunkPayload,
+}
+
+impl S2cChunkData {
+    /// Grid position of this chunk.
+    #[must_use]
+    pub const fn pos(&self) -> ChunkPos {
+        ChunkPos::new(self.chunk_x, self.chunk_y, self.chunk_z)
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(zigzag_i32(self.chunk_x), buf);
+        encode_varint(zigzag_i32(self.chunk_y), buf);
+        encode_varint(zigzag_i32(self.chunk_z), buf);
+        encode_varint(self.version, buf);
+        encode_varint(self.epoch, buf);
+        self.payload.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let chunk_x = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_y = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_z = unzigzag_i32(decode_varint(cursor)?);
+        let version = decode_varint(cursor)?;
+        let epoch = decode_varint(cursor)?;
+        let payload = ChunkPayload::decode(cursor)?;
+        Ok(Self {
+            chunk_x,
+            chunk_y,
+            chunk_z,
+            version,
+            epoch,
+            payload,
+        })
+    }
+}
+
+/// Server sends lightweight uniform chunk descriptor (0-byte payload elision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cUniformChunk {
+    /// Chunk coordinate X.
+    pub chunk_x: i32,
+    /// Chunk coordinate Y.
+    pub chunk_y: i32,
+    /// Chunk coordinate Z.
+    pub chunk_z: i32,
+    /// Chunk content mutation version.
+    pub version: u32,
+    /// Uniform block state throughout chunk.
+    pub block_state: BlockStateId,
+    /// Uniform sky light level (0..=15).
+    pub sky_light: u8,
+    /// Uniform block light level (0..=15).
+    pub block_light: u8,
+}
+
+impl S2cUniformChunk {
+    /// Grid position of this chunk.
+    #[must_use]
+    pub const fn pos(&self) -> ChunkPos {
+        ChunkPos::new(self.chunk_x, self.chunk_y, self.chunk_z)
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(zigzag_i32(self.chunk_x), buf);
+        encode_varint(zigzag_i32(self.chunk_y), buf);
+        encode_varint(zigzag_i32(self.chunk_z), buf);
+        encode_varint(self.version, buf);
+        encode_varint(self.block_state.0, buf);
+        buf.push(self.sky_light);
+        buf.push(self.block_light);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let chunk_x = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_y = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_z = unzigzag_i32(decode_varint(cursor)?);
+        let version = decode_varint(cursor)?;
+        let block_state = BlockStateId(decode_varint(cursor)?);
+        if cursor.len() < 2 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let sky_light = cursor[0];
+        let block_light = cursor[1];
+        *cursor = &cursor[2..];
+        Ok(Self {
+            chunk_x,
+            chunk_y,
+            chunk_z,
+            version,
+            block_state,
+            sky_light,
+            block_light,
+        })
+    }
+
+    /// Converts this uniform chunk into a `ChunkSnapshot`.
+    #[must_use]
+    pub fn to_snapshot(&self, is_opaque: bool) -> ChunkSnapshot {
+        let light = ChunkLight {
+            sky: LightLayer::uniform(self.sky_light),
+            block: LightLayer::uniform(self.block_light),
+        };
+        ChunkSnapshot::new_uniform(self.pos(), self.block_state, is_opaque, Some(light))
+    }
+}
+
+/// Server notifies client to evict chunk outside view distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cChunkUnload {
+    /// Chunk coordinate X.
+    pub chunk_x: i32,
+    /// Chunk coordinate Y.
+    pub chunk_y: i32,
+    /// Chunk coordinate Z.
+    pub chunk_z: i32,
+}
+
+impl S2cChunkUnload {
+    /// Grid position of this chunk.
+    #[must_use]
+    pub const fn pos(&self) -> ChunkPos {
+        ChunkPos::new(self.chunk_x, self.chunk_y, self.chunk_z)
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(zigzag_i32(self.chunk_x), buf);
+        encode_varint(zigzag_i32(self.chunk_y), buf);
+        encode_varint(zigzag_i32(self.chunk_z), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let chunk_x = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_y = unzigzag_i32(decode_varint(cursor)?);
+        let chunk_z = unzigzag_i32(decode_varint(cursor)?);
+        Ok(Self {
+            chunk_x,
+            chunk_y,
+            chunk_z,
         })
     }
 }
