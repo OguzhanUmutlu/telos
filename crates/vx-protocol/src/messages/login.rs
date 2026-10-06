@@ -47,6 +47,24 @@ impl C2sLoginStart {
     /// Decodes from wire buffer.
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
         let username = BoundedString::<32>::decode(cursor)?;
+        if username.is_empty() {
+            return Err(ProtocolError::InvalidValue {
+                field: "username",
+                reason: "Username cannot be empty".to_string(),
+            });
+        }
+        if !username
+            .as_str()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ProtocolError::InvalidValue {
+                field: "username",
+                reason:
+                    "Username contains illegal characters (must be ASCII alphanumeric, '_', or '-')"
+                        .to_string(),
+            });
+        }
         let mode_code = decode_varint(cursor)?;
         let mode = AuthMode::from_u32(mode_code)?;
         Ok(Self { username, mode })

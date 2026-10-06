@@ -150,6 +150,32 @@ impl C2sPlayerPosition {
         let pitch = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
         let on_ground = cursor[32] != 0;
         *cursor = &cursor[33..];
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "position",
+                reason: "Coordinates must be finite numbers".to_string(),
+            });
+        }
+        if !yaw.is_finite() || !pitch.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "orientation",
+                reason: "Orientation angles must be finite numbers".to_string(),
+            });
+        }
+        if x.abs() > 30_000_000.0 || z.abs() > 30_000_000.0 || !(-2000.0..=5000.0).contains(&y) {
+            return Err(ProtocolError::InvalidValue {
+                field: "position",
+                reason: "Coordinates out of valid world bounds".to_string(),
+            });
+        }
+        if !(-95.0..=95.0).contains(&pitch) {
+            return Err(ProtocolError::InvalidValue {
+                field: "pitch",
+                reason: format!("Pitch angle {pitch} out of valid [-90, 90] range"),
+            });
+        }
+
         Ok(Self {
             x,
             y,
@@ -199,6 +225,20 @@ impl S2cJoinGame {
         let spawn_z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
         *cursor = &cursor[24..];
         let view_distance = decode_varint(cursor)?;
+
+        if !spawn_x.is_finite() || !spawn_y.is_finite() || !spawn_z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_pos",
+                reason: "Spawn coordinates must be finite numbers".to_string(),
+            });
+        }
+        if !(1..=128).contains(&view_distance) {
+            return Err(ProtocolError::InvalidValue {
+                field: "view_distance",
+                reason: format!("View distance {view_distance} out of valid 1..=128 range"),
+            });
+        }
+
         Ok(Self {
             entity_id,
             spawn_x,
@@ -585,6 +625,17 @@ impl S2cChunkData {
         let version = decode_varint(cursor)?;
         let epoch = decode_varint(cursor)?;
         let payload = ChunkPayload::decode(cursor)?;
+
+        if chunk_x.abs() > 1_000_000
+            || chunk_z.abs() > 1_000_000
+            || !(-100..=200).contains(&chunk_y)
+        {
+            return Err(ProtocolError::InvalidValue {
+                field: "chunk_pos",
+                reason: "Chunk coordinates out of allowable world bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             chunk_x,
             chunk_y,
@@ -646,6 +697,25 @@ impl S2cUniformChunk {
         let sky_light = cursor[0];
         let block_light = cursor[1];
         *cursor = &cursor[2..];
+
+        if chunk_x.abs() > 1_000_000
+            || chunk_z.abs() > 1_000_000
+            || !(-100..=200).contains(&chunk_y)
+        {
+            return Err(ProtocolError::InvalidValue {
+                field: "chunk_pos",
+                reason: "Chunk coordinates out of allowable world bounds".to_string(),
+            });
+        }
+        if sky_light > 15 || block_light > 15 {
+            return Err(ProtocolError::InvalidValue {
+                field: "light",
+                reason: format!(
+                    "Light level out of range 0..=15: sky={sky_light}, block={block_light}"
+                ),
+            });
+        }
+
         Ok(Self {
             chunk_x,
             chunk_y,
@@ -698,6 +768,17 @@ impl S2cChunkUnload {
         let chunk_x = unzigzag_i32(decode_varint(cursor)?);
         let chunk_y = unzigzag_i32(decode_varint(cursor)?);
         let chunk_z = unzigzag_i32(decode_varint(cursor)?);
+
+        if chunk_x.abs() > 1_000_000
+            || chunk_z.abs() > 1_000_000
+            || !(-100..=200).contains(&chunk_y)
+        {
+            return Err(ProtocolError::InvalidValue {
+                field: "chunk_pos",
+                reason: "Chunk coordinates out of allowable world bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             chunk_x,
             chunk_y,
@@ -807,6 +888,20 @@ impl S2cLodNodeData {
         let quad_count = decode_varint(cursor)?;
         let palette_count = decode_varint(cursor)?;
         let payload = LodPayload::decode(cursor)?;
+
+        if !(1..=16).contains(&level) {
+            return Err(ProtocolError::InvalidValue {
+                field: "level",
+                reason: format!("LOD level {level} out of range 1..=16"),
+            });
+        }
+        if node_x.abs() > 1_000_000 || node_z.abs() > 1_000_000 || !(-100..=200).contains(&node_y) {
+            return Err(ProtocolError::InvalidValue {
+                field: "node_pos",
+                reason: "LOD node coordinates out of bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             level,
             node_x,
@@ -852,6 +947,20 @@ impl S2cLodNodeUnload {
         let node_x = unzigzag_i32(decode_varint(cursor)?);
         let node_y = unzigzag_i32(decode_varint(cursor)?);
         let node_z = unzigzag_i32(decode_varint(cursor)?);
+
+        if !(1..=16).contains(&level) {
+            return Err(ProtocolError::InvalidValue {
+                field: "level",
+                reason: format!("LOD level {level} out of range 1..=16"),
+            });
+        }
+        if node_x.abs() > 1_000_000 || node_z.abs() > 1_000_000 || !(-100..=200).contains(&node_y) {
+            return Err(ProtocolError::InvalidValue {
+                field: "node_pos",
+                reason: "LOD node coordinates out of bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             level,
             node_x,
@@ -903,6 +1012,12 @@ impl BlockActionKind {
                     return Err(ProtocolError::UnexpectedEof);
                 }
                 let hit_face = cursor[0];
+                if hit_face > 5 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "hit_face",
+                        reason: format!("Hit face {hit_face} out of valid range 0..=5"),
+                    });
+                }
                 *cursor = &cursor[1..];
                 Ok(Self::Place { state_id, hit_face })
             }
@@ -949,6 +1064,14 @@ impl C2sBlockAction {
         let y = unzigzag_i32(decode_varint(cursor)?);
         let z = unzigzag_i32(decode_varint(cursor)?);
         let input_tick = decode_varint(cursor)?;
+
+        if x.abs() > 30_000_000 || z.abs() > 30_000_000 || !(-2000..=5000).contains(&y) {
+            return Err(ProtocolError::InvalidValue {
+                field: "block_pos",
+                reason: "Block coordinates out of world bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             sequence,
             action,
@@ -992,6 +1115,14 @@ impl S2cBlockUpdate {
         let z = unzigzag_i32(decode_varint(cursor)?);
         let state_id = BlockStateId::new(decode_varint(cursor)?);
         let version = decode_varlong(cursor)?;
+
+        if x.abs() > 30_000_000 || z.abs() > 30_000_000 || !(-2000..=5000).contains(&y) {
+            return Err(ProtocolError::InvalidValue {
+                field: "block_pos",
+                reason: "Block coordinates out of world bounds".to_string(),
+            });
+        }
+
         Ok(Self {
             x,
             y,

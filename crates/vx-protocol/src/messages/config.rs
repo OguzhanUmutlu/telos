@@ -55,6 +55,12 @@ impl S2cRegistryData {
     /// Decodes from wire buffer.
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
         let registry_id = BoundedString::<64>::decode(cursor)?;
+        if registry_id.is_empty() {
+            return Err(ProtocolError::InvalidValue {
+                field: "registry_id",
+                reason: "Registry identifier cannot be empty".to_string(),
+            });
+        }
         let entries = BoundedVec::decode_with(cursor, BoundedString::<64>::decode)?;
         Ok(Self {
             registry_id,
@@ -85,7 +91,21 @@ impl C2sClientSettings {
     /// Decodes from wire buffer.
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
         let view_distance = decode_varint(cursor)? as u16;
+        if !(1..=128).contains(&view_distance) {
+            return Err(ProtocolError::InvalidValue {
+                field: "view_distance",
+                reason: format!("View distance {view_distance} outside allowable range 1..=128"),
+            });
+        }
         let simulation_distance = decode_varint(cursor)? as u16;
+        if !(1..=128).contains(&simulation_distance) {
+            return Err(ProtocolError::InvalidValue {
+                field: "simulation_distance",
+                reason: format!(
+                    "Simulation distance {simulation_distance} outside allowable range 1..=128"
+                ),
+            });
+        }
         let locale = BoundedString::<16>::decode(cursor)?;
         Ok(Self {
             view_distance,

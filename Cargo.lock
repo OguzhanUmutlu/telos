@@ -2608,7 +2608,9 @@ name = "vx-protocol"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "crc32fast",
  "criterion",
+ "lz4_flex",
  "proptest",
  "thiserror 2.0.21",
  "vx-core",

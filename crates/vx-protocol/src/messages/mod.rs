@@ -43,6 +43,29 @@ impl ConnectionPhase {
             Self::Play => "Play",
         }
     }
+
+    /// Converts this phase to its 1-byte wire code.
+    #[must_use]
+    pub const fn to_wire(self) -> u8 {
+        match self {
+            Self::Hello => 0,
+            Self::Login => 1,
+            Self::Config => 2,
+            Self::Play => 3,
+        }
+    }
+
+    /// Converts a 1-byte wire code to `ConnectionPhase`.
+    #[must_use]
+    pub const fn from_wire(wire: u8) -> Option<Self> {
+        match wire {
+            0 => Some(Self::Hello),
+            1 => Some(Self::Login),
+            2 => Some(Self::Config),
+            3 => Some(Self::Play),
+            _ => None,
+        }
+    }
 }
 
 /// Disconnect message wire ID across all phases.

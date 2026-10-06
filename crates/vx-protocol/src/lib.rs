@@ -18,7 +18,11 @@ pub mod messages;
 pub mod varint;
 
 pub use bounded::{BoundedString, BoundedVec};
-pub use codec::{MAX_FRAME_SIZE, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame};
+pub use codec::{
+    COMPRESSION_THRESHOLD, MAX_FRAME_SIZE, PACKET_HEADER_SIZE, PHASE_ANY, PHASE_CONFIG,
+    PHASE_HELLO, PHASE_LOGIN, PHASE_PLAY, PROTOCOL_MAGIC, PROTOCOL_VERSION, PacketFlags,
+    PacketHeader, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
+};
 pub use error::{ProtocolError, Result};
 pub use messages::{
     C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage,
@@ -31,9 +35,6 @@ pub use messages::{
         S2cLodNodeUnload,
     },
 };
-
-/// The protocol revision implemented by this build of `vx-protocol`.
-pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Default build identifier string announced during handshake.
 pub const BUILD_IDENTIFIER: &str = "voxel-0.1.0-dev";

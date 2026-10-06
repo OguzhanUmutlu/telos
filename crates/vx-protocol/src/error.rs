@@ -69,6 +69,57 @@ pub enum ProtocolError {
     /// Malformed message contents.
     #[error("Malformed message payload: {0}")]
     Malformed(String),
+
+    /// Invalid protocol magic bytes encountered in packet header.
+    #[error("Invalid protocol magic: {0:?}, expected b\"VXPR\"")]
+    InvalidMagic([u8; 4]),
+
+    /// Wire protocol version mismatch.
+    #[error("Protocol version mismatch: expected {expected}, received {actual}")]
+    ProtocolVersionMismatch {
+        /// Expected protocol version.
+        expected: u16,
+        /// Actual protocol version received.
+        actual: u16,
+    },
+
+    /// CRC32 checksum mismatch in packet payload.
+    #[error("Checksum mismatch: expected 0x{expected:08X}, calculated 0x{actual:08X}")]
+    ChecksumMismatch {
+        /// Expected CRC32 checksum from header.
+        expected: u32,
+        /// Actual calculated CRC32 checksum.
+        actual: u32,
+    },
+
+    /// Packet phase does not match active connection phase.
+    #[error("Phase mismatch: expected {expected:?}, received wire phase code {actual}")]
+    PhaseMismatch {
+        /// Expected connection phase.
+        expected: crate::messages::ConnectionPhase,
+        /// Actual phase code received on wire.
+        actual: u8,
+    },
+
+    /// Trailing unconsumed bytes in packet payload.
+    #[error("{count} unconsumed trailing bytes in packet payload")]
+    TrailingBytes {
+        /// Number of unconsumed bytes.
+        count: usize,
+    },
+
+    /// Invalid semantic field value in message payload.
+    #[error("Invalid value for field '{field}': {reason}")]
+    InvalidValue {
+        /// Name of the invalid field.
+        field: &'static str,
+        /// Reason why the value is rejected.
+        reason: String,
+    },
+
+    /// Payload compression or decompression failure.
+    #[error("Payload compression/decompression error: {0}")]
+    CompressionError(String),
 }
 
 /// Specialized result type for protocol operations.

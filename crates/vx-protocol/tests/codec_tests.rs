@@ -5,7 +5,7 @@ use std::sync::Arc;
 use vx_core::coords::ChunkPos;
 use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::codec::{
-    MAX_FRAME_SIZE, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
+    MAX_FRAME_SIZE, PacketHeader, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
 };
 use vx_protocol::error::ProtocolError;
 use vx_protocol::messages::{
@@ -359,12 +359,36 @@ fn test_phase_isolation_enforcement() {
     let mut buf = Vec::new();
     encode_c2s(&chat, &mut buf);
 
-    // Attempting to decode during Hello phase must fail with UnknownMessageId or error
+    // Attempting to decode during Hello phase must fail early with PhaseMismatch
     let mut cursor = &buf[..];
     let res = decode_c2s(ConnectionPhase::Hello, &mut cursor);
     assert!(res.is_err());
     assert!(matches!(
         res,
+        Err(ProtocolError::PhaseMismatch {
+            expected: ConnectionPhase::Hello,
+            actual: 3
+        })
+    ));
+
+    // Also test spoofed header phase (header claims Hello, but payload is msg_id 1 which does not exist in Hello)
+    let payload = vec![1, 0]; // msg_id 1, followed by empty body
+    let header = PacketHeader {
+        magic: vx_protocol::PROTOCOL_MAGIC,
+        version: vx_protocol::PROTOCOL_VERSION,
+        flags: vx_protocol::PacketFlags::NONE,
+        phase: vx_protocol::PHASE_HELLO,
+        payload_len: payload.len() as u32,
+        checksum: crc32fast::hash(&payload),
+    };
+    let mut spoofed = Vec::new();
+    header.encode(&mut spoofed);
+    spoofed.extend_from_slice(&payload);
+
+    let mut cursor = &spoofed[..];
+    let spoof_res = decode_c2s(ConnectionPhase::Hello, &mut cursor);
+    assert!(matches!(
+        spoof_res,
         Err(ProtocolError::UnknownMessageId {
             phase: "Hello",
             id: 1
@@ -378,21 +402,237 @@ fn test_frame_bounds_and_peek() {
     let mut buf = Vec::new();
     encode_c2s(&msg, &mut buf);
 
-    // Peek when buffer is incomplete
+    // Peek when buffer is incomplete (less than 16 bytes)
     assert_eq!(peek_frame(&buf[..1]).unwrap(), None);
+    assert_eq!(peek_frame(&buf[..15]).unwrap(), None);
+
+    // Peek when buffer has header but incomplete payload
+    assert_eq!(peek_frame(&buf[..17]).unwrap(), None);
 
     // Peek when buffer is complete
     let peeked = peek_frame(&buf).unwrap().expect("should have full frame");
+    assert_eq!(peeked.0, vx_protocol::PACKET_HEADER_SIZE);
     assert_eq!(peeked.0 + peeked.1, buf.len());
 
-    // Artificial oversized frame
+    // Artificial oversized frame with valid header
+    let header = PacketHeader {
+        magic: vx_protocol::PROTOCOL_MAGIC,
+        version: vx_protocol::PROTOCOL_VERSION,
+        flags: vx_protocol::PacketFlags::NONE,
+        phase: vx_protocol::PHASE_PLAY,
+        payload_len: (MAX_FRAME_SIZE + 1) as u32,
+        checksum: 0,
+    };
     let mut oversized = Vec::new();
-    encode_varint((MAX_FRAME_SIZE + 1) as u32, &mut oversized);
+    header.encode(&mut oversized);
     oversized.extend(vec![0u8; 10]);
     assert!(matches!(
         peek_frame(&oversized),
         Err(ProtocolError::FrameTooLarge { .. })
     ));
+}
+
+#[test]
+fn test_checksum_corruption_detection() {
+    let msg = C2sMessage::ChatMessage(C2sChatMessage {
+        message: BoundedString::new("Important text").unwrap(),
+    });
+    let mut buf = Vec::new();
+    encode_c2s(&msg, &mut buf);
+
+    // Corrupt one bit in the payload (after 16-byte header)
+    buf[16] ^= 0x01;
+
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(res, Err(ProtocolError::ChecksumMismatch { .. })));
+}
+
+#[test]
+fn test_invalid_magic_rejected() {
+    let msg = C2sMessage::KeepAlive(C2sKeepAlive { id: 99 });
+    let mut buf = Vec::new();
+    encode_c2s(&msg, &mut buf);
+
+    // Corrupt magic bytes
+    buf[0] = b'B';
+    buf[1] = b'A';
+    buf[2] = b'D';
+    buf[3] = b'!';
+
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::InvalidMagic([b'B', b'A', b'D', b'!']))
+    ));
+}
+
+#[test]
+fn test_protocol_version_mismatch_rejected() {
+    let msg = C2sMessage::KeepAlive(C2sKeepAlive { id: 99 });
+    let mut buf = Vec::new();
+    encode_c2s(&msg, &mut buf);
+
+    // Corrupt version field (offset 4..6 in header)
+    let bad_version: u16 = 999;
+    buf[4..6].copy_from_slice(&bad_version.to_le_bytes());
+
+    // Update checksum since header changed? Checksum is for payload, not header
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::ProtocolVersionMismatch {
+            expected: 1,
+            actual: 999,
+        })
+    ));
+}
+
+#[test]
+fn test_trailing_bytes_rejected() {
+    let msg = C2sMessage::KeepAlive(C2sKeepAlive { id: 100 });
+    let mut buf = Vec::new();
+    encode_c2s(&msg, &mut buf);
+
+    // Decode directly into payload, append 1 trailing byte and re-wrap in header
+    let mut payload = Vec::new();
+    encode_varint(msg.message_id(), &mut payload);
+    msg.encode_body(&mut payload);
+    payload.push(0xEE); // rogue trailing byte
+
+    let header = PacketHeader {
+        magic: vx_protocol::PROTOCOL_MAGIC,
+        version: vx_protocol::PROTOCOL_VERSION,
+        flags: vx_protocol::PacketFlags::NONE,
+        phase: vx_protocol::PHASE_PLAY,
+        payload_len: payload.len() as u32,
+        checksum: crc32fast::hash(&payload),
+    };
+    let mut corrupted = Vec::new();
+    header.encode(&mut corrupted);
+    corrupted.extend_from_slice(&payload);
+
+    let mut cursor = &corrupted[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::TrailingBytes { count: 1 })
+    ));
+}
+
+#[test]
+fn test_rigorous_semantic_domain_validation() {
+    // 1. NaN coordinate rejection
+    let pos_nan = C2sMessage::PlayerPosition(C2sPlayerPosition {
+        x: f64::NAN,
+        y: 64.0,
+        z: 0.0,
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: true,
+    });
+    let mut buf = Vec::new();
+    encode_c2s(&pos_nan, &mut buf);
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::InvalidValue {
+            field: "position",
+            ..
+        })
+    ));
+
+    // 2. Out-of-bounds coordinate rejection
+    let pos_oob = C2sMessage::PlayerPosition(C2sPlayerPosition {
+        x: 50_000_000.0,
+        y: 64.0,
+        z: 0.0,
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: true,
+    });
+    let mut buf = Vec::new();
+    encode_c2s(&pos_oob, &mut buf);
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::InvalidValue {
+            field: "position",
+            ..
+        })
+    ));
+
+    // 3. Invalid hit face rejection (> 5)
+    let bad_action = C2sMessage::BlockAction(C2sBlockAction {
+        sequence: 1,
+        action: BlockActionKind::Place {
+            state_id: BlockStateId::new(1),
+            hit_face: 6, // invalid face
+        },
+        x: 0,
+        y: 64,
+        z: 0,
+        input_tick: 1,
+    });
+    let mut buf = Vec::new();
+    encode_c2s(&bad_action, &mut buf);
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Play, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::InvalidValue {
+            field: "hit_face",
+            ..
+        })
+    ));
+
+    // 4. Invalid username rejection
+    let bad_login = C2sMessage::LoginStart(C2sLoginStart {
+        username: BoundedString::new("bad user!").unwrap(), // contains spaces and !
+        mode: AuthMode::Offline,
+    });
+    let mut buf = Vec::new();
+    encode_c2s(&bad_login, &mut buf);
+    let mut cursor = &buf[..];
+    let res = decode_c2s(ConnectionPhase::Login, &mut cursor);
+    assert!(matches!(
+        res,
+        Err(ProtocolError::InvalidValue {
+            field: "username",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_transparent_lz4_compression_on_large_payload() {
+    // Construct a large registry payload (> 512 bytes)
+    let mut entries = Vec::new();
+    for i in 0..100 {
+        entries.push(BoundedString::new(format!("voxel:custom_block_variant_{i}")).unwrap());
+    }
+    let msg = S2cMessage::RegistryData(S2cRegistryData {
+        registry_id: BoundedString::new("voxel:blocks").unwrap(),
+        entries: BoundedVec::new(entries).unwrap(),
+    });
+
+    let mut buf = Vec::new();
+    encode_s2c(&msg, &mut buf);
+
+    // Verify header indicates compression
+    let mut cursor = &buf[..];
+    let header = PacketHeader::decode(&mut cursor).unwrap();
+    assert!(header.flags.contains(vx_protocol::PacketFlags::COMPRESSED));
+
+    // Verify roundtrip decoding transparently decompresses and validates checksum
+    let mut decode_cursor = &buf[..];
+    let decoded = decode_s2c(ConnectionPhase::Config, &mut decode_cursor).unwrap();
+    assert_eq!(decoded, msg);
+    assert!(decode_cursor.is_empty());
 }
 
 proptest! {

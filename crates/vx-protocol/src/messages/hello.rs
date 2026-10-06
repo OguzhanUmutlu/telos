@@ -27,6 +27,12 @@ impl C2sHello {
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
         let protocol = decode_varint(cursor)?;
         let build = BoundedString::<32>::decode(cursor)?;
+        if build.is_empty() {
+            return Err(ProtocolError::InvalidValue {
+                field: "build",
+                reason: "Build identifier cannot be empty".to_string(),
+            });
+        }
         let features = decode_varlong(cursor)?;
         Ok(Self {
             protocol,
