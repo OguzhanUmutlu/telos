@@ -1,4 +1,4 @@
-//! Classic Voxel-compatible tag definitions (`data/<ns>/tags/<registry>/<name>.json`).
+//! Standard data pack tag definitions (`data/<ns>/tags/<registry>/<name>.json`).
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -38,7 +38,7 @@ fn default_true() -> bool {
     true
 }
 
-/// Classic Voxel-compatible JSON tag schema.
+/// Standard JSON tag schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TagDef {
     /// If `true`, replaces existing values instead of appending.

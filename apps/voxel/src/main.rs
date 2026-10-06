@@ -5844,7 +5844,7 @@ fn load_and_upload_textures(
 ) -> Result<(GpuTextureArray, AnimatedTextureInfo)> {
     let mut stack = ResourcePackStack::new();
     stack.add_root("dev-assets/faithful-32x");
-    stack.add_root("dev-assets/classic-26.2");
+    stack.add_root("dev-assets/classic-pack");
     stack.add_root("assets/voxel");
 
     let is_faithful = stack
@@ -5919,7 +5919,7 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
 
     let mut stack = ResourcePackStack::new();
     stack.add_root("dev-assets/faithful-32x");
-    stack.add_root("dev-assets/classic-26.2");
+    stack.add_root("dev-assets/classic-pack");
     stack.add_root("assets/voxel");
 
     let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 7) as usize];
@@ -6325,7 +6325,7 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
 
     // Layer 0: Sun
     let sun_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/environment/celestial/sun.png",
+        "dev-assets/classic-pack/assets/classic/textures/environment/celestial/sun.png",
     );
     let sun_img = vx_assets::RgbaImage::from_file(sun_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
@@ -6360,7 +6360,7 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
 
     for (phase_idx, name) in moon_files.iter().enumerate() {
         let moon_path = format!(
-            "dev-assets/classic-26.2/assets/classic/textures/environment/celestial/moon/{name}.png"
+            "dev-assets/classic-pack/assets/classic/textures/environment/celestial/moon/{name}.png"
         );
         let moon_img = vx_assets::RgbaImage::from_file(std::path::Path::new(&moon_path))
             .unwrap_or_else(|_| {
@@ -6428,7 +6428,7 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
 
     // Layer 0: Rain
     let rain_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/environment/rain.png",
+        "dev-assets/classic-pack/assets/classic/textures/environment/rain.png",
     );
     let rain_img = vx_assets::RgbaImage::from_file_exact(rain_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
@@ -6450,7 +6450,7 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
 
     // Layer 1: Snow
     let snow_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/environment/snow.png",
+        "dev-assets/classic-pack/assets/classic/textures/environment/snow.png",
     );
     let snow_img = vx_assets::RgbaImage::from_file_exact(snow_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
@@ -6527,7 +6527,7 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
 
     // Layer 0: Zombie
     let zombie_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/entity/zombie/zombie.png",
+        "dev-assets/classic-pack/assets/classic/textures/entity/zombie/zombie.png",
     );
     let zombie_img = vx_assets::RgbaImage::from_file_exact(zombie_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
@@ -6555,7 +6555,7 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
 
     // Layer 1: Pig
     let pig_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/entity/pig/pig_temperate.png",
+        "dev-assets/classic-pack/assets/classic/textures/entity/pig/pig_temperate.png",
     );
     let pig_img = vx_assets::RgbaImage::from_file_exact(pig_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
@@ -6574,7 +6574,7 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
 
     // Layer 2: Cow
     let cow_path = std::path::Path::new(
-        "dev-assets/classic-26.2/assets/classic/textures/entity/cow/cow_temperate.png",
+        "dev-assets/classic-pack/assets/classic/textures/entity/cow/cow_temperate.png",
     );
     let cow_img = vx_assets::RgbaImage::from_file_exact(cow_path).unwrap_or_else(|_| {
         let mut img = vx_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);

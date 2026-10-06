@@ -29,26 +29,11 @@ impl ResourcePackStack {
 
     /// Finds a block texture by name (e.g. `"stone"`, `"grass_block_top"`).
     ///
-    /// Searches each mounted pack in order under `assets/classic/textures/block/`
-    /// and `assets/voxel/textures/block/`.
+    /// Searches each mounted pack in order under `textures/block/` across any namespace.
     #[must_use]
     pub fn find_block_texture(&self, name: &str) -> Option<PathBuf> {
-        let rel_paths = [
-            format!("assets/classic/textures/block/{name}.png"),
-            format!("assets/voxel/textures/block/{name}.png"),
-            format!("textures/block/{name}.png"),
-        ];
-
-        for root in &self.roots {
-            for rel in &rel_paths {
-                let candidate = root.join(rel);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-
-        None
+        let rel_path = format!("textures/block/{name}.png");
+        self.find_texture(&rel_path)
     }
 
     /// Loads and decodes a block texture from the mounted packs.
@@ -69,20 +54,25 @@ impl ResourcePackStack {
         RgbaImage::frames_from_file(&path)
     }
 
-    /// Finds a generic asset texture across standard Classic Voxel and Voxel asset directories.
+    /// Finds a generic asset texture across mounted packs and namespace directories.
     #[must_use]
     pub fn find_texture(&self, rel_path: &str) -> Option<PathBuf> {
-        let rel_paths = [
-            format!("assets/classic/{rel_path}"),
-            format!("assets/voxel/{rel_path}"),
-            rel_path.to_string(),
-        ];
-
+        let rel = Path::new(rel_path);
         for root in &self.roots {
-            for rel in &rel_paths {
-                let candidate = root.join(rel);
-                if candidate.is_file() {
-                    return Some(candidate);
+            // Direct path under root
+            let direct = root.join(rel);
+            if direct.is_file() {
+                return Some(direct);
+            }
+
+            // Path under assets/<namespace>/<rel_path>
+            let assets_dir = root.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let candidate = entry.path().join(rel);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
                 }
             }
         }

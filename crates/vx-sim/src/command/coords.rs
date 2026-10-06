@@ -135,7 +135,7 @@ impl Vec3Arg {
             let yaw_rad = yaw_pitch.x.to_radians();
             let pitch_rad = yaw_pitch.y.to_radians();
 
-            // Forward vector in Classic Voxel coordinate system (Y is up, -Z is forward when yaw=0)
+            // Forward vector in standard voxel coordinate system (Y is up, -Z is forward when yaw=0)
             let fwd = Vec3::new(
                 -yaw_rad.sin() * pitch_rad.cos(),
                 -pitch_rad.sin(),

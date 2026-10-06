@@ -54,7 +54,7 @@ void main() {
 
     vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
 
-    // Water blue tint (Classic Voxel plains water tint #3f76e4)
+    // Water blue tint (plains water tint #3f76e4)
     vec3 water_tint = vec3(0.247, 0.463, 0.894);
 
     out_color = vec4(tex_color.rgb * water_tint * total_light, 0.72);

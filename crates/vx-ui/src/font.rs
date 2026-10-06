@@ -1,4 +1,4 @@
-//! Classic Voxel bitmap font parser, text metrics, and quad layout generator.
+//! Bitmap font parser, text metrics, and quad layout generator.
 
 use crate::quad::UiQuad;
 use crate::scale::snap_to_physical;
@@ -27,7 +27,7 @@ impl Default for GlyphMetrics {
     }
 }
 
-/// Classic Voxel bitmap font engine supporting proportional glyph advances and drop shadows.
+/// Bitmap font engine supporting proportional glyph advances and drop shadows.
 #[derive(Debug, Clone)]
 pub struct BitmapFont {
     /// 256 ASCII glyph metrics.

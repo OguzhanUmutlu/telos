@@ -35,7 +35,7 @@ pub enum Face {
     Down = 0,
     /// +Y direction (top)
     Up = 1,
-    /// -Z direction (north in standard Classic Voxel/OpenGL orientation)
+    /// -Z direction (north in standard right-handed voxel orientation)
     North = 2,
     /// +Z direction (south)
     South = 3,

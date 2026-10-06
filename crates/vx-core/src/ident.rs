@@ -71,9 +71,12 @@ impl Identifier {
         Self::new(DEFAULT_NAMESPACE, path)
     }
 
-    /// Creates an identifier in the `"classic"` namespace for compatibility.
-    pub fn classic(path: impl AsRef<str>) -> Result<Self, ParseIdentError> {
-        Self::new("classic", path)
+    /// Creates an identifier in a custom namespace.
+    pub fn custom(
+        namespace: impl AsRef<str>,
+        path: impl AsRef<str>,
+    ) -> Result<Self, ParseIdentError> {
+        Self::new(namespace, path)
     }
 
     /// Returns the namespace part.
@@ -158,10 +161,10 @@ mod tests {
         assert_eq!(id.path(), "stone");
         assert_eq!(id.to_string(), "voxel:stone");
 
-        let mc: Identifier = "classic:oak_stairs".parse().unwrap();
-        assert_eq!(mc.namespace(), "classic");
-        assert_eq!(mc.path(), "oak_stairs");
-        assert_eq!(mc.to_string(), "classic:oak_stairs");
+        let custom: Identifier = "custom:oak_stairs".parse().unwrap();
+        assert_eq!(custom.namespace(), "custom");
+        assert_eq!(custom.path(), "oak_stairs");
+        assert_eq!(custom.to_string(), "custom:oak_stairs");
 
         let deep: Identifier = "voxel:block/textures/stone".parse().unwrap();
         assert_eq!(deep.path(), "block/textures/stone");

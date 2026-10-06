@@ -39,7 +39,7 @@ void main() {
     // Sample repeating 2D texture array slice
     vec4 tex_color = texture(u_textures, vec3(v_uv, float(layer)));
 
-    // Biome tint for grass top (Classic Voxel plains green tint #79c05a)
+    // Biome tint for grass top (plains green tint #79c05a)
     if (v_material == 3u && v_dir == 2u) {
         tex_color.rgb *= vec3(0.474, 0.753, 0.353);
     }

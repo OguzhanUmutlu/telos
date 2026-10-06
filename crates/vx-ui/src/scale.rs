@@ -1,6 +1,6 @@
 //! GUI scale calculation and physical pixel edge-snapping.
 
-/// Computes the Classic Voxel-parity auto integer GUI scale factor based on viewport resolution.
+/// Computes the auto integer GUI scale factor based on viewport resolution.
 ///
 /// Rule: Largest integer `S >= 1` such that `width / S >= 320` and `height / S >= 240`.
 #[must_use]

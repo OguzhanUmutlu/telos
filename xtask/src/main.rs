@@ -161,7 +161,7 @@ fn run_doctor() {
     );
 
     println!("\n--- Asset Directories ---");
-    let dev_assets = Path::new("dev-assets/classic-26.2");
+    let dev_assets = Path::new("dev-assets/classic-pack");
     if dev_assets.exists() {
         println!("✓ Placeholder assets found at {}", dev_assets.display());
     } else {

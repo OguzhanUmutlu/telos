@@ -34,7 +34,7 @@ void main() {
         discard;
     }
 
-    // Biome foliage tint for oak leaves (Classic Voxel plains green #48b518)
+    // Biome foliage tint for oak leaves (plains green #48b518)
     if (v_material == 8u) {
         tex_color.rgb *= vec3(0.298, 0.600, 0.129);
     }

@@ -1,4 +1,4 @@
-//! Standard built-in Classic Voxel commands (/help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say).
+//! Standard built-in engine commands (/help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say).
 
 use crate::command::tree::{ArgumentType, CommandDispatcher, CommandNode, CommandOutput};
 

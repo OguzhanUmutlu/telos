@@ -36,4 +36,4 @@ cargo run -p voxel-server --release
 
 ## License
 MIT License. See [LICENSE](LICENSE) for details.
-Placeholder Classic Voxel assets live in `dev-assets/` and are strictly excluded from the repository.
+Placeholder development assets live in `dev-assets/` and are strictly excluded from the repository.

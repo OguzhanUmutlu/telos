@@ -96,7 +96,7 @@ impl FixedTimestep {
     }
 }
 
-/// Standard duration of a full Classic Voxel-parity in-game day (20 real-time minutes at 20 TPS).
+/// Standard duration of a full in-game day (20 real-time minutes at 20 TPS).
 pub const DAY_TICKS: u64 = 24_000;
 /// Ticks at midday / noon (sun directly overhead at zenith).
 pub const NOON_TICKS: u64 = 6_000;
