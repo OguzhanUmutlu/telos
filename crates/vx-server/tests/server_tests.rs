@@ -73,6 +73,39 @@ fn test_server_handshake_and_chunk_streaming() {
         other => panic!("expected LoginSuccess, got {other:?}"),
     }
 
+    // Client receives RegistryData (blocks)
+    let incoming = client_conn
+        .try_recv()
+        .unwrap()
+        .expect("recv RegistryData blocks");
+    match incoming.into_msg().unwrap() {
+        S2cMessage::RegistryData(data) => {
+            assert_eq!(data.registry_id.as_str(), "voxel:block");
+            assert!(!data.entries.is_empty());
+        }
+        other => panic!("expected RegistryData blocks, got {other:?}"),
+    }
+
+    // Client receives RegistryData (items)
+    let incoming = client_conn
+        .try_recv()
+        .unwrap()
+        .expect("recv RegistryData items");
+    match incoming.into_msg().unwrap() {
+        S2cMessage::RegistryData(data) => {
+            assert_eq!(data.registry_id.as_str(), "voxel:item");
+            assert!(!data.entries.is_empty());
+        }
+        other => panic!("expected RegistryData items, got {other:?}"),
+    }
+
+    // Client receives ConfigDone
+    let incoming = client_conn.try_recv().unwrap().expect("recv ConfigDone");
+    match incoming.into_msg().unwrap() {
+        S2cMessage::ConfigDone(_) => {}
+        other => panic!("expected ConfigDone, got {other:?}"),
+    }
+
     // 3. Client sends ClientSettings + ConfigAck
     client_conn
         .send(

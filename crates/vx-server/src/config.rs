@@ -19,6 +19,8 @@ pub struct ServerConfig {
     pub save_directory: Option<std::path::PathBuf>,
     /// Autosave interval in server ticks (default: 600 = 30 seconds at 20 TPS).
     pub autosave_interval_ticks: u32,
+    /// Data pack directory paths to scan and load on server startup.
+    pub data_pack_directories: Vec<std::path::PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -32,6 +34,7 @@ impl Default for ServerConfig {
             lod_nodes_per_tick_per_player: 4,
             save_directory: None,
             autosave_interval_ticks: 600,
+            data_pack_directories: Vec::new(),
         }
     }
 }

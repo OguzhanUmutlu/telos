@@ -143,7 +143,7 @@ pub fn slot_at_pos(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-pub fn render_inventory_screen(
+pub fn render_inventory_screen<'a>(
     slots: &[UiSlotItem],
     carried: UiSlotItem,
     hovered_slot: Option<usize>,
@@ -152,7 +152,7 @@ pub fn render_inventory_screen(
     gui_scale: u32,
     font: &BitmapFont,
     layers: &UiLayers,
-    item_names: impl Fn(u32) -> &'static str,
+    item_names: impl Fn(u32) -> &'a str,
     mouse_pos: [f32; 2],
     out: &mut Vec<UiQuad>,
 ) {

@@ -196,6 +196,7 @@ fn test_s2c_messages_roundtrip() {
         }),
         S2cMessage::RegistryData(S2cRegistryData {
             registry_id: BoundedString::new("voxel:item").unwrap(),
+            content_hash: [0xaa; 32],
             entries: BoundedVec::new(vec![
                 BoundedString::new("voxel:stone").unwrap(),
                 BoundedString::new("voxel:dirt").unwrap(),
@@ -617,6 +618,7 @@ fn test_transparent_lz4_compression_on_large_payload() {
     }
     let msg = S2cMessage::RegistryData(S2cRegistryData {
         registry_id: BoundedString::new("voxel:blocks").unwrap(),
+        content_hash: [0xbb; 32],
         entries: BoundedVec::new(entries).unwrap(),
     });
 

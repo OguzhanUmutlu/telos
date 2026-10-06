@@ -1,0 +1,28 @@
+[package]
+name = "vx-content"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Data-driven registry loading, packs, and content definitions for the voxel engine"
+
+[dependencies]
+vx-core = { workspace = true }
+vx-voxel = { workspace = true }
+hashbrown = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ron = { workspace = true }
+toml = { workspace = true }
+semver = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -85,6 +85,29 @@ impl ServerWorld {
         })
     }
 
+    /// Creates a persistent `ServerWorld` with `.vxr` region container saving and full save-ID mapping.
+    pub fn with_content_storage(
+        seed: u64,
+        registries: &vx_content::FrozenRegistries,
+        save_dir: impl AsRef<Path>,
+    ) -> std::io::Result<Self> {
+        let storage = WorldStorage::open_or_create(save_dir, registries)?;
+        let registry = registries.block_registry().clone();
+        let generator = WorldGenerator::new(seed, &registry);
+        Ok(Self {
+            generator,
+            registry,
+            chunks: HashMap::new(),
+            columns: HashMap::new(),
+            light_bfs: LightBfs::new(),
+            pyramid: LodPyramid::new(),
+            lod_color_table: LodColorTable::standard(),
+            lod_meshes: HashMap::new(),
+            storage: Some(storage),
+            dirty_chunks: HashSet::new(),
+        })
+    }
+
     /// Returns the world generation seed.
     #[must_use]
     pub const fn seed(&self) -> u64 {

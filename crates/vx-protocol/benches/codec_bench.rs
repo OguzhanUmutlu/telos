@@ -71,6 +71,7 @@ fn bench_registry_codec(c: &mut Criterion) {
     }
     let reg_msg = S2cMessage::RegistryData(S2cRegistryData {
         registry_id: BoundedString::new("voxel:block").unwrap(),
+        content_hash: [0x55; 32],
         entries: BoundedVec::new(entries).unwrap(),
     });
 

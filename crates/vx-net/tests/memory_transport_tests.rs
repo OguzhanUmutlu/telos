@@ -114,6 +114,7 @@ fn test_memory_handshake_lifecycle() {
             Lane::Control,
             Payload::msg(S2cMessage::RegistryData(S2cRegistryData {
                 registry_id: BoundedString::new("voxel:block").unwrap(),
+                content_hash: [0x42; 32],
                 entries: BoundedVec::new(vec![
                     BoundedString::new("voxel:air").unwrap(),
                     BoundedString::new("voxel:stone").unwrap(),

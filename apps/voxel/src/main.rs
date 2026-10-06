@@ -17,6 +17,7 @@ use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
 use tracing::info;
 use vx_assets::{AnimatedTextureInfo, ResourcePackStack, TextureArrayBuilder};
+use vx_content::FrozenRegistries;
 use vx_core::{
     BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos, init_telemetry,
     raycast_voxels,
@@ -1010,6 +1011,7 @@ struct App {
     client_conn: Box<dyn Connection<C2sMessage, S2cMessage>>,
     client_phase: ConnectionPhase,
 
+    registries: Arc<FrozenRegistries>,
     block_registry: BlockRegistry,
     chunks: HashMap<ChunkPos, Arc<ChunkSnapshot>>,
     chunk_meshes: HashMap<ChunkPos, GpuChunkMesh>,
@@ -1115,6 +1117,9 @@ impl App {
         let mut camera = Camera::new(spawn_pos);
         camera.pitch = -0.3;
 
+        let registries = Arc::new(FrozenRegistries::new_default());
+        let server_registries = Arc::clone(&registries);
+
         let server_running = Arc::new(AtomicBool::new(true));
         let running_clone = server_running.clone();
 
@@ -1133,7 +1138,8 @@ impl App {
                     save_directory: Some(world_dir),
                     ..Default::default()
                 };
-                let mut server = vx_server::Server::new(seed, config);
+                let mut server =
+                    vx_server::Server::with_registries(seed, config, server_registries);
                 server.add_connection(server_conn);
 
                 let mut timestep = FixedTimestep::new(20);
@@ -1207,7 +1213,8 @@ impl App {
             client_conn,
             client_phase: ConnectionPhase::Hello,
 
-            block_registry: BlockRegistry::standard(),
+            registries: Arc::clone(&registries),
+            block_registry: registries.block_registry().clone(),
             chunks: HashMap::new(),
             chunk_meshes: HashMap::new(),
             dirty_chunks: HashSet::new(),
@@ -1313,9 +1320,14 @@ impl App {
             } else if slot < HOTBAR_ITEMS.len() {
                 self.selected_block_state = HOTBAR_ITEMS[slot].1;
             }
+            let item_name = self
+                .registries
+                .item_registry()
+                .get_by_id(item)
+                .map_or_else(|| vx_sim::item_name(item), |def| def.name.as_str());
             info!(
                 slot = slot + 1,
-                item = vx_sim::item_name(item),
+                item = item_name,
                 state_id = self.selected_block_state.as_u32(),
                 "Selected hotbar slot"
             );
@@ -1401,8 +1413,21 @@ impl App {
                     if let S2cMessage::LoginSuccess(succ) = msg {
                         info!(
                             username = succ.username.as_str(),
-                            "Login successful, configuring client..."
+                            "Login successful, entering configuration phase..."
                         );
+                        self.client_phase = ConnectionPhase::Config;
+                    }
+                }
+                ConnectionPhase::Config => match msg {
+                    S2cMessage::RegistryData(data) => {
+                        info!(
+                            registry_id = data.registry_id.as_str(),
+                            entries = data.entries.len(),
+                            "Received server registry data"
+                        );
+                    }
+                    S2cMessage::ConfigDone(_) => {
+                        info!("Server configuration complete, acknowledging config...");
                         let settings = C2sMessage::ClientSettings(C2sClientSettings {
                             view_distance: self.view_distance as u16,
                             simulation_distance: self.view_distance as u16,
@@ -1411,11 +1436,8 @@ impl App {
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(settings));
                         let ack = C2sMessage::ConfigAck(C2sConfigAck);
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(ack));
-                        self.client_phase = ConnectionPhase::Config;
                     }
-                }
-                ConnectionPhase::Config => {
-                    if let S2cMessage::JoinGame(join) = msg {
+                    S2cMessage::JoinGame(join) => {
                         info!(
                             entity_id = join.entity_id,
                             view_distance = join.view_distance,
@@ -1426,7 +1448,10 @@ impl App {
                         );
                         self.client_phase = ConnectionPhase::Play;
                     }
-                }
+                    other => {
+                        tracing::debug!("Ignored packet in Config phase: {other:?}");
+                    }
+                },
                 ConnectionPhase::Play => match msg {
                     S2cMessage::UniformChunk(uniform) => {
                         let pos = ChunkPos::new(uniform.chunk_x, uniform.chunk_y, uniform.chunk_z);
@@ -3651,6 +3676,13 @@ impl App {
                         self.inventory_sim.carried.item,
                         self.inventory_sim.carried.count,
                     );
+                    let item_lookup = |id: u32| {
+                        if let Some(def) = self.registries.item_registry().get_by_id(id) {
+                            def.name.as_str()
+                        } else {
+                            vx_sim::item_name(id)
+                        }
+                    };
                     render_inventory_screen(
                         &ui_slots,
                         ui_carried,
@@ -3660,7 +3692,7 @@ impl App {
                         gui_scale,
                         font,
                         &self.ui_layers,
-                        vx_sim::item_name,
+                        item_lookup,
                         self.mouse_cursor_pos,
                         &mut ui_quads,
                     );

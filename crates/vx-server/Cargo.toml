@@ -16,6 +16,7 @@ vx-protocol = { workspace = true }
 vx-net = { workspace = true }
 vx-lod = { workspace = true }
 vx-storage = { workspace = true }
+vx-content = { workspace = true }
 vx-sim = { workspace = true }
 bevy_ecs = { workspace = true }
 tracing = { workspace = true }

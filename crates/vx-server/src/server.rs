@@ -4,23 +4,23 @@ use glam::DVec3;
 use hashbrown::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
+use vx_content::{FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order};
 use vx_core::coords::{BlockPos, Face};
 use vx_net::{Connection, Lane, Payload};
-use vx_protocol::bounded::BoundedVec;
+use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sInteractEntity, C2sInventoryClick, C2sMessage,
     C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload, PlayerCommandKind,
-    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cDespawnEntity,
-    S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats,
-    S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cConfigDone,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cSpawnEntity,
+    S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use vx_sim::{
     CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
     ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams, Velocity,
     WeatherKind, WeatherState, build_sim_schedule,
 };
-use vx_voxel::registry::BlockRegistry;
 use vx_voxel::state::BlockStateId;
 use vx_voxel::storage::Blocks;
 
@@ -32,6 +32,8 @@ use crate::world::ServerWorld;
 pub struct Server {
     config: ServerConfig,
     world: ServerWorld,
+    /// Active frozen registries.
+    pub registries: Arc<FrozenRegistries>,
     sessions: HashMap<u64, PlayerSession>,
     next_session_id: u64,
     next_entity_id: u32,
@@ -54,20 +56,47 @@ pub struct Server {
 impl Server {
     /// Creates a new `Server` instance with procedural worldgen seed and configuration.
     #[must_use]
+    #[allow(clippy::collapsible_if)]
     pub fn new(seed: u64, config: ServerConfig) -> Self {
-        let registry = BlockRegistry::standard();
+        let mut builder = RegistryBuilder::new();
+        let _ = builder.load_core_pack();
+        if !config.data_pack_directories.is_empty() {
+            if let Ok(discovered) = discover_packs(&config.data_pack_directories) {
+                if let Ok(sorted) = resolve_load_order(discovered, ModSide::Server) {
+                    for pack in &sorted {
+                        let _ = builder.load_pack(pack);
+                    }
+                }
+            }
+        }
+        let registries = Arc::new(builder.freeze().unwrap_or_else(|_| {
+            let mut fallback = RegistryBuilder::new();
+            let _ = fallback.load_core_pack();
+            fallback.freeze().expect("Core pack always freezes")
+        }));
+
+        Self::with_registries(seed, config, registries)
+    }
+
+    /// Creates a new `Server` instance with pre-configured frozen registries.
+    #[must_use]
+    pub fn with_registries(
+        seed: u64,
+        config: ServerConfig,
+        registries: Arc<FrozenRegistries>,
+    ) -> Self {
         let world = if let Some(dir) = &config.save_directory {
-            match ServerWorld::with_storage(seed, registry.clone(), dir) {
+            match ServerWorld::with_content_storage(seed, &registries, dir) {
                 Ok(w) => w,
                 Err(err) => {
                     tracing::error!(
                         "Failed to initialize storage at {dir:?}: {err}; falling back to memory"
                     );
-                    ServerWorld::new(seed, registry)
+                    ServerWorld::new(seed, registries.block_registry().clone())
                 }
             }
         } else {
-            ServerWorld::new(seed, registry)
+            ServerWorld::new(seed, registries.block_registry().clone())
         };
 
         let mut ecs_world = bevy_ecs::world::World::new();
@@ -77,6 +106,7 @@ impl Server {
         Self {
             config,
             world,
+            registries,
             sessions: HashMap::new(),
             next_session_id: 1,
             next_entity_id: 1,
@@ -90,6 +120,12 @@ impl Server {
             mob_yaws: HashMap::new(),
             last_mob_spawn_tick: 0,
         }
+    }
+
+    /// Returns the active frozen registries.
+    #[must_use]
+    pub fn registries(&self) -> &Arc<FrozenRegistries> {
+        &self.registries
     }
 
     /// Spawns a mob entity of the given type at `pos`.
@@ -344,6 +380,44 @@ impl Server {
                                 .connection
                                 .send(Lane::Control, Payload::Msg(success));
                             session.phase = ConnectionPhase::Config;
+
+                            // Transmit block registry table & hash
+                            let mut block_entries = Vec::new();
+                            for ident in self.registries.block_states().keys() {
+                                if let Ok(s) = BoundedString::new(ident.to_string()) {
+                                    block_entries.push(s);
+                                }
+                            }
+                            let block_msg = S2cMessage::RegistryData(S2cRegistryData {
+                                registry_id: BoundedString::new("voxel:block").unwrap(),
+                                content_hash: *self.registries.content_hash(),
+                                entries: BoundedVec::new(block_entries).unwrap_or_default(),
+                            });
+                            let _ = session
+                                .connection
+                                .send(Lane::Control, Payload::Msg(block_msg));
+
+                            // Transmit item registry table & hash
+                            let mut item_entries = Vec::new();
+                            for (_id, ident, _def) in self.registries.item_registry().iter() {
+                                if let Ok(s) = BoundedString::new(ident.to_string()) {
+                                    item_entries.push(s);
+                                }
+                            }
+                            let item_msg = S2cMessage::RegistryData(S2cRegistryData {
+                                registry_id: BoundedString::new("voxel:item").unwrap(),
+                                content_hash: *self.registries.content_hash(),
+                                entries: BoundedVec::new(item_entries).unwrap_or_default(),
+                            });
+                            let _ = session
+                                .connection
+                                .send(Lane::Control, Payload::Msg(item_msg));
+
+                            // Signal configuration complete
+                            let _ = session.connection.send(
+                                Lane::Control,
+                                Payload::Msg(S2cMessage::ConfigDone(S2cConfigDone)),
+                            );
                         } else if let C2sMessage::Disconnect(_) = msg {
                             disconnected.push(*session_id);
                         }

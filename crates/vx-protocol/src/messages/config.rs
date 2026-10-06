@@ -39,14 +39,17 @@ impl C2sKnownRegistries {
 pub struct S2cRegistryData {
     /// Registry namespace and path, e.g. "voxel:block".
     pub registry_id: BoundedString<64>,
+    /// 32-byte content integrity hash (blake3).
+    pub content_hash: [u8; 32],
     /// Sequential list of entry names in this registry.
-    pub entries: BoundedVec<BoundedString<64>, 512>,
+    pub entries: BoundedVec<BoundedString<64>, 1024>,
 }
 
 impl S2cRegistryData {
     /// Encodes into wire buffer.
     pub fn encode(&self, buf: &mut Vec<u8>) {
         self.registry_id.encode(buf);
+        buf.extend_from_slice(&self.content_hash);
         self.entries.encode_with(buf, |entry, b| {
             entry.encode(b);
         });
@@ -61,9 +64,17 @@ impl S2cRegistryData {
                 reason: "Registry identifier cannot be empty".to_string(),
             });
         }
+        if cursor.len() < 32 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mut content_hash = [0u8; 32];
+        content_hash.copy_from_slice(&cursor[..32]);
+        *cursor = &cursor[32..];
+
         let entries = BoundedVec::decode_with(cursor, BoundedString::<64>::decode)?;
         Ok(Self {
             registry_id,
+            content_hash,
             entries,
         })
     }

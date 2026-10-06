@@ -118,7 +118,15 @@ impl<T, const MAX: usize> BoundedVec<T, MAX> {
     pub const fn empty() -> Self {
         Self(Vec::new())
     }
+}
 
+impl<T, const MAX: usize> Default for BoundedVec<T, MAX> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<T, const MAX: usize> BoundedVec<T, MAX> {
     /// Returns a slice over elements.
     #[inline]
     #[must_use]
