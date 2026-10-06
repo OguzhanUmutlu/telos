@@ -12,7 +12,11 @@ layout(push_constant) uniform SkyPushConstants {
     vec3 moon_dir;
     uint moon_phase;
     vec3 camera_pos;
-    float pad;
+    float rain_level;
+    float thunder_level;
+    float lightning_flash;
+    float _pad0;
+    float _pad1;
 } pc;
 
 const vec3 NOON_ZENITH = vec3(0.35, 0.58, 0.95);
@@ -23,6 +27,9 @@ const vec3 SUNSET_HORIZON = vec3(0.98, 0.45, 0.15);
 
 const vec3 NIGHT_ZENITH = vec3(0.015, 0.02, 0.045);
 const vec3 NIGHT_HORIZON = vec3(0.04, 0.05, 0.09);
+
+const vec3 OVERCAST_RAIN = vec3(0.42, 0.45, 0.48);
+const vec3 OVERCAST_THUNDER = vec3(0.12, 0.14, 0.18);
 
 void main() {
     // Reconstruct world-space ray direction from NDC at far plane
@@ -51,12 +58,20 @@ void main() {
     float sun_azimuth_glow = pow(max(0.0, cos_sun * 0.5 + 0.5), 3.0);
     sky = mix(sky, sunset_sky, sunset * (0.35 + 0.65 * sun_azimuth_glow));
 
+    // Overcast weather modulation (rain slate grey and thunder charcoal)
+    vec3 overcast_day = mix(OVERCAST_RAIN, OVERCAST_THUNDER, pc.thunder_level);
+    vec3 overcast_night = mix(OVERCAST_RAIN * 0.15, OVERCAST_THUNDER * 0.35, pc.thunder_level);
+    vec3 overcast_target = mix(overcast_night, overcast_day, daylight);
+    float weather_weight = clamp(pc.rain_level * 0.85 + pc.thunder_level * 0.15, 0.0, 1.0);
+    sky = mix(sky, overcast_target, weather_weight);
+
     // Darken below horizon
     float void_factor = clamp(1.0 + y * 2.0, 0.0, 1.0);
     sky *= void_factor;
 
-    // Stars at night
-    if (daylight < 0.85 && y > -0.05) {
+    // Stars at night (obscured during overcast weather)
+    float weather_clear = clamp(1.0 - pc.rain_level * 1.25, 0.0, 1.0);
+    if (daylight < 0.85 && y > -0.05 && weather_clear > 0.01) {
         vec3 star_p = ray_dir * 180.0;
         vec3 star_cell = floor(star_p);
         vec3 star_f = fract(star_p) - 0.5;
@@ -65,15 +80,15 @@ void main() {
             float dist = length(star_f);
             float star_intensity = smoothstep(0.12, 0.0, dist);
             float twinkle = 0.7 + 0.3 * sin(star_h * 628.0 + pc.time_of_day * 0.05);
-            float star_fade = (1.0 - daylight) * smoothstep(-0.05, 0.1, y);
+            float star_fade = (1.0 - daylight) * smoothstep(-0.05, 0.1, y) * weather_clear;
             sky += vec3(star_intensity * twinkle * star_fade);
         }
     }
 
-    // Sun disc and corona
+    // Sun disc and corona (attenuated by rain/thunder clouds)
     vec3 up = abs(pc.sun_dir.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
     if (cos_sun > 0.0) {
-        float corona = pow(cos_sun, 128.0) * 0.45 * daylight;
+        float corona = pow(cos_sun, 128.0) * 0.45 * daylight * weather_clear;
         sky += vec3(1.0, 0.95, 0.8) * corona;
     }
 
@@ -83,13 +98,13 @@ void main() {
     float sun_v = dot(ray_dir, sun_b) / 0.16 + 0.5;
     if (cos_sun > 0.85 && sun_u >= 0.0 && sun_u <= 1.0 && sun_v >= 0.0 && sun_v <= 1.0) {
         vec4 sun_tex = texture(u_celestial, vec3(sun_u, 1.0 - sun_v, 0.0));
-        sky = mix(sky, sun_tex.rgb, sun_tex.a);
+        sky = mix(sky, sun_tex.rgb, sun_tex.a * weather_clear);
     }
 
-    // Moon disc and phases
+    // Moon disc and phases (attenuated by rain/thunder clouds)
     float cos_moon = dot(ray_dir, pc.moon_dir);
     if (cos_moon > 0.0) {
-        float moon_glow = pow(cos_moon, 64.0) * 0.2 * (1.0 - daylight);
+        float moon_glow = pow(cos_moon, 64.0) * 0.2 * (1.0 - daylight) * weather_clear;
         sky += vec3(0.7, 0.8, 1.0) * moon_glow;
     }
 
@@ -101,7 +116,13 @@ void main() {
     if (cos_moon > 0.85 && moon_u >= 0.0 && moon_u <= 1.0 && moon_v >= 0.0 && moon_v <= 1.0) {
         uint phase_layer = 1u + (pc.moon_phase & 7u);
         vec4 moon_tex = texture(u_celestial, vec3(moon_u, 1.0 - moon_v, float(phase_layer)));
-        sky = mix(sky, moon_tex.rgb, moon_tex.a);
+        sky = mix(sky, moon_tex.rgb, moon_tex.a * weather_clear);
+    }
+
+    // Lightning flash wash
+    if (pc.lightning_flash > 0.001) {
+        vec3 flash_wash = vec3(0.75, 0.82, 1.0) * pc.lightning_flash;
+        sky = max(sky, flash_wash);
     }
 
     out_color = vec4(sky, 1.0);

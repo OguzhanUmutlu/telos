@@ -121,6 +121,14 @@ pub struct HudState {
     pub xp_level: u32,
     /// Progress fraction to the next level (0.0..1.0).
     pub xp_progress: f32,
+    /// Active weather condition name (e.g. "Clear", "Rain", "Thunder").
+    pub weather_name: String,
+    /// Active rain level in [0.0, 1.0].
+    pub weather_rain_level: f32,
+    /// Active thunder level in [0.0, 1.0].
+    pub weather_thunder_level: f32,
+    /// Local precipitation type (e.g. "None", "Rain", "Snow").
+    pub local_precipitation: String,
 }
 
 impl Default for HudState {
@@ -148,6 +156,10 @@ impl Default for HudState {
             saturation: 5.0,
             xp_level: 0,
             xp_progress: 0.0,
+            weather_name: "Clear".to_string(),
+            weather_rain_level: 0.0,
+            weather_thunder_level: 0.0,
+            local_precipitation: "None".to_string(),
         }
     }
 }
@@ -350,6 +362,7 @@ pub fn render_hud(
 
 #[allow(
     clippy::cast_possible_wrap,
+    clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
@@ -397,6 +410,13 @@ fn render_f3_overlay(
             state.saturation,
             state.xp_level,
             state.xp_progress * 100.0,
+        ),
+        format!(
+            "§fWeather: §b{} §f(Rain: §a{:.2}§f, Thunder: §9{:.2}§f) | Precip: §e{}",
+            state.weather_name,
+            state.weather_rain_level,
+            state.weather_thunder_level,
+            state.local_precipitation,
         ),
     ];
 

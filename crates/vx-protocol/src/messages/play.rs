@@ -1421,6 +1421,60 @@ pub enum PlayerCommandKind {
     SetFood(u32),
     /// Grant experience points.
     AddXp(u32),
+    /// Set weather condition (0 = Clear, 1 = Rain, 2 = Thunder).
+    SetWeather(u8),
+    /// Trigger immediate lightning flash.
+    TriggerLightning,
+}
+
+/// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cUpdateWeather {
+    /// Rain intensity factor in [0.0, 1.0].
+    pub rain_level: f32,
+    /// Thunderstorm intensity factor in [0.0, 1.0].
+    pub thunder_level: f32,
+    /// Remaining ticks of active lightning flash illumination (0 if dark).
+    pub lightning_flash: u8,
+}
+
+impl S2cUpdateWeather {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.rain_level.to_le_bytes());
+        buf.extend_from_slice(&self.thunder_level.to_le_bytes());
+        buf.push(self.lightning_flash);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 9 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let rain_level = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        let thunder_level = f32::from_le_bytes(cursor[4..8].try_into().unwrap());
+        let lightning_flash = cursor[8];
+        *cursor = &cursor[9..];
+
+        if !rain_level.is_finite() || !(0.0..=1.0).contains(&rain_level) {
+            return Err(ProtocolError::InvalidValue {
+                field: "update_weather.rain_level",
+                reason: "Rain level must be finite in [0.0, 1.0]".to_string(),
+            });
+        }
+        if !thunder_level.is_finite() || !(0.0..=1.0).contains(&thunder_level) {
+            return Err(ProtocolError::InvalidValue {
+                field: "update_weather.thunder_level",
+                reason: "Thunder level must be finite in [0.0, 1.0]".to_string(),
+            });
+        }
+
+        Ok(Self {
+            rain_level,
+            thunder_level,
+            lightning_flash,
+        })
+    }
 }
 
 /// Client sends an interactive player command or debug action to server.
@@ -1449,6 +1503,13 @@ impl C2sPlayerCommand {
             PlayerCommandKind::AddXp(pts) => {
                 buf.push(3);
                 encode_varint(pts, buf);
+            }
+            PlayerCommandKind::SetWeather(w) => {
+                buf.push(4);
+                buf.push(w);
+            }
+            PlayerCommandKind::TriggerLightning => {
+                buf.push(5);
             }
         }
     }
@@ -1510,6 +1571,21 @@ impl C2sPlayerCommand {
                 }
                 PlayerCommandKind::AddXp(pts)
             }
+            4 => {
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let w = cursor[0];
+                *cursor = &cursor[1..];
+                if w > 2 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.weather",
+                        reason: "Weather kind must be <= 2".to_string(),
+                    });
+                }
+                PlayerCommandKind::SetWeather(w)
+            }
+            5 => PlayerCommandKind::TriggerLightning,
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
                     enum_name: "PlayerCommandKind",
@@ -1592,6 +1668,23 @@ mod tests {
         let mut cursor = &buf[..];
         let decoded =
             C2sInventoryClick::decode(&mut cursor).expect("failed to decode C2sInventoryClick");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_update_weather_codec_round_trip() {
+        let msg = S2cUpdateWeather {
+            rain_level: 0.85,
+            thunder_level: 0.42,
+            lightning_flash: 3,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+
+        let mut cursor = &buf[..];
+        let decoded =
+            S2cUpdateWeather::decode(&mut cursor).expect("failed to decode S2cUpdateWeather");
         assert_eq!(msg, decoded);
         assert!(cursor.is_empty());
     }

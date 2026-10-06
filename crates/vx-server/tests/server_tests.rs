@@ -124,7 +124,9 @@ fn test_server_handshake_and_chunk_streaming() {
             S2cMessage::UpdateTime(time) => {
                 assert!(time.time_of_day >= 6000);
             }
-            S2cMessage::UpdateStats(_) | S2cMessage::InventoryBulk(_) => {}
+            S2cMessage::UpdateStats(_)
+            | S2cMessage::InventoryBulk(_)
+            | S2cMessage::UpdateWeather(_) => {}
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }
     }
@@ -706,5 +708,132 @@ fn test_survival_stats_and_inventory_interaction() {
     assert!(
         got_crafting_result,
         "Slot 44 must compute 4 Oak Planks from 1 Oak Log in slot 40"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines, clippy::float_cmp)]
+fn test_server_weather_synchronization_and_commands() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 1,
+        vertical_view_distance: 1,
+        chunks_per_tick_per_player: 10,
+        ..Default::default()
+    };
+    let mut server = Server::new(888, config);
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    // Handshake
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("WeatherPlayer").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+    let _ = client_conn.try_recv();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 1,
+                simulation_distance: 1,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+
+    // Drain initial messages and verify initial weather
+    let mut initial_weather = None;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateWeather(w)) = incoming.into_msg() {
+            initial_weather = Some(w);
+        }
+    }
+    assert!(
+        initial_weather.is_some(),
+        "Client must receive initial weather packet on join"
+    );
+    let w = initial_weather.unwrap();
+    assert_eq!(w.rain_level, 0.0);
+    assert_eq!(w.thunder_level, 0.0);
+
+    // Command server to start Rain
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::SetWeather(1), // Rain
+            })),
+        )
+        .unwrap();
+
+    // Tick server 100 times (5.0s, enough for 0.01/tick to reach 1.0)
+    for _ in 0..100 {
+        server.tick();
+    }
+
+    let mut latest_weather = None;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateWeather(w)) = incoming.into_msg() {
+            latest_weather = Some(w);
+        }
+    }
+    assert!(latest_weather.is_some());
+    let w = latest_weather.unwrap();
+    assert!(
+        w.rain_level >= 0.95,
+        "Rain level must fade smoothly to ~1.0"
+    );
+
+    // Command server to trigger lightning
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerCommand(C2sPlayerCommand {
+                command: PlayerCommandKind::TriggerLightning,
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+
+    let mut got_lightning = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateWeather(w)) = incoming.into_msg()
+            && w.lightning_flash > 0
+        {
+            got_lightning = true;
+        }
+    }
+    assert!(
+        got_lightning,
+        "Server must broadcast lightning strike flash event"
     );
 }

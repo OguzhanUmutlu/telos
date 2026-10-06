@@ -250,9 +250,53 @@ struct SkyPushConstants {
     moon_dir: [f32; 3],
     moon_phase: u32,
     camera_pos: [f32; 3],
-    _pad: f32,
+    rain_level: f32,
+    thunder_level: f32,
+    lightning_flash: f32,
+    _pad0: f32,
+    _pad1: f32,
 }
-const _: () = assert!(size_of::<SkyPushConstants>() == 112);
+const _: () = assert!(size_of::<SkyPushConstants>() == 128);
+
+/// GPU representation of an atmospheric precipitation particle (rain streak or snowflake).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WeatherParticleGpu {
+    /// World position of the particle center.
+    pub pos: [f32; 3],
+    /// Billboard quad width.
+    pub size_x: f32,
+    /// Billboard quad height.
+    pub size_y: f32,
+    /// Vertical UV animation scroll offset.
+    pub uv_anim: f32,
+    /// Texture array layer index (0: Rain, 1: Snow).
+    pub layer: u32,
+    /// RGBA8 tint and opacity color.
+    pub color: u32,
+}
+const _: () = assert!(size_of::<WeatherParticleGpu>() == 32);
+
+/// Push constants for the dynamic weather precipitation particle pass.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WeatherPushConstants {
+    /// Combined view projection matrix.
+    pub view_proj: [f32; 16],
+    /// Camera right basis vector.
+    pub camera_right: [f32; 3],
+    /// Alignment padding.
+    pub pad0: f32,
+    /// Camera up basis vector.
+    pub camera_up: [f32; 3],
+    /// Alignment padding.
+    pub pad1: f32,
+    /// 64-bit device address of the weather particle buffer.
+    pub particle_buffer_address: u64,
+    /// Alignment padding.
+    pub pad2: [u32; 2],
+}
+const _: () = assert!(size_of::<WeatherPushConstants>() == 112);
 
 /// 16x16 RGBA8 Dynamic Lighting Lookup Table (1024 bytes).
 #[derive(Clone, Copy)]
@@ -264,24 +308,42 @@ pub struct LightmapLut {
 impl Default for LightmapLut {
     fn default() -> Self {
         let mut lut = Self { data: [0; 1024] };
-        lut.update(1.0, 0.0);
+        lut.update(1.0, 0.0, 0.0, 0.0, 0.0);
         lut
     }
 }
 
 impl LightmapLut {
-    /// Recomputes the 16x16 lighting lookup table for the given sun elevation and time.
+    /// Recomputes the 16x16 lighting lookup table for the given sun elevation, time, and atmospheric weather.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub fn update(&mut self, sun_elev: f32, time_ticks: f32) {
+    pub fn update(
+        &mut self,
+        sun_elev: f32,
+        time_ticks: f32,
+        rain_level: f32,
+        thunder_level: f32,
+        lightning_flash: f32,
+    ) {
         let daylight = vx_core::time::daylight_factor(sun_elev);
         let sunset = vx_core::time::sunset_factor(sun_elev);
 
         // Bounded torch flicker +-3.5% (strictly within +-4%)
         let flicker = 1.0 + (time_ticks * 0.05).sin() * 0.025 + (time_ticks * 0.13).cos() * 0.01;
         let day_col = Vec3::new(1.0, 1.0, 1.0).lerp(Vec3::new(1.0, 0.55, 0.25), sunset);
-        let sky_ambient = Vec3::new(0.05, 0.07, 0.11).lerp(day_col, daylight);
+        let mut sky_ambient = Vec3::new(0.05, 0.07, 0.11).lerp(day_col, daylight);
+
+        // Weather overcast dimming: rain dims skylight up to 30%, thunder dims further up to 35%
+        sky_ambient *= (1.0 - 0.30 * rain_level) * (1.0 - 0.35 * thunder_level);
+
         let torch_base = Vec3::new(1.0, 0.82, 0.58) * flicker;
-        let ambient = Vec3::splat(0.035);
+        let mut ambient = Vec3::splat(0.035);
+
+        // Lightning flash surge: floods world with bright blue-white atmospheric flash
+        if lightning_flash > 0.001 {
+            let flash_boost = Vec3::new(0.70, 0.78, 1.0) * (lightning_flash * 0.70);
+            ambient += flash_boost;
+            sky_ambient = sky_ambient.max(flash_boost);
+        }
 
         for sky in 0..16 {
             let s_norm = sky as f32 / 15.0;
@@ -1014,6 +1076,21 @@ struct App {
     sky_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
     sky_descriptor_pool: Option<vk::DescriptorPool>,
     sky_descriptor_set: Option<vk::DescriptorSet>,
+
+    // Weather Simulation & Precipitation Particles
+    weather_rain_level: f32,
+    weather_thunder_level: f32,
+    weather_lightning_flash: f32,
+    weather_pipeline: Option<GraphicsPipeline>,
+    weather_vert_shader: Option<ShaderModule>,
+    weather_frag_shader: Option<ShaderModule>,
+    weather_texture: Option<GpuTextureArray>,
+    weather_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    weather_descriptor_pool: Option<vk::DescriptorPool>,
+    weather_descriptor_set: Option<vk::DescriptorSet>,
+    weather_buffer: Option<GpuBuffer>,
+    weather_particles_count: u32,
+    world_seed: u64,
 }
 
 impl App {
@@ -1181,6 +1258,20 @@ impl App {
             sky_descriptor_set_layout: None,
             sky_descriptor_pool: None,
             sky_descriptor_set: None,
+
+            weather_rain_level: 0.0,
+            weather_thunder_level: 0.0,
+            weather_lightning_flash: 0.0,
+            weather_pipeline: None,
+            weather_vert_shader: None,
+            weather_frag_shader: None,
+            weather_texture: None,
+            weather_descriptor_set_layout: None,
+            weather_descriptor_pool: None,
+            weather_descriptor_set: None,
+            weather_buffer: None,
+            weather_particles_count: 0,
+            world_seed: seed,
         }
     }
 
@@ -1439,9 +1530,146 @@ impl App {
                             }
                         }
                     }
+                    S2cMessage::UpdateWeather(weather) => {
+                        self.weather_rain_level = weather.rain_level;
+                        self.weather_thunder_level = weather.thunder_level;
+                        if weather.lightning_flash > 0 {
+                            self.weather_lightning_flash = 1.0;
+                        }
+                    }
                     _ => {}
                 },
             }
+        }
+    }
+
+    fn get_sky_light_at(&self, pos: BlockPos) -> u8 {
+        let (cpos, lpos) = vx_voxel::coords::split_block_pos(pos);
+        if let Some(snap) = self.chunks.get(&cpos)
+            && let Some(light) = snap.light()
+        {
+            return light.get_sky(lpos.as_usize());
+        }
+        15
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::similar_names
+    )]
+    fn generate_weather_particles(&mut self, _dt: f32) {
+        let rain_factor =
+            (self.weather_rain_level * 0.85 + self.weather_thunder_level * 0.15).clamp(0.0, 1.0);
+        if rain_factor <= 0.01 {
+            self.weather_particles_count = 0;
+            return;
+        }
+
+        let max_particles: usize = 640;
+        let active_count = ((max_particles as f32) * rain_factor).round() as usize;
+        let cam_pos = self.camera.position;
+        let time = (self.frame_tick as f32) * 0.05;
+
+        let mut particles: Vec<WeatherParticleGpu> = Vec::with_capacity(active_count);
+
+        let radius = 14.0_f32;
+        let height_span = 20.0_f32;
+        let min_rel_y = -8.0_f32;
+
+        for i in 0..active_count {
+            let seed_i = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let h0 = ((seed_i ^ (seed_i >> 16)) & 0xFFFF) as f32 / 65535.0;
+            let h1 = (((seed_i >> 16) ^ (seed_i >> 32)) & 0xFFFF) as f32 / 65535.0;
+            let h2 = (((seed_i >> 32) ^ (seed_i >> 48)) & 0xFFFF) as f32 / 65535.0;
+
+            let base_rx = (h0 * 2.0 - 1.0) * radius;
+            let base_rz = (h1 * 2.0 - 1.0) * radius;
+            let base_ry = h2 * height_span;
+
+            let px = cam_pos.x + base_rx;
+            let pz = cam_pos.z + base_rz;
+            let climate = vx_worldgen::ClimatePoint::sample(self.world_seed, px, pz);
+            let is_dry = climate.humidity < -0.35 && climate.temperature > 0.5;
+
+            let test_y = cam_pos.y + min_rel_y + base_ry;
+            let precip_kind =
+                vx_sim::weather::precipitation_at(climate.temperature, test_y, is_dry);
+            if precip_kind == vx_sim::weather::PrecipitationKind::None {
+                continue;
+            }
+
+            let is_snow = precip_kind == vx_sim::weather::PrecipitationKind::Snow;
+
+            let (rel_x, rel_y, rel_z, uv_anim, size_x, size_y, layer, alpha) = if is_snow {
+                let fall_speed = 2.2_f32;
+                let flutter_x = (time * 2.0 + h0 * std::f32::consts::TAU).sin() * 0.4;
+                let flutter_z = (time * 1.5 + h1 * std::f32::consts::TAU).cos() * 0.4;
+
+                let y_off = (base_ry - time * fall_speed).rem_euclid(height_span);
+                let rel_y = min_rel_y + y_off;
+                let rel_x = base_rx + flutter_x;
+                let rel_z = base_rz + flutter_z;
+
+                let uv_anim = (h0 * 4.0).floor() * 0.25;
+                let size = 0.16 + h2 * 0.08;
+                let alpha = (0.75 * rain_factor).min(0.9);
+                (rel_x, rel_y, rel_z, uv_anim, size, size, 1u32, alpha)
+            } else {
+                let fall_speed = 18.0_f32;
+                let y_off = (base_ry - time * fall_speed).rem_euclid(height_span);
+                let rel_y = min_rel_y + y_off;
+                let wind_drift_x = -time * 1.2;
+                let wind_drift_z = time * 0.6;
+                let rel_x = ((base_rx + wind_drift_x + radius).rem_euclid(radius * 2.0)) - radius;
+                let rel_z = ((base_rz + wind_drift_z + radius).rem_euclid(radius * 2.0)) - radius;
+
+                let uv_anim = (time * 8.0 + h0).fract();
+                let streak_w = 0.05 + h0 * 0.03;
+                let streak_h = 0.75 + h1 * 0.35;
+                let alpha = (0.65 * rain_factor).min(0.85);
+                (
+                    rel_x, rel_y, rel_z, uv_anim, streak_w, streak_h, 0u32, alpha,
+                )
+            };
+
+            let world_x = cam_pos.x + rel_x;
+            let world_y = cam_pos.y + rel_y;
+            let world_z = cam_pos.z + rel_z;
+
+            let bx = world_x.floor() as i32;
+            let by = world_y.floor() as i32;
+            let bz = world_z.floor() as i32;
+            let sky_light = self.get_sky_light_at(vx_core::BlockPos::new(bx, by, bz));
+            if sky_light < 15 {
+                continue;
+            }
+
+            let dist_sq = rel_x * rel_x + rel_z * rel_z;
+            let edge_fade = (1.0 - (dist_sq / (radius * radius))).clamp(0.0, 1.0);
+            let final_alpha = (alpha * edge_fade * 255.0) as u32;
+            if final_alpha < 5 {
+                continue;
+            }
+
+            let color = 0x00FF_FFFF | (final_alpha << 24);
+
+            particles.push(WeatherParticleGpu {
+                pos: [world_x, world_y, world_z],
+                size_x,
+                size_y,
+                uv_anim,
+                layer,
+                color,
+            });
+        }
+
+        self.weather_particles_count = particles.len() as u32;
+        if self.weather_particles_count > 0
+            && let Some(buf) = &mut self.weather_buffer
+        {
+            let _ = buf.write_bytes(bytemuck::cast_slice(&particles));
         }
     }
 
@@ -1890,6 +2118,29 @@ impl App {
         self.client_time_of_day =
             (self.client_time_of_day + dt * 20.0) % (vx_core::time::DAY_TICKS as f32);
 
+        let sun_angle = vx_core::time::sun_angle(
+            self.client_time_of_day as u64,
+            self.client_time_of_day.fract(),
+        );
+        let sun_dir = vx_core::time::sun_direction(sun_angle);
+        let moon_dir = vx_core::time::moon_direction(sun_angle);
+        let day_number = self.client_world_age / vx_core::time::DAY_TICKS;
+        let moon_phase = vx_core::time::moon_phase(day_number);
+
+        self.lightmap_lut.update(
+            sun_dir.y,
+            self.client_time_of_day,
+            self.weather_rain_level,
+            self.weather_thunder_level,
+            self.weather_lightning_flash,
+        );
+
+        if self.weather_lightning_flash > 0.0 {
+            self.weather_lightning_flash = (self.weather_lightning_flash - dt * 3.5).max(0.0);
+        }
+
+        self.generate_weather_particles(dt);
+
         // Voxel DDA Raycast for block aiming & selection
         let origin = self.camera.position;
         let forward = self.camera.forward();
@@ -2103,17 +2354,6 @@ impl App {
         let view_proj_mat = self.camera.view_proj_matrix(aspect);
         let view_proj = view_proj_mat.to_cols_array();
         let inv_view_proj = view_proj_mat.inverse().to_cols_array();
-
-        let sun_angle = vx_core::time::sun_angle(
-            self.client_time_of_day as u64,
-            self.client_time_of_day.fract(),
-        );
-        let sun_dir = vx_core::time::sun_direction(sun_angle);
-        let moon_dir = vx_core::time::moon_direction(sun_angle);
-        let day_number = self.client_world_age / vx_core::time::DAY_TICKS;
-        let moon_phase = vx_core::time::moon_phase(day_number);
-
-        self.lightmap_lut.update(sun_dir.y, self.client_time_of_day);
 
         let staging_idx = if self.lightmap_staging_buffers.is_empty() {
             0
@@ -3020,7 +3260,11 @@ impl App {
                         self.camera.position.y,
                         self.camera.position.z,
                     ],
-                    _pad: 0.0,
+                    rain_level: self.weather_rain_level,
+                    thunder_level: self.weather_thunder_level,
+                    lightning_flash: self.weather_lightning_flash,
+                    _pad0: 0.0,
+                    _pad1: 0.0,
                 };
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, sky_pipe.raw());
                 device.cmd_bind_descriptor_sets(
@@ -3080,6 +3324,42 @@ impl App {
                     MAX_CHUNK_CANDIDATES as u32,
                     16,
                 );
+            }
+
+            // Pass 17: Atmospheric Precipitation Particles (Rain streaks & fluttering Snow)
+            if self.weather_particles_count > 0
+                && let (Some(weather_pipe), Some(weather_set), Some(weather_buf)) = (
+                    &self.weather_pipeline,
+                    self.weather_descriptor_set,
+                    &self.weather_buffer,
+                )
+            {
+                let weather_pc = WeatherPushConstants {
+                    view_proj,
+                    camera_right: self.camera.right().to_array(),
+                    pad0: 0.0,
+                    camera_up: self.camera.up().to_array(),
+                    pad1: 0.0,
+                    particle_buffer_address: weather_buf.device_address(),
+                    pad2: [0, 0],
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, weather_pipe.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    weather_pipe.layout(),
+                    0,
+                    &[weather_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    weather_pipe.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&weather_pc),
+                );
+                device.cmd_draw(cmd, 6, self.weather_particles_count, 0, 0);
             }
 
             // Pass 6: Block selection wireframe highlight
@@ -3195,6 +3475,39 @@ impl App {
                     _ => "Unknown",
                 }
                 .to_string();
+
+                let weather_kind_name = if self.weather_thunder_level > 0.05 {
+                    "Thunder"
+                } else if self.weather_rain_level > 0.05 {
+                    "Rain"
+                } else {
+                    "Clear"
+                };
+                self.hud_state.weather_name = weather_kind_name.to_string();
+                self.hud_state.weather_rain_level = self.weather_rain_level;
+                self.hud_state.weather_thunder_level = self.weather_thunder_level;
+
+                let climate = vx_worldgen::ClimatePoint::sample(
+                    self.world_seed,
+                    self.camera.position.x,
+                    self.camera.position.z,
+                );
+                let is_dry = climate.humidity < -0.35 && climate.temperature > 0.5;
+                let local_precip =
+                    if self.weather_rain_level <= 0.01 && self.weather_thunder_level <= 0.01 {
+                        "None"
+                    } else {
+                        match vx_sim::weather::precipitation_at(
+                            climate.temperature,
+                            self.camera.position.y,
+                            is_dry,
+                        ) {
+                            vx_sim::weather::PrecipitationKind::None => "None (Dry)",
+                            vx_sim::weather::PrecipitationKind::Rain => "Rain",
+                            vx_sim::weather::PrecipitationKind::Snow => "Snow",
+                        }
+                    };
+                self.hud_state.local_precipitation = local_precip.to_string();
 
                 let mut ui_quads = Vec::with_capacity(512);
                 render_hud(
@@ -4132,6 +4445,160 @@ impl ApplicationHandler for App {
             }
         };
 
+        // ---------------------------------------------------------------------
+        // Initialize Atmospheric Weather & Precipitation Resources (Phase 20)
+        // ---------------------------------------------------------------------
+        let weather_texture = match load_and_upload_weather_textures(&gpu_context) {
+            Ok(tex) => tex,
+            Err(err) => {
+                tracing::error!("Failed to load weather textures: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let weather_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let weather_bindings = [weather_binding];
+        let weather_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&weather_bindings);
+        let weather_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&weather_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create weather descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let weather_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1);
+        let weather_pool_sizes = [weather_pool_size];
+        let weather_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&weather_pool_sizes);
+        let weather_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&weather_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create weather descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let weather_set_layouts = [weather_descriptor_set_layout];
+        let weather_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(weather_descriptor_pool)
+            .set_layouts(&weather_set_layouts);
+        let weather_descriptor_set = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&weather_alloc_info)
+            {
+                Ok(sets) => sets[0],
+                Err(err) => {
+                    tracing::error!("Failed to allocate weather descriptor set: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let weather_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(weather_texture.sampler())
+            .image_view(weather_texture.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let weather_descriptor_write = [vk::WriteDescriptorSet::default()
+            .dst_set(weather_descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&weather_image_info)];
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&weather_descriptor_write, &[]);
+        }
+
+        let weather_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/weather.vert.spv"));
+        let weather_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/weather.frag.spv"));
+        let weather_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), weather_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create weather vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let weather_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), weather_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create weather fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let weather_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<WeatherPushConstants>() as u32);
+
+        let weather_pipeline = match GraphicsPipeline::create_dynamic_translucent(
+            gpu_context.device().raw(),
+            weather_vert_module.raw(),
+            weather_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[weather_descriptor_set_layout],
+            &[weather_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create weather graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let weather_buffer = match GpuBuffer::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            "weather_particle_buffer",
+            (1024 * size_of::<WeatherParticleGpu>()) as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        ) {
+            Ok(buf) => buf,
+            Err(err) => {
+                tracing::error!("Failed to allocate weather particle buffer: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
         self.celestial_texture = Some(celestial_texture);
         self.sky_descriptor_set_layout = Some(sky_descriptor_set_layout);
         self.sky_descriptor_pool = Some(sky_descriptor_pool);
@@ -4141,6 +4608,15 @@ impl ApplicationHandler for App {
         self.sky_pipeline = Some(sky_pipeline);
         self.lightmap_texture = Some(lightmap_texture);
         self.lightmap_staging_buffers = lightmap_staging_buffers;
+
+        self.weather_texture = Some(weather_texture);
+        self.weather_descriptor_set_layout = Some(weather_descriptor_set_layout);
+        self.weather_descriptor_pool = Some(weather_descriptor_pool);
+        self.weather_descriptor_set = Some(weather_descriptor_set);
+        self.weather_vert_shader = Some(weather_vert_module);
+        self.weather_frag_shader = Some(weather_frag_module);
+        self.weather_pipeline = Some(weather_pipeline);
+        self.weather_buffer = Some(weather_buffer);
 
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
@@ -4429,6 +4905,28 @@ impl ApplicationHandler for App {
                     KeyCode::F3 if pressed => {
                         self.hud_state.f3_open = !self.hud_state.f3_open;
                         info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
+                    }
+                    KeyCode::F7 if pressed => {
+                        let next_kind =
+                            if self.weather_rain_level < 0.1 && self.weather_thunder_level < 0.1 {
+                                1u8 // Rain
+                            } else if self.weather_thunder_level < 0.1 {
+                                2u8 // Thunder
+                            } else {
+                                0u8 // Clear
+                            };
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::SetWeather(next_kind),
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!(next_weather = next_kind, "Sent toggle weather command");
+                    }
+                    KeyCode::F8 if pressed => {
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::TriggerLightning,
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                        info!("Sent trigger lightning command");
                     }
                     KeyCode::KeyK if pressed => {
                         let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
@@ -4722,6 +5220,32 @@ impl ApplicationHandler for App {
                 tex.destroy(device, allocator);
             }
             for mut buf in self.lightmap_staging_buffers.drain(..) {
+                buf.destroy(device, allocator);
+            }
+
+            if let Some(mut pipeline) = self.weather_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.weather_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.weather_frag_shader.take() {
+                frag.destroy(device);
+            }
+            if let Some(pool) = self.weather_descriptor_pool.take() {
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+            if let Some(layout) = self.weather_descriptor_set_layout.take() {
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+            if let Some(mut tex) = self.weather_texture.take() {
+                tex.destroy(device, allocator);
+            }
+            if let Some(mut buf) = self.weather_buffer.take() {
                 buf.destroy(device, allocator);
             }
         }
@@ -5290,6 +5814,106 @@ fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTex
     Ok(texture_array)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    const WEATHER_W: u32 = 64;
+    const WEATHER_H: u32 = 256;
+    const LAYER_COUNT: u32 = 2;
+
+    let mut pixel_data = vec![0u8; (WEATHER_W * WEATHER_H * 4 * LAYER_COUNT) as usize];
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+        let layer_offset = layer * (WEATHER_W * WEATHER_H * 4) as usize;
+        let w = img.width.min(WEATHER_W);
+        let h = img.height.min(WEATHER_H);
+        for y in 0..h {
+            let src_start = ((y * img.width) * 4) as usize;
+            let src_end = src_start + (w * 4) as usize;
+            let dst_start = layer_offset + ((y * WEATHER_W) * 4) as usize;
+            dest[dst_start..dst_start + (w * 4) as usize]
+                .copy_from_slice(&img.data[src_start..src_end]);
+        }
+    };
+
+    // Layer 0: Rain
+    let rain_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/environment/rain.png",
+    );
+    let rain_img = vx_assets::RgbaImage::from_file_exact(rain_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
+        for y in 0..WEATHER_H {
+            for x in 0..WEATHER_W {
+                let idx = ((y * WEATHER_W + x) * 4) as usize;
+                let is_streak = (x % 8 == (y / 4) % 8) && (y % 16 < 12);
+                if is_streak {
+                    img.data[idx] = 160;
+                    img.data[idx + 1] = 180;
+                    img.data[idx + 2] = 255;
+                    img.data[idx + 3] = 200;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 0, &rain_img);
+
+    // Layer 1: Snow
+    let snow_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/environment/snow.png",
+    );
+    let snow_img = vx_assets::RgbaImage::from_file_exact(snow_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(WEATHER_W, WEATHER_H);
+        for y in 0..WEATHER_H {
+            for x in 0..WEATHER_W {
+                let idx = ((y * WEATHER_W + x) * 4) as usize;
+                let is_flake = (x % 16 == 8) && (y % 16 == 8);
+                if is_flake {
+                    img.data[idx] = 255;
+                    img.data[idx + 1] = 255;
+                    img.data[idx + 2] = 255;
+                    img.data[idx + 3] = 240;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 1, &snow_img);
+
+    let copy_regions = [
+        TextureMipRegion {
+            buffer_offset: 0,
+            layer: 0,
+            mip_level: 0,
+            width: WEATHER_W,
+            height: WEATHER_H,
+        },
+        TextureMipRegion {
+            buffer_offset: u64::from(WEATHER_W * WEATHER_H * 4),
+            layer: 1,
+            mip_level: 0,
+            width: WEATHER_W,
+            height: WEATHER_H,
+        },
+    ];
+
+    let texture_array = gpu_context.create_texture_array_2d(
+        WEATHER_W,
+        WEATHER_H,
+        LAYER_COUNT,
+        1,
+        &pixel_data,
+        &copy_regions,
+    )?;
+
+    info!("Weather precipitation texture array loaded (2 layers: rain, snow, 64x256)");
+
+    Ok(texture_array)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -5328,7 +5952,7 @@ mod tests {
     #[test]
     fn test_lightmap_lut_dark_cave() {
         let mut lut = LightmapLut::default();
-        lut.update(1.0, 0.0); // Noon
+        lut.update(1.0, 0.0, 0.0, 0.0, 0.0); // Noon, clear
 
         // Texel (0, 0) should be pitch dark ambient floor (<= 0.05, i.e. <= 13/255)
         let r = f32::from(lut.data[0]) / 255.0;
@@ -5342,7 +5966,7 @@ mod tests {
     #[test]
     fn test_lightmap_lut_bright_torchlight() {
         let mut lut = LightmapLut::default();
-        lut.update(0.0, 0.0); // Sunset
+        lut.update(0.0, 0.0, 0.0, 0.0, 0.0); // Sunset, clear
 
         // Texel (15, 0) should be bright torchlight (>= 0.8)
         let idx = 15 * 4;
@@ -5357,7 +5981,7 @@ mod tests {
         let mut lut = LightmapLut::default();
 
         // Noon: texel (0, 15) should be bright day (>= 0.9)
-        lut.update(1.0, 0.0);
+        lut.update(1.0, 0.0, 0.0, 0.0, 0.0);
         let idx = (15 * 16) * 4;
         let r_day = f32::from(lut.data[idx]) / 255.0;
         let g_day = f32::from(lut.data[idx + 1]) / 255.0;
@@ -5367,7 +5991,7 @@ mod tests {
         assert!(b_day >= 0.9, "Texel (0,15) day blue too low: {b_day}");
 
         // Midnight: texel (0, 15) should be dark night (<= 0.15)
-        lut.update(-1.0, 0.0);
+        lut.update(-1.0, 0.0, 0.0, 0.0, 0.0);
         let r_night = f32::from(lut.data[idx]) / 255.0;
         let g_night = f32::from(lut.data[idx + 1]) / 255.0;
         let b_night = f32::from(lut.data[idx + 2]) / 255.0;
@@ -5395,7 +6019,7 @@ mod tests {
         let idx = 15 * 4;
 
         for tick in 0..1000 {
-            lut.update(0.0, tick as f32);
+            lut.update(0.0, tick as f32, 0.0, 0.0, 0.0);
             let val = f32::from(lut.data[idx]) / 255.0;
             if val < min_val {
                 min_val = val;
@@ -5411,6 +6035,46 @@ mod tests {
         assert!(
             dev <= 0.08,
             "Torch flicker deviation exceeded 8%: {dev} (min: {min_val}, max: {max_val})"
+        );
+    }
+
+    #[test]
+    fn test_lightmap_lut_weather_dimming() {
+        let mut lut_clear = LightmapLut::default();
+        let mut lut_storm = LightmapLut::default();
+
+        lut_clear.update(1.0, 0.0, 0.0, 0.0, 0.0);
+        lut_storm.update(1.0, 0.0, 1.0, 1.0, 0.0); // Rain + Thunder
+
+        let idx = (15 * 16) * 4;
+        let val_clear = f32::from(lut_clear.data[idx]) / 255.0;
+        let val_storm = f32::from(lut_storm.data[idx]) / 255.0;
+
+        assert!(
+            val_storm < val_clear * 0.65,
+            "Storm skylight ({val_storm}) was not significantly dimmed relative to clear ({val_clear})"
+        );
+    }
+
+    #[test]
+    fn test_lightmap_lut_lightning_flash() {
+        let mut lut_night = LightmapLut::default();
+        let mut lut_flash = LightmapLut::default();
+
+        lut_night.update(-1.0, 0.0, 1.0, 1.0, 0.0); // Night storm, no flash
+        lut_flash.update(-1.0, 0.0, 1.0, 1.0, 1.0); // Night storm with full lightning flash
+
+        // Ambient floor at (0, 0) should surge brightly during flash
+        let amb_night = f32::from(lut_night.data[0]) / 255.0;
+        let amb_flash = f32::from(lut_flash.data[0]) / 255.0;
+
+        assert!(
+            amb_flash >= 0.50,
+            "Lightning flash ambient ({amb_flash}) did not surge brightly"
+        );
+        assert!(
+            amb_flash > amb_night * 10.0,
+            "Flash ({amb_flash}) should be far brighter than dark night ambient ({amb_night})"
         );
     }
 }

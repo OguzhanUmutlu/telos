@@ -310,6 +310,26 @@ impl GpuContext {
         pixel_data: &[u8],
         copy_regions: &[TextureMipRegion],
     ) -> Result<GpuTextureArray, GpuError> {
+        self.create_texture_array_2d(
+            resolution,
+            resolution,
+            layer_count,
+            mip_levels,
+            pixel_data,
+            copy_regions,
+        )
+    }
+
+    /// Creates a GPU 2D texture array with custom width/height and uploads raw mip slices via a staging transfer buffer.
+    pub fn create_texture_array_2d(
+        &self,
+        width: u32,
+        height: u32,
+        layer_count: u32,
+        mip_levels: u32,
+        pixel_data: &[u8],
+        copy_regions: &[TextureMipRegion],
+    ) -> Result<GpuTextureArray, GpuError> {
         let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(self.device.queue_families().graphics_family)
             .flags(vk::CommandPoolCreateFlags::TRANSIENT);
@@ -317,12 +337,13 @@ impl GpuContext {
         // SAFETY: Creating transient command pool for one-time copy submission
         let pool = unsafe { self.device.raw().create_command_pool(&pool_info, None)? };
 
-        let res = GpuTextureArray::from_raw_mips(
+        let res = GpuTextureArray::from_raw_mips_2d(
             self.device.raw(),
             &self.allocator,
             self.device.graphics_queue(),
             pool,
-            resolution,
+            width,
+            height,
             layer_count,
             mip_levels,
             pixel_data,

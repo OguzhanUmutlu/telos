@@ -17,7 +17,7 @@ pub use play::{
     C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, LodPayload, PlayerCommandKind,
     S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
     S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, SlotData,
+    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
     decode_chunk_snapshot, encode_chunk_snapshot,
 };
 
@@ -199,6 +199,8 @@ pub enum S2cMessage {
     InventorySlot(S2cInventorySlot),
     /// Play phase full inventory bulk synchronization.
     InventoryBulk(S2cInventoryBulk),
+    /// Play phase weather and atmospheric synchronization.
+    UpdateWeather(S2cUpdateWeather),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -226,7 +228,8 @@ impl S2cMessage {
             | Self::UpdateTime(_)
             | Self::UpdateStats(_)
             | Self::InventorySlot(_)
-            | Self::InventoryBulk(_) => Some(ConnectionPhase::Play),
+            | Self::InventoryBulk(_)
+            | Self::UpdateWeather(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -252,6 +255,7 @@ impl S2cMessage {
             Self::UpdateStats(_) => 11,
             Self::InventorySlot(_) => 12,
             Self::InventoryBulk(_) => 13,
+            Self::UpdateWeather(_) => 14,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -277,6 +281,7 @@ impl S2cMessage {
             Self::UpdateStats(m) => m.encode(buf),
             Self::InventorySlot(m) => m.encode(buf),
             Self::InventoryBulk(m) => m.encode(buf),
+            Self::UpdateWeather(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

@@ -11,7 +11,7 @@ use crate::messages::play::{
     C2sBlockAction, C2sChatMessage, C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand,
     C2sPlayerPosition, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
     S2cChunkUnload, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
+    S2cLodNodeUnload, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -368,6 +368,7 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 11 => S2cMessage::UpdateStats(S2cUpdateStats::decode(&mut frame_cur)?),
                 12 => S2cMessage::InventorySlot(S2cInventorySlot::decode(&mut frame_cur)?),
                 13 => S2cMessage::InventoryBulk(S2cInventoryBulk::decode(&mut frame_cur)?),
+                14 => S2cMessage::UpdateWeather(S2cUpdateWeather::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

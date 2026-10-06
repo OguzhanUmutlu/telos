@@ -113,6 +113,12 @@ impl Camera {
         self.forward().cross(Vec3::Y).normalize()
     }
 
+    /// Unit direction vector pointing to the camera's up.
+    #[must_use]
+    pub fn up(&self) -> Vec3 {
+        self.right().cross(self.forward()).normalize()
+    }
+
     /// View matrix for the camera transform.
     #[must_use]
     pub fn view_matrix(&self) -> Mat4 {

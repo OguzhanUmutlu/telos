@@ -10,6 +10,7 @@ use vx_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sMessage, ChunkPayload, ConnectionPhase, LodPayload,
     S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cHelloReply, S2cJoinGame,
     S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cUniformChunk, S2cUpdateTime,
+    S2cUpdateWeather,
 };
 use vx_voxel::registry::BlockRegistry;
 use vx_voxel::state::BlockStateId;
@@ -25,7 +26,7 @@ use vx_protocol::messages::{
 };
 use vx_sim::{
     CombatTracker, DamageType, Experience, Health, Hunger, Inventory, ItemStack, SimParams,
-    build_sim_schedule,
+    WeatherKind, WeatherState, build_sim_schedule,
 };
 
 /// Top-level authoritative server orchestrating worlds, simulation, and client streaming.
@@ -37,6 +38,8 @@ pub struct Server {
     next_entity_id: u32,
     tick_count: u64,
     time_of_day: u64,
+    /// Active server weather simulation state.
+    pub weather: WeatherState,
     ecs_world: bevy_ecs::world::World,
     sim_schedule: bevy_ecs::schedule::Schedule,
 }
@@ -72,6 +75,7 @@ impl Server {
             next_entity_id: 1,
             tick_count: 0,
             time_of_day: vx_core::NOON_TICKS,
+            weather: WeatherState::new(seed),
             ecs_world,
             sim_schedule,
         }
@@ -214,6 +218,15 @@ impl Server {
                                     .connection
                                     .send(Lane::Control, Payload::Msg(time_msg));
 
+                                let weather_msg = S2cMessage::UpdateWeather(S2cUpdateWeather {
+                                    rain_level: self.weather.rain_level,
+                                    thunder_level: self.weather.thunder_level,
+                                    lightning_flash: self.weather.lightning_flash_ticks,
+                                });
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(weather_msg));
+
                                 // Spawn player entity in ECS simulation
                                 let mut inv = Inventory::default();
                                 inv.slots[0] = ItemStack::new(1, 64); // Stone
@@ -343,6 +356,13 @@ impl Server {
                     if let Some(mut exp) = self.ecs_world.get_mut::<Experience>(entity) {
                         exp.add_xp(pts);
                     }
+                }
+                PlayerCommandKind::SetWeather(w) => {
+                    let kind = WeatherKind::from_u8(w);
+                    self.weather.set_weather(kind, 24_000);
+                }
+                PlayerCommandKind::TriggerLightning => {
+                    self.weather.trigger_lightning();
                 }
             }
         }
@@ -669,6 +689,23 @@ impl Server {
                     let _ = session
                         .connection
                         .send(Lane::Control, Payload::Msg(time_msg.clone()));
+                }
+            }
+        }
+
+        // 6. Weather progression and periodic synchronization
+        self.weather.tick();
+        if self.tick_count.is_multiple_of(20) || self.weather.lightning_flash_ticks > 0 {
+            let weather_msg = S2cMessage::UpdateWeather(S2cUpdateWeather {
+                rain_level: self.weather.rain_level,
+                thunder_level: self.weather.thunder_level,
+                lightning_flash: self.weather.lightning_flash_ticks,
+            });
+            for session in self.sessions.values_mut() {
+                if session.phase == ConnectionPhase::Play {
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(weather_msg.clone()));
                 }
             }
         }

@@ -34,7 +34,7 @@ pub struct GpuTextureArray {
 
 impl GpuTextureArray {
     /// Uploads pixel bytes and mip slices into a device-local 2D texture array via staging buffer.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_raw_mips(
         device: &ash::Device,
         allocator: &GpuAllocator,
@@ -46,10 +46,35 @@ impl GpuTextureArray {
         pixel_data: &[u8],
         copy_regions: &[TextureMipRegion],
     ) -> Result<Self, GpuError> {
-        let extent = vk::Extent2D {
-            width: resolution,
-            height: resolution,
-        };
+        Self::from_raw_mips_2d(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            resolution,
+            resolution,
+            layer_count,
+            mip_levels,
+            pixel_data,
+            copy_regions,
+        )
+    }
+
+    /// Uploads pixel bytes and mip slices into a device-local 2D texture array with custom width and height via staging buffer.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn from_raw_mips_2d(
+        device: &ash::Device,
+        allocator: &GpuAllocator,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        width: u32,
+        height: u32,
+        layer_count: u32,
+        mip_levels: u32,
+        pixel_data: &[u8],
+        copy_regions: &[TextureMipRegion],
+    ) -> Result<Self, GpuError> {
+        let extent = vk::Extent2D { width, height };
         let format = vk::Format::R8G8B8A8_SRGB;
 
         // 1. Create staging buffer with all pixel data
@@ -68,8 +93,8 @@ impl GpuTextureArray {
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .extent(vk::Extent3D {
-                width: resolution,
-                height: resolution,
+                width,
+                height,
                 depth: 1,
             })
             .mip_levels(mip_levels)
@@ -228,8 +253,8 @@ impl GpuTextureArray {
         let sampler = unsafe { device.create_sampler(&sampler_info, None)? };
 
         info!(
-            width = resolution,
-            height = resolution,
+            width,
+            height,
             layers = layer_count,
             mips = mip_levels,
             "GPU 2D texture array initialized"

@@ -12,6 +12,7 @@ pub mod experience;
 pub mod hunger;
 pub mod inventory;
 pub mod schedule;
+pub mod weather;
 
 pub use attributes::{CombatTracker, DamageEvent, DamageType, Health, apply_damage};
 pub use bundles::PlayerBundle;
@@ -28,3 +29,7 @@ pub use inventory::{
     is_slot_valid_for_item, item_name, matching_armor_slot,
 };
 pub use schedule::{SimTick, TickSet, build_sim_schedule};
+pub use weather::{
+    ALTITUDE_LAPSE_RATE, LEVEL_FADE_PER_TICK, LIGHTNING_FLASH_DURATION_TICKS, PrecipitationKind,
+    SEA_LEVEL_REF, SNOW_TEMP_THRESHOLD, WeatherKind, WeatherState, precipitation_at,
+};

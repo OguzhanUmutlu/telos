@@ -32,7 +32,7 @@ pub use messages::{
     login::{AuthMode, C2sLoginStart, S2cLoginSuccess},
     play::{
         C2sChatMessage, C2sKeepAlive, LodPayload, S2cChatMessage, S2cKeepAlive, S2cLodNodeData,
-        S2cLodNodeUnload,
+        S2cLodNodeUnload, S2cUpdateWeather,
     },
 };
 
