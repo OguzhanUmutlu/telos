@@ -1979,6 +1979,231 @@ impl S2cCommandSuggestions {
     }
 }
 
+/// Bitflags representing player movement button states.
+pub mod input_buttons {
+    /// Forward movement key (e.g. W).
+    pub const FORWARD: u16 = 1 << 0;
+    /// Backward movement key (e.g. S).
+    pub const BACK: u16 = 1 << 1;
+    /// Left movement key (e.g. A).
+    pub const LEFT: u16 = 1 << 2;
+    /// Right movement key (e.g. D).
+    pub const RIGHT: u16 = 1 << 3;
+    /// Jump key (e.g. Space).
+    pub const JUMP: u16 = 1 << 4;
+    /// Sneak key (e.g. Left Shift).
+    pub const SNEAK: u16 = 1 << 5;
+    /// Sprint key (e.g. Left Ctrl).
+    pub const SPRINT: u16 = 1 << 6;
+    /// Fly upward key.
+    pub const FLY_UP: u16 = 1 << 7;
+    /// Fly downward key.
+    pub const FLY_DOWN: u16 = 1 << 8;
+}
+
+/// A single sampled player movement input frame for a specific client tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputFrame {
+    /// Client tick number when this input was generated.
+    pub tick: u32,
+    /// Bitfield of movement buttons pressed (see [`input_buttons`]).
+    pub buttons: u16,
+    /// Quantized camera yaw (`65536 = 360` degrees).
+    pub yaw: u16,
+    /// Quantized camera pitch (`32767 = 90` degrees).
+    pub pitch: i16,
+    /// Active hotbar slot index (0..=8).
+    pub hotbar: u8,
+}
+
+impl InputFrame {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.tick, buf);
+        buf.extend_from_slice(&self.buttons.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+        buf.push(self.hotbar);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let tick = decode_varint(cursor)?;
+        if cursor.len() < 7 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let buttons = u16::from_le_bytes(cursor[..2].try_into().unwrap());
+        let yaw = u16::from_le_bytes(cursor[2..4].try_into().unwrap());
+        let pitch = i16::from_le_bytes(cursor[4..6].try_into().unwrap());
+        let hotbar = cursor[6];
+        *cursor = &cursor[7..];
+
+        if hotbar > 8 {
+            return Err(ProtocolError::InvalidValue {
+                field: "hotbar",
+                reason: format!("Hotbar index {hotbar} exceeds maximum 8"),
+            });
+        }
+
+        Ok(Self {
+            tick,
+            buttons,
+            yaw,
+            pitch,
+            hotbar,
+        })
+    }
+}
+
+/// Client transmits recent unacknowledged movement input frames for authoritative simulation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct C2sPlayerInput {
+    /// Last server tick known/acknowledged by the client.
+    pub last_server_tick_ack: u32,
+    /// Recent un-acknowledged input frames (up to 16), in chronological order.
+    pub frames: BoundedVec<InputFrame, 16>,
+}
+
+impl C2sPlayerInput {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.last_server_tick_ack, buf);
+        self.frames.encode_with(buf, InputFrame::encode);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let last_server_tick_ack = decode_varint(cursor)?;
+        let frames = BoundedVec::<InputFrame, 16>::decode_with(cursor, InputFrame::decode)?;
+        Ok(Self {
+            last_server_tick_ack,
+            frames,
+        })
+    }
+}
+
+/// Server replicates authoritative player movement outcome acknowledging a client tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cPlayerMovementAck {
+    /// Client tick this authoritative outcome corresponds to.
+    pub client_tick_ack: u32,
+    /// Server tick during which this state was simulated.
+    pub server_tick: u32,
+    /// Authoritative player position X.
+    pub x: f64,
+    /// Authoritative player position Y.
+    pub y: f64,
+    /// Authoritative player position Z.
+    pub z: f64,
+    /// Authoritative velocity X (blocks per tick).
+    pub vx: f32,
+    /// Authoritative velocity Y (blocks per tick).
+    pub vy: f32,
+    /// Authoritative velocity Z (blocks per tick).
+    pub vz: f32,
+    /// Authoritative body yaw in degrees.
+    pub yaw: f32,
+    /// Authoritative pitch in degrees.
+    pub pitch: f32,
+    /// Ground contact flag.
+    pub on_ground: bool,
+    /// Flying state flag.
+    pub flying: bool,
+    /// Non-zero if server is executing a forced teleport / correction.
+    pub teleport_id: u32,
+}
+
+impl Eq for S2cPlayerMovementAck {}
+
+impl S2cPlayerMovementAck {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.client_tick_ack, buf);
+        encode_varint(self.server_tick, buf);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.vx.to_le_bytes());
+        buf.extend_from_slice(&self.vy.to_le_bytes());
+        buf.extend_from_slice(&self.vz.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+        buf.push(u8::from(self.on_ground));
+        buf.push(u8::from(self.flying));
+        encode_varint(self.teleport_id, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let client_tick_ack = decode_varint(cursor)?;
+        let server_tick = decode_varint(cursor)?;
+        if cursor.len() < 46 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f64::from_le_bytes(cursor[..8].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        let vx = f32::from_le_bytes(cursor[24..28].try_into().unwrap());
+        let vy = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
+        let vz = f32::from_le_bytes(cursor[32..36].try_into().unwrap());
+        let yaw = f32::from_le_bytes(cursor[36..40].try_into().unwrap());
+        let pitch = f32::from_le_bytes(cursor[40..44].try_into().unwrap());
+        let on_ground = cursor[44] != 0;
+        let flying = cursor[45] != 0;
+        *cursor = &cursor[46..];
+        let teleport_id = decode_varint(cursor)?;
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "ack.pos",
+                reason: "Coordinates must be finite".to_string(),
+            });
+        }
+        if !vx.is_finite() || !vy.is_finite() || !vz.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "ack.vel",
+                reason: "Velocities must be finite".to_string(),
+            });
+        }
+
+        Ok(Self {
+            client_tick_ack,
+            server_tick,
+            x,
+            y,
+            z,
+            vx,
+            vy,
+            vz,
+            yaw,
+            pitch,
+            on_ground,
+            flying,
+            teleport_id,
+        })
+    }
+}
+
+/// Client confirms receipt and local application of server-initiated teleport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C2sTeleportAck {
+    /// Teleport identifier assigned by server.
+    pub teleport_id: u32,
+}
+
+impl C2sTeleportAck {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.teleport_id, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let teleport_id = decode_varint(cursor)?;
+        Ok(Self { teleport_id })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2071,6 +2296,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_entity_codec_round_trip() {
         let spawn = S2cSpawnEntity {
             net_id: 42,
@@ -2140,5 +2366,59 @@ mod tests {
         let decoded_interact =
             C2sInteractEntity::decode(&mut cursor).expect("failed to decode C2sInteractEntity");
         assert_eq!(interact, decoded_interact);
+
+        let frame = InputFrame {
+            tick: 105,
+            buttons: input_buttons::FORWARD | input_buttons::SPRINT,
+            yaw: 16384,
+            pitch: -2000,
+            hotbar: 3,
+        };
+        let mut buf = Vec::new();
+        frame.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_frame = InputFrame::decode(&mut cursor).expect("failed to decode InputFrame");
+        assert_eq!(frame, decoded_frame);
+
+        let input_msg = C2sPlayerInput {
+            last_server_tick_ack: 100,
+            frames: BoundedVec::new(vec![frame]).unwrap(),
+        };
+        let mut buf = Vec::new();
+        input_msg.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_input =
+            C2sPlayerInput::decode(&mut cursor).expect("failed to decode C2sPlayerInput");
+        assert_eq!(input_msg, decoded_input);
+
+        let ack = S2cPlayerMovementAck {
+            client_tick_ack: 105,
+            server_tick: 500,
+            x: 12.5,
+            y: 64.0,
+            z: -18.75,
+            vx: 0.1,
+            vy: -0.05,
+            vz: 0.3,
+            yaw: 90.0,
+            pitch: -10.0,
+            on_ground: false,
+            flying: true,
+            teleport_id: 0,
+        };
+        let mut buf = Vec::new();
+        ack.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_ack = S2cPlayerMovementAck::decode(&mut cursor)
+            .expect("failed to decode S2cPlayerMovementAck");
+        assert_eq!(ack, decoded_ack);
+
+        let tp_ack = C2sTeleportAck { teleport_id: 42 };
+        let mut buf = Vec::new();
+        tp_ack.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_tp =
+            C2sTeleportAck::decode(&mut cursor).expect("failed to decode C2sTeleportAck");
+        assert_eq!(tp_ack, decoded_tp);
     }
 }

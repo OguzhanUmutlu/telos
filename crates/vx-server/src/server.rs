@@ -15,8 +15,8 @@ use vx_protocol::messages::{
     PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
     S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity, S2cEntityMove,
     S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cRegistryData, S2cSpawnEntity,
-    S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cPlayerMovementAck, S2cRegistryData,
+    S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use vx_sim::command::{CommandContext, CommandDispatcher, register_builtins};
 use vx_sim::event::{EventQueue, GameEvent};
@@ -583,6 +583,28 @@ impl Server {
                                     }
                                 }
 
+                                // Send initial movement state to synchronize client prediction
+                                let initial_ack =
+                                    S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
+                                        client_tick_ack: 0,
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        server_tick: self.tick_count as u32,
+                                        x: session.move_state.pos.x,
+                                        y: session.move_state.pos.y,
+                                        z: session.move_state.pos.z,
+                                        vx: session.move_state.vel.x,
+                                        vy: session.move_state.vel.y,
+                                        vz: session.move_state.vel.z,
+                                        yaw: session.move_state.yaw,
+                                        pitch: session.move_state.pitch,
+                                        on_ground: session.move_state.on_ground,
+                                        flying: session.move_state.flying,
+                                        teleport_id: 0,
+                                    });
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(initial_ack));
+
                                 // Force initial chunk subscriptions
                                 let _ = session.recompute_subscriptions();
                             }
@@ -593,6 +615,16 @@ impl Server {
                         }
                     }
                     ConnectionPhase::Play => match msg {
+                        C2sMessage::PlayerInput(input) => {
+                            for frame in input.frames.iter() {
+                                session.queue_input(*frame);
+                            }
+                        }
+                        C2sMessage::TeleportAck(tp) => {
+                            if session.awaiting_teleport == Some(tp.teleport_id) {
+                                session.awaiting_teleport = None;
+                            }
+                        }
                         C2sMessage::PlayerPosition(pos) => {
                             session.update_position(
                                 DVec3::new(pos.x, pos.y, pos.z),
@@ -963,11 +995,12 @@ impl Server {
                         let target =
                             pos_arg.resolve(origin, glam::Vec2::new(session_yaw, session_pitch));
                         if let Some(s) = self.sessions.get_mut(&session_id) {
-                            s.position = DVec3::new(
+                            let target_dvec = DVec3::new(
                                 f64::from(target.x),
                                 f64::from(target.y),
                                 f64::from(target.z),
                             );
+                            s.teleport(target_dvec);
                         }
                     }
                 }
@@ -1162,6 +1195,62 @@ impl Server {
             });
             if let Some(s) = self.sessions.get_mut(&session_id) {
                 let _ = s.connection.send(Lane::Control, Payload::Msg(ack_msg));
+            }
+        }
+
+        // 4c. Process player movement inputs and authoritative simulation
+        for session in self.sessions.values_mut() {
+            if session.phase != ConnectionPhase::Play {
+                continue;
+            }
+
+            let mut processed_any = false;
+            // Drain up to 2 input frames per tick (allows catching up on packet bursts)
+            for _ in 0..2 {
+                let Some(frame) = session.pending_inputs.pop_front() else {
+                    break;
+                };
+
+                if session.awaiting_teleport.is_none() {
+                    vx_sim::simulate_movement_step(
+                        &mut session.move_state,
+                        &frame,
+                        session.move_mode,
+                        0.05,
+                    );
+                    session.last_processed_client_tick = frame.tick;
+                    processed_any = true;
+                }
+            }
+
+            if processed_any
+                || session.awaiting_teleport.is_some()
+                || self.tick_count.is_multiple_of(20)
+            {
+                session.position = session.move_state.pos;
+                session.yaw = session.move_state.yaw;
+                session.pitch = session.move_state.pitch;
+                session.on_ground = session.move_state.on_ground;
+
+                let ack_msg = S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
+                    client_tick_ack: session.last_processed_client_tick,
+                    #[allow(clippy::cast_possible_truncation)]
+                    server_tick: self.tick_count as u32,
+                    x: session.move_state.pos.x,
+                    y: session.move_state.pos.y,
+                    z: session.move_state.pos.z,
+                    vx: session.move_state.vel.x,
+                    vy: session.move_state.vel.y,
+                    vz: session.move_state.vel.z,
+                    yaw: session.move_state.yaw,
+                    pitch: session.move_state.pitch,
+                    on_ground: session.move_state.on_ground,
+                    flying: session.move_state.flying,
+                    teleport_id: session.awaiting_teleport.unwrap_or(0),
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(ack_msg));
             }
         }
 

@@ -2,12 +2,13 @@
 
 use glam::{DVec3, Vec3};
 use hashbrown::HashSet;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use vx_core::coords::{BlockPos, ChunkPos};
 use vx_lod::coords::LodNodeKey;
 use vx_lod::selection::{LodClipmap, LodClipmapConfig};
 use vx_net::Connection;
-use vx_protocol::messages::{C2sMessage, ConnectionPhase, S2cMessage};
+use vx_protocol::messages::{C2sMessage, ConnectionPhase, InputFrame, S2cMessage};
+use vx_sim::{MoveMode, MoveState};
 
 use crate::config::ServerConfig;
 use crate::priority::{QueuedChunk, compute_chunk_priority};
@@ -72,6 +73,18 @@ pub struct PlayerSession {
     pub last_chat_tick: u64,
     /// Number of chat messages sent in current burst window.
     pub chat_burst_count: u32,
+    /// Authoritative movement physics state.
+    pub move_state: MoveState,
+    /// Pending client movement inputs awaiting simulation.
+    pub pending_inputs: VecDeque<InputFrame>,
+    /// Last client tick simulated and acknowledged.
+    pub last_processed_client_tick: u32,
+    /// Sequential counter for server-initiated teleports.
+    pub teleport_id_counter: u32,
+    /// Pending teleport ID awaiting client `C2sTeleportAck`.
+    pub awaiting_teleport: Option<u32>,
+    /// Active movement simulation mode.
+    pub move_mode: MoveMode,
 }
 
 impl PlayerSession {
@@ -91,6 +104,8 @@ impl PlayerSession {
             hysteresis: 0.12,
             vertical_span: config.vertical_view_distance as i32,
         };
+
+        let move_state = MoveState::new(spawn_pos, -90.0, 0.0, true);
 
         Self {
             session_id,
@@ -122,6 +137,12 @@ impl PlayerSession {
             username: format!("Player{session_id}"),
             last_chat_tick: 0,
             chat_burst_count: 0,
+            move_state,
+            pending_inputs: VecDeque::with_capacity(16),
+            last_processed_client_tick: 0,
+            teleport_id_counter: 0,
+            awaiting_teleport: None,
+            move_mode: MoveMode::NoClipFly,
         }
     }
 
@@ -154,6 +175,57 @@ impl PlayerSession {
         self.yaw = yaw;
         self.pitch = pitch;
         self.on_ground = on_ground;
+        self.move_state.pos = pos;
+        self.move_state.yaw = yaw;
+        self.move_state.pitch = pitch;
+        self.move_state.on_ground = on_ground;
+    }
+
+    /// Enqueues a client input frame, enforcing tick freshness and rejecting packets sent too far ahead.
+    pub fn queue_input(&mut self, frame: InputFrame) {
+        if self.awaiting_teleport.is_some() {
+            // Discard inputs that were generated before acknowledging the teleport
+            return;
+        }
+
+        if frame.tick <= self.last_processed_client_tick {
+            return;
+        }
+
+        // Anti-cheat speed / timer hack guard: drop frames > 10 ticks in the future
+        if frame.tick > self.last_processed_client_tick + 10 && self.last_processed_client_tick > 0
+        {
+            return;
+        }
+
+        // Keep pending inputs sorted by tick
+        if let Some(last) = self.pending_inputs.back() {
+            if frame.tick > last.tick {
+                self.pending_inputs.push_back(frame);
+            } else if !self.pending_inputs.iter().any(|f| f.tick == frame.tick) {
+                let idx = self.pending_inputs.partition_point(|f| f.tick < frame.tick);
+                self.pending_inputs.insert(idx, frame);
+            }
+        } else {
+            self.pending_inputs.push_back(frame);
+        }
+
+        // Cap queue length to prevent memory exhaustion
+        while self.pending_inputs.len() > 16 {
+            self.pending_inputs.pop_front();
+        }
+    }
+
+    /// Triggers an authoritative teleport to a new world position.
+    pub fn teleport(&mut self, new_pos: DVec3) -> u32 {
+        self.teleport_id_counter = self.teleport_id_counter.wrapping_add(1).max(1);
+        let tp_id = self.teleport_id_counter;
+        self.awaiting_teleport = Some(tp_id);
+        self.position = new_pos;
+        self.move_state.pos = new_pos;
+        self.move_state.vel = Vec3::ZERO;
+        self.pending_inputs.clear();
+        tp_id
     }
 
     /// Returns `true` if subscriptions should be re-evaluated.

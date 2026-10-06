@@ -14,12 +14,13 @@ pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
-    C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, LodPayload,
-    PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
-    S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot,
+    C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition,
+    C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, PlayerCommandKind, S2cBlockActionAck,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk, S2cInventorySlot,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cPlayerMovementAck,
+    S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -103,6 +104,10 @@ pub enum C2sMessage {
     InteractEntity(C2sInteractEntity),
     /// Play phase command auto-completion query.
     CommandSuggest(C2sCommandSuggest),
+    /// Play phase movement inputs for authoritative client prediction.
+    PlayerInput(C2sPlayerInput),
+    /// Play phase acknowledgment of server-initiated teleport.
+    TeleportAck(C2sTeleportAck),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -126,7 +131,9 @@ impl C2sMessage {
             | Self::InventoryClick(_)
             | Self::PlayerCommand(_)
             | Self::InteractEntity(_)
-            | Self::CommandSuggest(_) => Some(ConnectionPhase::Play),
+            | Self::CommandSuggest(_)
+            | Self::PlayerInput(_)
+            | Self::TeleportAck(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -146,6 +153,8 @@ impl C2sMessage {
             Self::PlayerCommand(_) => 5,
             Self::InteractEntity(_) => 6,
             Self::CommandSuggest(_) => 7,
+            Self::PlayerInput(_) => 8,
+            Self::TeleportAck(_) => 9,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -166,6 +175,8 @@ impl C2sMessage {
             Self::PlayerCommand(m) => m.encode(buf),
             Self::InteractEntity(m) => m.encode(buf),
             Self::CommandSuggest(m) => m.encode(buf),
+            Self::PlayerInput(m) => m.encode(buf),
+            Self::TeleportAck(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -222,6 +233,8 @@ pub enum S2cMessage {
     EntityStatus(S2cEntityStatus),
     /// Play phase command auto-completion suggestions response.
     CommandSuggestions(S2cCommandSuggestions),
+    /// Play phase authoritative player movement outcome acknowledgment.
+    PlayerMovementAck(S2cPlayerMovementAck),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -255,7 +268,8 @@ impl S2cMessage {
             | Self::DespawnEntity(_)
             | Self::EntityMove(_)
             | Self::EntityStatus(_)
-            | Self::CommandSuggestions(_) => Some(ConnectionPhase::Play),
+            | Self::CommandSuggestions(_)
+            | Self::PlayerMovementAck(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -287,6 +301,7 @@ impl S2cMessage {
             Self::EntityMove(_) => 17,
             Self::EntityStatus(_) => 18,
             Self::CommandSuggestions(_) => 19,
+            Self::PlayerMovementAck(_) => 20,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -318,6 +333,7 @@ impl S2cMessage {
             Self::EntityMove(m) => m.encode(buf),
             Self::EntityStatus(m) => m.encode(buf),
             Self::CommandSuggestions(m) => m.encode(buf),
+            Self::PlayerMovementAck(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

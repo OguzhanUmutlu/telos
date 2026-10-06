@@ -1,5 +1,7 @@
 //! Client-side entity tracking, interpolation, hierarchical cuboid meshing, and combat raycasting.
 
+use std::collections::VecDeque;
+
 use glam::{DVec3, Quat, Vec2, Vec3};
 use hashbrown::HashMap;
 use vx_protocol::messages::{S2cEntityMove, S2cSpawnEntity};
@@ -33,6 +35,33 @@ pub struct EntityPushConstants {
     pub pad: [u32; 2],
 }
 
+/// A replicated snapshot of a remote entity at a specific point in time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntitySnapshot {
+    /// Local arrival timestamp in seconds.
+    pub timestamp: f64,
+    /// World position at snapshot.
+    pub pos: DVec3,
+    /// Body yaw in degrees.
+    pub yaw: f32,
+    /// Looking pitch in degrees.
+    pub pitch: f32,
+    /// Head yaw in degrees.
+    pub head_yaw: f32,
+}
+
+/// Unwraps and linearly interpolates an angle in degrees across the [0, 360) boundary.
+#[must_use]
+pub fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
+    let mut diff = (to - from) % 360.0;
+    if diff < -180.0 {
+        diff += 360.0;
+    } else if diff > 180.0 {
+        diff -= 360.0;
+    }
+    from + diff * alpha
+}
+
 /// Client representation of an active network entity.
 #[derive(Debug, Clone)]
 pub struct ClientEntity {
@@ -60,14 +89,25 @@ pub struct ClientEntity {
     pub health: f32,
     /// Maximum health points.
     pub max_health: f32,
+    /// Ring buffer of historical entity snapshots for interpolation.
+    pub snapshots: VecDeque<EntitySnapshot>,
 }
 
 impl ClientEntity {
     /// Creates a new `ClientEntity` initialized from an `S2cSpawnEntity` packet.
     #[must_use]
-    pub fn from_spawn(msg: S2cSpawnEntity) -> Self {
+    pub fn from_spawn(msg: S2cSpawnEntity, now: f64) -> Self {
         let entity_type = EntityType::from_u8(msg.entity_type).unwrap_or(EntityType::Zombie);
         let pos = DVec3::new(msg.x, msg.y, msg.z);
+        let snap = EntitySnapshot {
+            timestamp: now,
+            pos,
+            yaw: msg.yaw,
+            pitch: msg.pitch,
+            head_yaw: msg.head_yaw,
+        };
+        let mut snapshots = VecDeque::with_capacity(16);
+        snapshots.push_back(snap);
         Self {
             net_id: msg.net_id,
             entity_type,
@@ -81,6 +121,7 @@ impl ClientEntity {
             hurt_timer: 0.0,
             health: msg.health,
             max_health: msg.max_health,
+            snapshots,
         }
     }
 }
@@ -89,6 +130,8 @@ impl ClientEntity {
 #[derive(Debug, Default)]
 pub struct ClientEntityStore {
     entities: HashMap<u32, ClientEntity>,
+    /// Accumulated client timeline in seconds.
+    pub current_time: f64,
 }
 
 impl ClientEntityStore {
@@ -97,6 +140,7 @@ impl ClientEntityStore {
     pub fn new() -> Self {
         Self {
             entities: HashMap::new(),
+            current_time: 0.0,
         }
     }
 
@@ -120,7 +164,7 @@ impl ClientEntityStore {
     /// Handles an incoming `S2cSpawnEntity` packet.
     pub fn on_spawn(&mut self, msg: S2cSpawnEntity) {
         self.entities
-            .insert(msg.net_id, ClientEntity::from_spawn(msg));
+            .insert(msg.net_id, ClientEntity::from_spawn(msg, self.current_time));
     }
 
     /// Handles an incoming `S2cDespawnEntity` packet.
@@ -133,10 +177,21 @@ impl ClientEntityStore {
     /// Handles an incoming `S2cEntityMove` packet.
     pub fn on_move(&mut self, msg: S2cEntityMove) {
         if let Some(entity) = self.entities.get_mut(&msg.net_id) {
-            entity.target_pos = DVec3::new(msg.x, msg.y, msg.z);
-            entity.target_yaw = msg.yaw;
-            entity.pitch = msg.pitch;
-            entity.head_yaw = msg.head_yaw;
+            let snap = EntitySnapshot {
+                timestamp: self.current_time,
+                pos: DVec3::new(msg.x, msg.y, msg.z),
+                yaw: msg.yaw,
+                pitch: msg.pitch,
+                head_yaw: msg.head_yaw,
+            };
+            entity.target_pos = snap.pos;
+            entity.target_yaw = snap.yaw;
+            entity.pitch = snap.pitch;
+            entity.head_yaw = snap.head_yaw;
+            entity.snapshots.push_back(snap);
+            while entity.snapshots.len() > 16 {
+                entity.snapshots.pop_front();
+            }
         }
     }
 
@@ -160,26 +215,93 @@ impl ClientEntityStore {
 
     /// Advances frame-time interpolation and animations.
     pub fn update(&mut self, dt: f32) {
+        self.current_time += f64::from(dt);
+        // Standard 100 ms interpolation delay (2 server ticks at 20 TPS)
+        let render_time = self.current_time - 0.100;
+
         for entity in self.entities.values_mut() {
             // Decay hurt flash timer
             entity.hurt_timer = (entity.hurt_timer - dt).max(0.0);
 
-            // Interpolate position toward replicated target
-            let t = (dt * 15.0).min(1.0);
-            let delta = entity.target_pos - entity.pos;
-            entity.pos += delta * f64::from(t);
+            let prev_pos = entity.pos;
 
-            // Accumulate walk animation when moving horizontally
+            // Interpolate or extrapolate from snapshot history
+            if entity.snapshots.len() >= 2 {
+                let first_ts = entity.snapshots.front().unwrap().timestamp;
+                let last_ts = entity.snapshots.back().unwrap().timestamp;
+
+                if render_time <= first_ts {
+                    // Underflow: clamp to oldest snapshot
+                    let s = entity.snapshots.front().unwrap();
+                    entity.pos = s.pos;
+                    entity.yaw = s.yaw;
+                    entity.pitch = s.pitch;
+                    entity.head_yaw = s.head_yaw;
+                } else if render_time >= last_ts {
+                    // Starved / packet jitter: extrapolate up to 1 tick (50 ms)
+                    let n = entity.snapshots.len();
+                    let s_prev = &entity.snapshots[n - 2];
+                    let s_last = &entity.snapshots[n - 1];
+                    let delta_t = s_last.timestamp - s_prev.timestamp;
+                    if delta_t > 0.001 {
+                        let vel = (s_last.pos - s_prev.pos) / delta_t;
+                        let extra = (render_time - last_ts).min(0.05);
+                        entity.pos = s_last.pos + vel * extra;
+                    } else {
+                        entity.pos = s_last.pos;
+                    }
+                    entity.yaw = s_last.yaw;
+                    entity.pitch = s_last.pitch;
+                    entity.head_yaw = s_last.head_yaw;
+                } else {
+                    // Locate bounding snapshots S0 and S1
+                    let mut s0 = &entity.snapshots[0];
+                    let mut s1 = &entity.snapshots[1];
+                    for i in 0..(entity.snapshots.len() - 1) {
+                        if entity.snapshots[i].timestamp <= render_time
+                            && entity.snapshots[i + 1].timestamp >= render_time
+                        {
+                            s0 = &entity.snapshots[i];
+                            s1 = &entity.snapshots[i + 1];
+                            break;
+                        }
+                    }
+
+                    let dur = s1.timestamp - s0.timestamp;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let alpha = if dur > 1e-5 {
+                        ((render_time - s0.timestamp) / dur).clamp(0.0, 1.0) as f32
+                    } else {
+                        1.0
+                    };
+
+                    entity.pos = s0.pos + (s1.pos - s0.pos) * f64::from(alpha);
+                    entity.yaw = lerp_angle(s0.yaw, s1.yaw, alpha);
+                    entity.pitch = lerp_angle(s0.pitch, s1.pitch, alpha);
+                    entity.head_yaw = lerp_angle(s0.head_yaw, s1.head_yaw, alpha);
+                }
+            } else if let Some(snap) = entity.snapshots.back() {
+                entity.pos = snap.pos;
+                entity.yaw = snap.yaw;
+                entity.pitch = snap.pitch;
+                entity.head_yaw = snap.head_yaw;
+            }
+
+            // Prune snapshots older than 500 ms before render_time (keep at least 2)
+            let cutoff = render_time - 0.500;
+            while entity.snapshots.len() > 2 && entity.snapshots.front().unwrap().timestamp < cutoff
+            {
+                entity.snapshots.pop_front();
+            }
+
+            // Accumulate walk animation when entity moves horizontally
+            let delta = entity.pos - prev_pos;
             let horiz_dist_sq = delta.x * delta.x + delta.z * delta.z;
-            if horiz_dist_sq > 0.0001 {
+            if horiz_dist_sq > 1e-6 {
                 entity.walk_time += dt;
             } else {
                 entity.walk_time = (entity.walk_time - dt * 2.0).max(0.0);
             }
-
-            // Smooth body yaw
-            let diff = entity.target_yaw - entity.yaw;
-            entity.yaw += diff * t;
         }
     }
 
@@ -793,4 +915,99 @@ fn emit_cuboid(
         ],
         4,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lerp_angle_unwrapping() {
+        // Simple interpolation
+        assert!((lerp_angle(10.0, 50.0, 0.5) - 30.0).abs() < 1e-4);
+
+        // Crossing 0 / 360 clockwise (350 -> 10 = +20 diff)
+        assert!((lerp_angle(350.0, 10.0, 0.5) - 360.0).abs() < 1e-4);
+
+        // Crossing 0 / 360 counter-clockwise (10 -> 350 = -20 diff)
+        assert!((lerp_angle(10.0, 350.0, 0.5) - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_entity_snapshot_interpolation() {
+        let mut store = ClientEntityStore::new();
+
+        let spawn_msg = S2cSpawnEntity {
+            net_id: 1,
+            entity_type: 0,
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+        };
+        store.on_spawn(spawn_msg);
+
+        // Move 100 ms later to (10.0, 64.0, 0.0)
+        store.current_time = 0.100;
+        store.on_move(S2cEntityMove {
+            net_id: 1,
+            x: 10.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 90.0,
+            pitch: 0.0,
+            head_yaw: 90.0,
+            on_ground: true,
+        });
+
+        // Advance to 150 ms (render_time = 150 - 100 = 50 ms, halfway between 0 and 100 ms)
+        store.update(0.050);
+
+        let entity = store.get(1).unwrap();
+        assert!((entity.pos.x - 5.0).abs() < 0.1);
+        assert!((entity.yaw - 45.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_entity_extrapolation_bounded() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn(S2cSpawnEntity {
+            net_id: 2,
+            entity_type: 0,
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+        });
+
+        // 50 ms later
+        store.current_time = 0.050;
+        store.on_move(S2cEntityMove {
+            net_id: 2,
+            x: 5.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            on_ground: true,
+        });
+
+        // Advance to 300 ms (render_time = 200 ms, starved by 150 ms)
+        store.update(0.250);
+
+        let entity = store.get(2).unwrap();
+        // Speed = 5.0 / 0.050 = 100.0 blocks/sec.
+        // Bounded extra = 50 ms -> max extra pos = 5.0 + 100.0 * 0.05 = 10.0
+        assert!(entity.pos.x <= 10.01);
+    }
 }

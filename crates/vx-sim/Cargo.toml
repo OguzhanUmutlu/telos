@@ -11,6 +11,7 @@ description = "Pure, deterministic ECS gameplay simulation core for voxel (healt
 [dependencies]
 vx-core = { workspace = true }
 vx-voxel = { workspace = true }
+vx-protocol = { workspace = true }
 bevy_ecs = { workspace = true }
 glam = { workspace = true }
 thiserror = { workspace = true }

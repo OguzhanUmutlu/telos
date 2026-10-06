@@ -2,11 +2,12 @@
 
 use vx_core::coords::{BlockPos, ChunkPos, Face};
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
-use vx_protocol::bounded::BoundedString;
+use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
-    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, PlayerCommandKind, S2cMessage,
+    C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, InputFrame,
+    PlayerCommandKind, S2cMessage, input_buttons,
 };
 use vx_server::{Server, ServerConfig};
 use vx_voxel::state::BlockStateId;
@@ -159,7 +160,8 @@ fn test_server_handshake_and_chunk_streaming() {
             }
             S2cMessage::UpdateStats(_)
             | S2cMessage::InventoryBulk(_)
-            | S2cMessage::UpdateWeather(_) => {}
+            | S2cMessage::UpdateWeather(_)
+            | S2cMessage::PlayerMovementAck(_) => {}
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }
     }
@@ -1487,4 +1489,156 @@ fn test_server_wasm_mod_event_and_world_mutation() {
     // Verify mod placed block at (0, 66, 0)
     let state_66 = server.world_mut().get_block(BlockPos::new(0, 66, 0));
     assert_eq!(state_66, BlockStateId::new(7));
+}
+
+#[test]
+#[allow(clippy::too_many_lines, clippy::float_cmp)]
+fn test_authoritative_movement_prediction_and_reconciliation() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 2,
+        vertical_view_distance: 1,
+        chunks_per_tick_per_player: 4,
+        ..Default::default()
+    };
+    let mut server = Server::new(12345, config);
+
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    // Handshake
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("Player1").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 2,
+                simulation_distance: 2,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+
+    // Drain initial messages and ensure initial PlayerMovementAck
+    let mut initial_ack_received = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::PlayerMovementAck(ack)) = incoming.into_msg() {
+            assert_eq!(ack.client_tick_ack, 0);
+            assert_eq!(ack.teleport_id, 0);
+            initial_ack_received = true;
+        }
+    }
+    assert!(
+        initial_ack_received,
+        "Server must emit initial movement ack on join"
+    );
+
+    // Client sends 2 input frames moving forward (+Z direction)
+    let frame1 = InputFrame {
+        tick: 1,
+        buttons: input_buttons::FORWARD | input_buttons::SPRINT,
+        yaw: vx_sim::quantize_yaw(90.0),
+        pitch: vx_sim::quantize_pitch(0.0),
+        hotbar: 0,
+    };
+    let frame2 = InputFrame {
+        tick: 2,
+        buttons: input_buttons::FORWARD | input_buttons::SPRINT,
+        yaw: vx_sim::quantize_yaw(90.0),
+        pitch: vx_sim::quantize_pitch(0.0),
+        hotbar: 0,
+    };
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerInput(C2sPlayerInput {
+                last_server_tick_ack: 0,
+                frames: BoundedVec::new(vec![frame1, frame2]).unwrap(),
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+
+    // Verify server simulated frames and emitted ack with updated state
+    let mut received_ack = None;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::PlayerMovementAck(ack)) = incoming.into_msg() {
+            received_ack = Some(ack);
+        }
+    }
+    let ack = received_ack.expect("Server must send PlayerMovementAck after simulating frames");
+    assert_eq!(ack.client_tick_ack, 2);
+    assert!(
+        ack.z > 160.0,
+        "Player must have moved forward along +Z axis"
+    );
+    assert!(ack.vz > 0.0, "Velocity must be positive forward");
+
+    // Test authoritative teleport via /tp command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/tp 200 80 300").unwrap(),
+            })),
+        )
+        .unwrap();
+
+    server.tick();
+
+    let mut tp_ack_received = None;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::PlayerMovementAck(ack)) = incoming.into_msg()
+            && ack.teleport_id > 0
+        {
+            tp_ack_received = Some(ack);
+        }
+    }
+    let tp_ack = tp_ack_received.expect("Server must send PlayerMovementAck with teleport_id > 0");
+    assert_eq!(tp_ack.x, 200.0);
+    assert_eq!(tp_ack.y, 80.0);
+    assert_eq!(tp_ack.z, 300.0);
+
+    // Client acknowledges teleport
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::TeleportAck(C2sTeleportAck {
+                teleport_id: tp_ack.teleport_id,
+            })),
+        )
+        .unwrap();
+
+    server.tick();
 }

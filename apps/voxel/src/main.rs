@@ -12,7 +12,7 @@ use anyhow::Result;
 use camera::{Camera, FlyController};
 use clap::Parser;
 use entity_client::{ClientEntityStore, EntityPushConstants, EntityVertexGpu};
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
 use tracing::info;
@@ -27,12 +27,15 @@ use vx_gpu::{
     GraphicsPipeline, HiZPyramid, MemoryLocation, ShaderModule, TextureMipRegion, ash, vk,
 };
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
-use vx_protocol::bounded::BoundedString;
+use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
-    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
-    PlayerCommandKind, S2cMessage,
+    C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase,
+    InputFrame, PlayerCommandKind, S2cMessage, S2cPlayerMovementAck, input_buttons,
+};
+use vx_sim::{
+    MoveMode, MoveState, PredictionBuffer, VisualSmoothing, quantize_pitch, quantize_yaw,
 };
 use vx_ui::{
     BitmapFont, ChatHudState, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale,
@@ -1106,13 +1109,18 @@ struct App {
 
     camera: Camera,
     controller: FlyController,
-    last_sent_pos: Vec3,
-    last_sent_time: Instant,
     last_frame_time: Instant,
     last_fps_time: Instant,
     frame_counter: u32,
     visible_chunks_last: usize,
     visible_lod_nodes_last: usize,
+
+    // Prediction & Movement Reconciliation
+    prediction: PredictionBuffer,
+    smoothing: VisualSmoothing,
+    client_tick: u32,
+    sim_time_acc: f32,
+    last_acked_server_tick: u32,
 
     // MDI & Compute Culling
     mdi_buffers: Option<MdiBuffers>,
@@ -1282,6 +1290,19 @@ impl App {
             })),
         );
 
+        let d_spawn = DVec3::new(
+            f64::from(spawn_pos.x),
+            f64::from(spawn_pos.y),
+            f64::from(spawn_pos.z),
+        );
+        let prediction = PredictionBuffer::new(MoveState::new(
+            d_spawn,
+            camera.yaw.to_degrees(),
+            camera.pitch.to_degrees(),
+            true,
+        ));
+        let smoothing = VisualSmoothing::default();
+
         Self {
             validation: args.validation,
             view_distance: args.view_distance,
@@ -1349,13 +1370,17 @@ impl App {
 
             camera,
             controller: FlyController::default(),
-            last_sent_pos: spawn_pos,
-            last_sent_time: Instant::now(),
             last_frame_time: Instant::now(),
             last_fps_time: Instant::now(),
             frame_counter: 0,
             visible_chunks_last: 0,
             visible_lod_nodes_last: 0,
+
+            prediction,
+            smoothing,
+            client_tick: 0,
+            sim_time_acc: 0.0,
+            last_acked_server_tick: 0,
 
             mdi_buffers: None,
             chunk_slots: SlotAllocator::new(MAX_CHUNK_CANDIDATES as u32),
@@ -1640,6 +1665,22 @@ impl App {
                             spawn_z = join.spawn_z,
                             "Joined world, starting chunk streaming"
                         );
+                        let spawn_dvec = DVec3::new(join.spawn_x, join.spawn_y, join.spawn_z);
+                        self.prediction.reset_to(MoveState::new(
+                            spawn_dvec,
+                            self.camera.yaw.to_degrees(),
+                            self.camera.pitch.to_degrees(),
+                            true,
+                        ));
+                        self.smoothing.reset();
+                        #[allow(clippy::cast_possible_truncation)]
+                        {
+                            self.camera.position = Vec3::new(
+                                join.spawn_x as f32,
+                                join.spawn_y as f32,
+                                join.spawn_z as f32,
+                            );
+                        }
                         self.client_phase = ConnectionPhase::Play;
                     }
                     other => {
@@ -1647,6 +1688,9 @@ impl App {
                     }
                 },
                 ConnectionPhase::Play => match msg {
+                    S2cMessage::PlayerMovementAck(ack) => {
+                        self.handle_movement_ack(ack);
+                    }
                     S2cMessage::UniformChunk(uniform) => {
                         let pos = ChunkPos::new(uniform.chunk_x, uniform.chunk_y, uniform.chunk_z);
                         let is_opaque = self
@@ -1959,26 +2003,94 @@ impl App {
         }
     }
 
-    fn send_player_position_if_needed(&mut self) {
+    fn tick_movement_prediction(&mut self) {
         if self.client_phase != ConnectionPhase::Play {
             return;
         }
 
-        let moved = self.camera.position.distance_squared(self.last_sent_pos) > 0.05;
-        let time_elapsed = self.last_sent_time.elapsed() >= Duration::from_millis(50);
+        self.client_tick = self.client_tick.wrapping_add(1).max(1);
 
-        if moved || time_elapsed {
-            let msg = C2sMessage::PlayerPosition(C2sPlayerPosition {
-                x: f64::from(self.camera.position.x),
-                y: f64::from(self.camera.position.y),
-                z: f64::from(self.camera.position.z),
-                yaw: self.camera.yaw.to_degrees(),
-                pitch: self.camera.pitch.to_degrees(),
-                on_ground: true,
+        let mut buttons = 0u16;
+        if self.controller.mouse_captured {
+            if self.controller.forward {
+                buttons |= input_buttons::FORWARD;
+            }
+            if self.controller.backward {
+                buttons |= input_buttons::BACK;
+            }
+            if self.controller.left {
+                buttons |= input_buttons::LEFT;
+            }
+            if self.controller.right {
+                buttons |= input_buttons::RIGHT;
+            }
+            if self.controller.sprint {
+                buttons |= input_buttons::SPRINT;
+            }
+            if self.controller.up {
+                buttons |= input_buttons::FLY_UP | input_buttons::JUMP;
+            }
+            if self.controller.down {
+                buttons |= input_buttons::FLY_DOWN | input_buttons::SNEAK;
+            }
+        }
+
+        let frame = InputFrame {
+            tick: self.client_tick,
+            buttons,
+            yaw: quantize_yaw(self.camera.yaw.to_degrees()),
+            pitch: quantize_pitch(self.camera.pitch.to_degrees()),
+            hotbar: self.selected_hotbar_slot as u8,
+        };
+
+        self.prediction
+            .push_and_predict(frame, MoveMode::NoClipFly, 0.05);
+
+        let unacked = self.prediction.unacked_frames(self.last_acked_server_tick);
+        if let Ok(bounded_frames) = BoundedVec::new(unacked) {
+            let input_msg = C2sMessage::PlayerInput(C2sPlayerInput {
+                last_server_tick_ack: self.last_acked_server_tick,
+                frames: bounded_frames,
             });
-            let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
-            self.last_sent_pos = self.camera.position;
-            self.last_sent_time = Instant::now();
+            let _ = self
+                .client_conn
+                .send(Lane::Control, Payload::Msg(input_msg));
+        }
+    }
+
+    fn handle_movement_ack(&mut self, ack: S2cPlayerMovementAck) {
+        self.last_acked_server_tick = ack.server_tick;
+
+        if ack.teleport_id != 0 {
+            let target_pos = DVec3::new(ack.x, ack.y, ack.z);
+            let vel = Vec3::new(ack.vx, ack.vy, ack.vz);
+            self.prediction.reset_to(MoveState {
+                pos: target_pos,
+                vel,
+                yaw: ack.yaw,
+                pitch: ack.pitch,
+                on_ground: ack.on_ground,
+                flying: ack.flying,
+            });
+            self.smoothing.reset();
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                self.camera.position = Vec3::new(
+                    target_pos.x as f32,
+                    target_pos.y as f32,
+                    target_pos.z as f32,
+                );
+            }
+
+            let tp_ack = C2sMessage::TeleportAck(C2sTeleportAck {
+                teleport_id: ack.teleport_id,
+            });
+            let _ = self.client_conn.send(Lane::Control, Payload::Msg(tp_ack));
+        } else if let Some(reconciliation) =
+            self.prediction.reconcile(&ack, MoveMode::NoClipFly, 0.05)
+        {
+            self.smoothing
+                .add_error(reconciliation.error, reconciliation.is_teleport);
         }
     }
 
@@ -2404,7 +2516,6 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn render(&mut self) -> bool {
         self.poll_network();
-        self.send_player_position_if_needed();
         self.rebuild_dirty_meshes(16);
         self.upload_pending_lod_meshes();
 
@@ -2412,7 +2523,26 @@ impl App {
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
 
-        self.controller.update(&mut self.camera, dt);
+        if self.client_phase == ConnectionPhase::Play {
+            self.sim_time_acc += dt;
+            while self.sim_time_acc >= 0.05 {
+                self.sim_time_acc -= 0.05;
+                self.tick_movement_prediction();
+            }
+            self.smoothing.update(dt);
+            let visual_pos =
+                self.prediction.current_state().pos + self.smoothing.render_offset.as_dvec3();
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                self.camera.position = Vec3::new(
+                    visual_pos.x as f32,
+                    visual_pos.y as f32,
+                    visual_pos.z as f32,
+                );
+            }
+        } else {
+            self.controller.update(&mut self.camera, dt);
+        }
 
         // Update spatial audio listener
         self.audio.set_listener(

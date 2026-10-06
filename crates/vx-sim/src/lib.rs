@@ -14,6 +14,8 @@ pub mod event;
 pub mod experience;
 pub mod hunger;
 pub mod inventory;
+pub mod movement;
+pub mod prediction;
 pub mod schedule;
 pub mod weather;
 
@@ -39,6 +41,14 @@ pub use inventory::{
     InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
     inventory_click, is_armor, is_boots, is_chestplate, is_helmet, is_leggings,
     is_slot_valid_for_item, item_name, matching_armor_slot,
+};
+pub use movement::{
+    MAX_LEGAL_SPEED, MoveMode, MoveState, angles_to_direction, dequantize_pitch, dequantize_yaw,
+    quantize_pitch, quantize_yaw, simulate_movement_step,
+};
+pub use prediction::{
+    PREDICTION_BUFFER_CAPACITY, PredictionBuffer, PredictionEntry, ReconciliationResult,
+    VisualSmoothing,
 };
 pub use schedule::{SimTick, TickSet, build_sim_schedule};
 pub use weather::{
