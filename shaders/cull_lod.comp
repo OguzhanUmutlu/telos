@@ -1,0 +1,223 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct LodCullCandidate {
+    float min_x;
+    float min_y;
+    float min_z;
+    uint lod_id;
+
+    float max_x;
+    float max_y;
+    float max_z;
+    uint level;
+
+    int node_x;
+    int node_y;
+    int node_z;
+    uint quad_count;
+
+    uint64_t quad_address;
+    uint _pad0;
+    uint _pad1;
+};
+
+struct VkDrawIndirectCommand {
+    uint vertex_count;
+    uint instance_count;
+    uint first_vertex;
+    uint first_instance;
+};
+
+struct LodDrawInfo {
+    uint64_t buffer_address;
+    int node_x;
+    int node_y;
+    int node_z;
+    uint level;
+    uint quad_count;
+    uint _pad0;
+    uint _pad1;
+};
+
+struct LodPointers {
+    uint64_t candidate_buffer;
+    uint64_t visibility_buffer;
+    uint64_t count_buffer;
+    uint64_t cmd_buffer;
+    uint64_t draw_buffer;
+};
+
+layout(buffer_reference, std430) readonly buffer CandidateBufferRef {
+    LodCullCandidate candidates[];
+};
+
+layout(buffer_reference, std430) buffer VisibilityBufferRef {
+    uint visibility[];
+};
+
+layout(buffer_reference, std430) buffer CountBufferRef {
+    uint counts[]; // [0: lod count]
+};
+
+layout(buffer_reference, std430) writeonly buffer CommandBufferRef {
+    VkDrawIndirectCommand commands[];
+};
+
+layout(buffer_reference, std430) writeonly buffer DrawInfoBufferRef {
+    LodDrawInfo draws[];
+};
+
+layout(buffer_reference, std430) readonly buffer PointersBufferRef {
+    LodPointers ptrs;
+};
+
+layout(set = 0, binding = 0) uniform sampler2D hiz_pyramid;
+
+layout(push_constant, std430) uniform PushConstants {
+    mat4 view_proj;
+    vec3 camera_pos;
+    uint cull_phase; // 0 = early, 1 = late
+    uvec2 hiz_size;
+    uint candidate_count;
+    uint is_first_frame; // 1 = skip hiz occlusion test
+    uint64_t pointers_address;
+} pc;
+
+bool test_frustum(vec3 bmin, vec3 bmax) {
+    vec4 planes[6];
+    vec4 r0 = vec4(pc.view_proj[0][0], pc.view_proj[1][0], pc.view_proj[2][0], pc.view_proj[3][0]);
+    vec4 r1 = vec4(pc.view_proj[0][1], pc.view_proj[1][1], pc.view_proj[2][1], pc.view_proj[3][1]);
+    vec4 r2 = vec4(pc.view_proj[0][2], pc.view_proj[1][2], pc.view_proj[2][2], pc.view_proj[3][2]);
+    vec4 r3 = vec4(pc.view_proj[0][3], pc.view_proj[1][3], pc.view_proj[2][3], pc.view_proj[3][3]);
+
+    planes[0] = r3 + r0; // Left
+    planes[1] = r3 - r0; // Right
+    planes[2] = r3 + r1; // Bottom
+    planes[3] = r3 - r1; // Top
+    planes[4] = r2;      // Near (z >= 0)
+    planes[5] = r3 - r2; // Far  (w - z >= 0)
+
+    for (int i = 0; i < 6; ++i) {
+        float len = length(planes[i].xyz);
+        if (len > 0.0) {
+            planes[i] /= len;
+        }
+
+        vec3 p = vec3(
+            planes[i].x >= 0.0 ? bmax.x : bmin.x,
+            planes[i].y >= 0.0 ? bmax.y : bmin.y,
+            planes[i].z >= 0.0 ? bmax.z : bmin.z
+        );
+
+        if (dot(planes[i].xyz, p) + planes[i].w < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_hiz_occlusion(vec3 bmin, vec3 bmax) {
+    vec2 min_uv = vec2(1.0);
+    vec2 max_uv = vec2(0.0);
+    float z_near = 0.0; // in reversed-Z: bigger = nearer to camera
+
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3(
+            (i & 1) != 0 ? bmax.x : bmin.x,
+            (i & 2) != 0 ? bmax.y : bmin.y,
+            (i & 4) != 0 ? bmax.z : bmin.z
+        );
+
+        vec4 clip = pc.view_proj * vec4(corner, 1.0);
+        if (clip.w <= 0.05) {
+            return false; // intersects or behind near plane -> visible
+        }
+
+        vec3 ndc = clip.xyz / clip.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+
+        min_uv = min(min_uv, uv);
+        max_uv = max(max_uv, uv);
+        z_near = max(z_near, ndc.z);
+    }
+
+    min_uv = clamp(min_uv, vec2(0.0), vec2(1.0));
+    max_uv = clamp(max_uv, vec2(0.0), vec2(1.0));
+
+    vec2 size_texels = (max_uv - min_uv) * vec2(pc.hiz_size);
+    float max_dim = max(max(size_texels.x, size_texels.y), 1.0);
+    float lod = ceil(log2(max_dim));
+
+    vec2 sample_uv = (min_uv + max_uv) * 0.5;
+    float hiz_depth = textureLod(hiz_pyramid, sample_uv, lod).r;
+
+    // Reversed-Z: z_near < hiz_depth means closest point of AABB is further than the farthest occluder
+    return z_near < hiz_depth;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.candidate_count) {
+        return;
+    }
+
+    LodPointers ptrs = PointersBufferRef(pc.pointers_address).ptrs;
+    LodCullCandidate cand = CandidateBufferRef(ptrs.candidate_buffer).candidates[gid];
+
+    uint vis = VisibilityBufferRef(ptrs.visibility_buffer).visibility[cand.lod_id];
+
+    if (pc.cull_phase == 0u) {
+        // Early phase: only test candidates visible last frame
+        if (vis == 0u) {
+            return;
+        }
+    } else {
+        // Late phase: only test candidates NOT drawn in early phase
+        if (vis != 0u) {
+            return;
+        }
+    }
+
+    vec3 bmin = vec3(cand.min_x, cand.min_y, cand.min_z);
+    vec3 bmax = vec3(cand.max_x, cand.max_y, cand.max_z);
+
+    // Frustum test
+    if (!test_frustum(bmin, bmax)) {
+        VisibilityBufferRef(ptrs.visibility_buffer).visibility[cand.lod_id] = 0u;
+        return;
+    }
+
+    // Hi-Z occlusion test
+    if (pc.is_first_frame == 0u && test_hiz_occlusion(bmin, bmax)) {
+        VisibilityBufferRef(ptrs.visibility_buffer).visibility[cand.lod_id] = 0u;
+        return;
+    }
+
+    // Candidate survived both frustum and occlusion tests
+    VisibilityBufferRef(ptrs.visibility_buffer).visibility[cand.lod_id] = 1u;
+
+    if (cand.quad_count > 0u) {
+        uint slot = atomicAdd(CountBufferRef(ptrs.count_buffer).counts[0], 1u);
+        CommandBufferRef(ptrs.cmd_buffer).commands[slot] = VkDrawIndirectCommand(
+            cand.quad_count * 6u,
+            1u,
+            0u,
+            slot
+        );
+        DrawInfoBufferRef(ptrs.draw_buffer).draws[slot] = LodDrawInfo(
+            cand.quad_address,
+            cand.node_x,
+            cand.node_y,
+            cand.node_z,
+            cand.level,
+            cand.quad_count,
+            0u,
+            0u
+        );
+    }
+}

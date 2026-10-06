@@ -8,15 +8,26 @@ struct PackedQuad {
     uint word1;
 };
 
+struct TerrainDrawInfo {
+    uint64_t quad_buffer_address;
+    int chunk_x;
+    int chunk_y;
+    int chunk_z;
+    uint pattern_offset;
+    uint _pad;
+};
+
 layout(buffer_reference, scalar) readonly buffer QuadBuffer {
     PackedQuad quads[];
 };
 
-layout(push_constant) uniform PushConstants {
+layout(buffer_reference, std430) readonly buffer DrawInfoBuffer {
+    TerrainDrawInfo draws[];
+};
+
+layout(push_constant, std430) uniform PushConstants {
     mat4 view_proj;
-    ivec3 chunk_pos;
-    uint pattern_offset;
-    uint64_t quad_buffer_address;
+    uint64_t draw_info_buffer_address;
 } pc;
 
 layout(location = 0) out vec3 v_normal;
@@ -69,7 +80,9 @@ void main() {
     uint vert_sub_idx = gl_VertexIndex % 6;
     uint corner = CORNER_INDICES[vert_sub_idx];
 
-    QuadBuffer quad_buffer = QuadBuffer(pc.quad_buffer_address);
+    TerrainDrawInfo draw_info = DrawInfoBuffer(pc.draw_info_buffer_address).draws[gl_InstanceIndex];
+
+    QuadBuffer quad_buffer = QuadBuffer(draw_info.quad_buffer_address);
     PackedQuad quad = quad_buffer.quads[quad_idx];
 
     // Decode Word 0
@@ -85,7 +98,7 @@ void main() {
     uint pattern_idx = (quad.word1 >> 16) & 0x3FFFu;
 
     // Unpack LightPattern from table
-    PackedQuad pattern = quad_buffer.quads[pc.pattern_offset + pattern_idx];
+    PackedQuad pattern = quad_buffer.quads[draw_info.pattern_offset + pattern_idx];
     uint sky = (pattern.word0 >> (corner * 4u)) & 0xFu;
     uint block = (pattern.word0 >> (16u + corner * 4u)) & 0xFu;
     uint ao = (pattern.word1 >> (corner * 2u)) & 0x3u;
@@ -103,7 +116,8 @@ void main() {
         + U_DIRS[dir] * corner_uv.x
         + V_DIRS[dir] * corner_uv.y;
 
-    vec3 world_pos = vec3(pc.chunk_pos) + local_pos;
+    vec3 chunk_pos = vec3(draw_info.chunk_x, draw_info.chunk_y, draw_info.chunk_z);
+    vec3 world_pos = chunk_pos + local_pos;
 
     gl_Position = pc.view_proj * vec4(world_pos, 1.0);
 

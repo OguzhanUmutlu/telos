@@ -52,6 +52,7 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 
 # Math & primitives
 glam = { version = "0.29", default-features = false, features = ["std"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 
 # Data structures & concurrency
 bitflags = "2.8"

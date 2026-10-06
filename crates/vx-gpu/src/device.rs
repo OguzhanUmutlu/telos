@@ -166,9 +166,13 @@ pub fn create_device(
         .timeline_semaphore(true)
         .buffer_device_address(true)
         .descriptor_indexing(true)
-        .runtime_descriptor_array(true);
+        .runtime_descriptor_array(true)
+        .draw_indirect_count(true)
+        .sampler_filter_minmax(true);
 
-    let features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
+    let features = vk::PhysicalDeviceFeatures::default()
+        .sampler_anisotropy(true)
+        .multi_draw_indirect(true);
 
     let device_create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)

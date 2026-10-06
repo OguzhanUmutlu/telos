@@ -20,6 +20,7 @@ vx-net = { workspace = true }
 vx-protocol = { workspace = true }
 vx-lod = { workspace = true }
 hashbrown = { workspace = true }
+bytemuck = { workspace = true }
 glam = { workspace = true }
 winit = { workspace = true }
 raw-window-handle = { workspace = true }

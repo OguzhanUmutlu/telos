@@ -104,7 +104,7 @@ impl GraphicsPipeline {
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(depth_format.is_some())
             .depth_write_enable(depth_format.is_some())
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
 
@@ -213,7 +213,7 @@ impl GraphicsPipeline {
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(depth_format.is_some())
             .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
 
@@ -331,7 +331,7 @@ impl GraphicsPipeline {
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(depth_format.is_some())
             .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
 
@@ -450,7 +450,7 @@ impl GraphicsPipeline {
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(depth_format.is_some())
             .depth_write_enable(depth_format.is_some())
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
 

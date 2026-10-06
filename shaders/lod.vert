@@ -3,23 +3,30 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
-struct PackedLodQuad {
-    uint word0;
-    uint word1;
+struct LodDrawInfo {
+    uint64_t buffer_address;
+    int node_x;
+    int node_y;
+    int node_z;
+    uint level;
+    uint quad_count;
+    uint _pad0;
+    uint _pad1;
 };
 
 layout(buffer_reference, scalar) readonly buffer LodBuffer {
     uint words[];
 };
 
-layout(push_constant) uniform LodPushConstants {
+layout(buffer_reference, std430) readonly buffer LodDrawInfoBuffer {
+    LodDrawInfo draws[];
+};
+
+layout(push_constant, std430) uniform LodPushConstants {
     mat4 view_proj;
-    ivec3 node_pos;
-    uint level;
-    uint quad_count;
-    uint64_t buffer_address;
     vec3 camera_pos;
     float max_distance;
+    uint64_t draw_info_buffer_address;
 } pc;
 
 layout(location = 0) out vec3 v_normal;
@@ -70,7 +77,9 @@ void main() {
     uint vert_sub_idx = gl_VertexIndex % 6;
     uint corner = CORNER_INDICES[vert_sub_idx];
 
-    LodBuffer lod_buffer = LodBuffer(pc.buffer_address);
+    LodDrawInfo draw_info = LodDrawInfoBuffer(pc.draw_info_buffer_address).draws[gl_InstanceIndex];
+
+    LodBuffer lod_buffer = LodBuffer(draw_info.buffer_address);
     uint word0 = lod_buffer.words[quad_idx * 2u];
     uint word1 = lod_buffer.words[quad_idx * 2u + 1u];
 
@@ -89,7 +98,7 @@ void main() {
     uint block = (word1 >> 18u) & 0xFu;
 
     // Lookup color in trailing palette
-    uint palette_offset = pc.quad_count * 2u;
+    uint palette_offset = draw_info.quad_count * 2u;
     uint rgba = lod_buffer.words[palette_offset + color_idx];
     vec4 base_color = unpackUnorm4x8(rgba);
 
@@ -102,13 +111,14 @@ void main() {
 
     vec2 corner_uv = uv_offsets[corner];
 
-    float voxel_size = float(1u << pc.level);
+    float voxel_size = float(1u << draw_info.level);
     vec3 base_pos = (vec3(float(x), float(y), float(z)) + PLANE_OFFSETS[dir]) * voxel_size;
     vec3 local_pos = base_pos + (U_DIRS[dir] * corner_uv.x + V_DIRS[dir] * corner_uv.y) * voxel_size;
 
     // Node origin in world coordinates: node_pos << (5 + level)
-    int shift = 5 + int(pc.level);
-    vec3 node_origin = vec3(pc.node_pos << shift);
+    int shift = 5 + int(draw_info.level);
+    ivec3 node_pos = ivec3(draw_info.node_x, draw_info.node_y, draw_info.node_z);
+    vec3 node_origin = vec3(node_pos << shift);
     vec3 world_pos = local_pos + node_origin;
 
     gl_Position = pc.view_proj * vec4(world_pos, 1.0);

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use camera::{Camera, FlyController, Frustum};
+use camera::{Camera, FlyController};
 use clap::Parser;
 use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
@@ -20,8 +20,8 @@ use vx_core::{
     raycast_voxels,
 };
 use vx_gpu::{
-    DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline, ShaderModule,
-    TextureMipRegion, vk,
+    ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline,
+    HiZPyramid, MemoryLocation, ShaderModule, TextureMipRegion, ash, vk,
 };
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
@@ -72,46 +72,649 @@ struct Args {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-struct ChunkPushConstants {
-    view_proj: glam::Mat4,
-    chunk_pos: [i32; 3],
-    pattern_offset: u32,
-    quad_buffer_address: u64,
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ChunkCullCandidate {
+    min_x: f32,
+    min_y: f32,
+    min_z: f32,
+    active_mask: u32,
+
+    max_x: f32,
+    max_y: f32,
+    max_z: f32,
+    chunk_id: u32,
+
+    chunk_x: i32,
+    chunk_y: i32,
+    chunk_z: i32,
+    opaque_pattern_offset: u32,
+
+    opaque_quad_address: u64,
+    opaque_quad_count: u32,
+    t1_pattern_offset: u32,
+
+    t1_quad_address: u64,
+    t1_quad_count: u32,
+    cutout_pattern_offset: u32,
+
+    cutout_quad_address: u64,
+    cutout_quad_count: u32,
+    translucent_pattern_offset: u32,
+
+    translucent_quad_address: u64,
+    translucent_quad_count: u32,
+    _pad: u32,
 }
+const _: () = assert!(size_of::<ChunkCullCandidate>() == 112);
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-struct LodPushConstants {
-    view_proj: glam::Mat4,
-    node_pos: [i32; 3],
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LodCullCandidate {
+    min_x: f32,
+    min_y: f32,
+    min_z: f32,
+    lod_id: u32,
+
+    max_x: f32,
+    max_y: f32,
+    max_z: f32,
     level: u32,
+
+    node_x: i32,
+    node_y: i32,
+    node_z: i32,
     quad_count: u32,
-    buffer_address: u64,
-    camera_pos: Vec3,
-    max_distance: f32,
+
+    quad_address: u64,
+    _pad0: u32,
+    _pad1: u32,
 }
+const _: () = assert!(size_of::<LodCullCandidate>() == 64);
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CullPointers {
+    candidate_buffer: u64,
+    visibility_buffer: u64,
+    count_buffer: u64,
+
+    opaque_cmd: u64,
+    opaque_draw: u64,
+
+    t1_cmd: u64,
+    t1_draw: u64,
+
+    cutout_cmd: u64,
+    cutout_draw: u64,
+
+    translucent_cmd: u64,
+    translucent_draw: u64,
+}
+const _: () = assert!(size_of::<CullPointers>() == 88);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[allow(clippy::struct_field_names)]
+struct LodPointers {
+    candidate_buffer: u64,
+    visibility_buffer: u64,
+    count_buffer: u64,
+    cmd_buffer: u64,
+    draw_buffer: u64,
+}
+const _: () = assert!(size_of::<LodPointers>() == 40);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CullPushConstants {
+    view_proj: [f32; 16],
+    camera_pos: [f32; 3],
+    cull_phase: u32,
+    hiz_width: u32,
+    hiz_height: u32,
+    candidate_count: u32,
+    is_first_frame: u32,
+    pointers_address: u64,
+}
+const _: () = assert!(size_of::<CullPushConstants>() == 104);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HiZPushConstants {
+    in_extent: [u32; 2],
+    out_extent: [u32; 2],
+    is_mip0: u32,
+    _pad: u32,
+}
+const _: () = assert!(size_of::<HiZPushConstants>() == 24);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TerrainMdiPushConstants {
+    view_proj: [f32; 16],
+    draw_info_buffer_address: u64,
+}
+const _: () = assert!(size_of::<TerrainMdiPushConstants>() == 72);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TranslucentMdiPushConstants {
+    view_proj: [f32; 16],
+    draw_info_buffer_address: u64,
+    frame_tick: u32,
+    water_base_layer: u32,
+    water_frame_count: u32,
+    _pad: u32,
+}
+const _: () = assert!(size_of::<TranslucentMdiPushConstants>() == 88);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LodMdiPushConstants {
+    view_proj: [f32; 16],
+    camera_pos: [f32; 3],
+    max_distance: f32,
+    draw_info_buffer_address: u64,
+}
+const _: () = assert!(size_of::<LodMdiPushConstants>() == 88);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct HighlightPushConstants {
-    view_proj: glam::Mat4,
+    view_proj: [f32; 16],
     min_bound: [f32; 4],
     max_bound: [f32; 4],
     color: [f32; 4],
 }
+const _: () = assert!(size_of::<HighlightPushConstants>() == 112);
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct TranslucentPushConstants {
-    view_proj: glam::Mat4,
-    chunk_pos: [i32; 3],
-    pattern_offset: u32,
-    quad_buffer_address: u64,
-    frame_tick: u32,
-    water_base_layer: u32,
-    water_frame_count: u32,
-    _pad: [u32; 3],
+const MAX_CHUNK_CANDIDATES: usize = 4096;
+const MAX_LOD_CANDIDATES: usize = 4096;
+
+struct SlotAllocator<K: std::hash::Hash + Eq> {
+    free_slots: Vec<u32>,
+    allocated: HashMap<K, u32>,
+    next_fresh: u32,
+    capacity: u32,
+}
+
+impl<K: std::hash::Hash + Eq + Copy> SlotAllocator<K> {
+    fn new(capacity: u32) -> Self {
+        Self {
+            free_slots: Vec::new(),
+            allocated: HashMap::new(),
+            next_fresh: 0,
+            capacity,
+        }
+    }
+
+    fn get_or_allocate(&mut self, key: K) -> Option<u32> {
+        if let Some(&id) = self.allocated.get(&key) {
+            return Some(id);
+        }
+        let id = if let Some(id) = self.free_slots.pop() {
+            id
+        } else if self.next_fresh < self.capacity {
+            let id = self.next_fresh;
+            self.next_fresh += 1;
+            id
+        } else {
+            return None;
+        };
+        self.allocated.insert(key, id);
+        Some(id)
+    }
+
+    fn release(&mut self, key: &K) -> Option<u32> {
+        if let Some(id) = self.allocated.remove(key) {
+            self.free_slots.push(id);
+            Some(id)
+        } else {
+            None
+        }
+    }
+}
+
+struct MdiBuffers {
+    chunk_candidates: GpuBuffer,
+    chunk_visibility: GpuBuffer,
+    chunk_counts_early: GpuBuffer,
+    chunk_counts_late: GpuBuffer,
+
+    opaque_cmd_early: GpuBuffer,
+    opaque_draw_early: GpuBuffer,
+    t1_cmd_early: GpuBuffer,
+    t1_draw_early: GpuBuffer,
+    cutout_cmd_early: GpuBuffer,
+    cutout_draw_early: GpuBuffer,
+
+    opaque_cmd_late: GpuBuffer,
+    opaque_draw_late: GpuBuffer,
+    t1_cmd_late: GpuBuffer,
+    t1_draw_late: GpuBuffer,
+    cutout_cmd_late: GpuBuffer,
+    cutout_draw_late: GpuBuffer,
+    translucent_cmd_late: GpuBuffer,
+    translucent_draw_late: GpuBuffer,
+
+    cull_ptrs_early: GpuBuffer,
+    cull_ptrs_late: GpuBuffer,
+
+    lod_candidates: GpuBuffer,
+    lod_visibility: GpuBuffer,
+    lod_counts_early: GpuBuffer,
+    lod_counts_late: GpuBuffer,
+
+    lod_cmd_early: GpuBuffer,
+    lod_draw_early: GpuBuffer,
+    lod_cmd_late: GpuBuffer,
+    lod_draw_late: GpuBuffer,
+
+    lod_ptrs_early: GpuBuffer,
+    lod_ptrs_late: GpuBuffer,
+}
+
+impl MdiBuffers {
+    #[allow(clippy::too_many_lines)]
+    fn new(ctx: &GpuContext) -> Result<Self, vx_gpu::GpuError> {
+        let device = ctx.device().raw();
+        let allocator = ctx.allocator();
+
+        let chunk_cand_size =
+            (MAX_CHUNK_CANDIDATES * size_of::<ChunkCullCandidate>()) as vk::DeviceSize;
+        let chunk_candidates = GpuBuffer::new(
+            device,
+            allocator,
+            "chunk_candidates",
+            chunk_cand_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+
+        let vis_size = (MAX_CHUNK_CANDIDATES * size_of::<u32>()) as vk::DeviceSize;
+        let chunk_visibility = GpuBuffer::new(
+            device,
+            allocator,
+            "chunk_visibility",
+            vis_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let count_size = (4 * size_of::<u32>()) as vk::DeviceSize;
+        let count_usage = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::INDIRECT_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::TRANSFER_DST;
+
+        let chunk_counts_early = GpuBuffer::new(
+            device,
+            allocator,
+            "chunk_counts_early",
+            count_size,
+            count_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let chunk_counts_late = GpuBuffer::new(
+            device,
+            allocator,
+            "chunk_counts_late",
+            count_size,
+            count_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let cmd_size = (MAX_CHUNK_CANDIDATES * 16) as vk::DeviceSize;
+        let cmd_usage = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::INDIRECT_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+        let draw_size = (MAX_CHUNK_CANDIDATES * 32) as vk::DeviceSize;
+        let draw_usage =
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+        let opaque_cmd_early = GpuBuffer::new(
+            device,
+            allocator,
+            "opaque_cmd_early",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let opaque_draw_early = GpuBuffer::new(
+            device,
+            allocator,
+            "opaque_draw_early",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let t1_cmd_early = GpuBuffer::new(
+            device,
+            allocator,
+            "t1_cmd_early",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let t1_draw_early = GpuBuffer::new(
+            device,
+            allocator,
+            "t1_draw_early",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let cutout_cmd_early = GpuBuffer::new(
+            device,
+            allocator,
+            "cutout_cmd_early",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let cutout_draw_early = GpuBuffer::new(
+            device,
+            allocator,
+            "cutout_draw_early",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let opaque_cmd_late = GpuBuffer::new(
+            device,
+            allocator,
+            "opaque_cmd_late",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let opaque_draw_late = GpuBuffer::new(
+            device,
+            allocator,
+            "opaque_draw_late",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let t1_cmd_late = GpuBuffer::new(
+            device,
+            allocator,
+            "t1_cmd_late",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let t1_draw_late = GpuBuffer::new(
+            device,
+            allocator,
+            "t1_draw_late",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let cutout_cmd_late = GpuBuffer::new(
+            device,
+            allocator,
+            "cutout_cmd_late",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let cutout_draw_late = GpuBuffer::new(
+            device,
+            allocator,
+            "cutout_draw_late",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let translucent_cmd_late = GpuBuffer::new(
+            device,
+            allocator,
+            "translucent_cmd_late",
+            cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let translucent_draw_late = GpuBuffer::new(
+            device,
+            allocator,
+            "translucent_draw_late",
+            draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let ptrs_size = size_of::<CullPointers>() as vk::DeviceSize;
+        let mut cull_ptrs_early = GpuBuffer::new(
+            device,
+            allocator,
+            "cull_ptrs_early",
+            ptrs_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+        let mut cull_ptrs_late = GpuBuffer::new(
+            device,
+            allocator,
+            "cull_ptrs_late",
+            ptrs_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+
+        let early_ptrs = CullPointers {
+            candidate_buffer: chunk_candidates.device_address(),
+            visibility_buffer: chunk_visibility.device_address(),
+            count_buffer: chunk_counts_early.device_address(),
+            opaque_cmd: opaque_cmd_early.device_address(),
+            opaque_draw: opaque_draw_early.device_address(),
+            t1_cmd: t1_cmd_early.device_address(),
+            t1_draw: t1_draw_early.device_address(),
+            cutout_cmd: cutout_cmd_early.device_address(),
+            cutout_draw: cutout_draw_early.device_address(),
+            translucent_cmd: 0,
+            translucent_draw: 0,
+        };
+        cull_ptrs_early.write_bytes(bytemuck::bytes_of(&early_ptrs))?;
+
+        let late_ptrs = CullPointers {
+            candidate_buffer: chunk_candidates.device_address(),
+            visibility_buffer: chunk_visibility.device_address(),
+            count_buffer: chunk_counts_late.device_address(),
+            opaque_cmd: opaque_cmd_late.device_address(),
+            opaque_draw: opaque_draw_late.device_address(),
+            t1_cmd: t1_cmd_late.device_address(),
+            t1_draw: t1_draw_late.device_address(),
+            cutout_cmd: cutout_cmd_late.device_address(),
+            cutout_draw: cutout_draw_late.device_address(),
+            translucent_cmd: translucent_cmd_late.device_address(),
+            translucent_draw: translucent_draw_late.device_address(),
+        };
+        cull_ptrs_late.write_bytes(bytemuck::bytes_of(&late_ptrs))?;
+
+        // LOD buffers
+        let lod_cand_size = (MAX_LOD_CANDIDATES * size_of::<LodCullCandidate>()) as vk::DeviceSize;
+        let lod_candidates = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_candidates",
+            lod_cand_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+
+        let lod_vis_size = (MAX_LOD_CANDIDATES * size_of::<u32>()) as vk::DeviceSize;
+        let lod_visibility = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_visibility",
+            lod_vis_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let lod_counts_early = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_counts_early",
+            count_size,
+            count_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let lod_counts_late = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_counts_late",
+            count_size,
+            count_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let lod_cmd_size = (MAX_LOD_CANDIDATES * 16) as vk::DeviceSize;
+        let lod_draw_size = (MAX_LOD_CANDIDATES * 32) as vk::DeviceSize;
+
+        let lod_cmd_early = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_cmd_early",
+            lod_cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let lod_draw_early = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_draw_early",
+            lod_draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let lod_cmd_late = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_cmd_late",
+            lod_cmd_size,
+            cmd_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+        let lod_draw_late = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_draw_late",
+            lod_draw_size,
+            draw_usage,
+            MemoryLocation::GpuOnly,
+        )?;
+
+        let lod_ptrs_size = size_of::<LodPointers>() as vk::DeviceSize;
+        let mut lod_ptrs_early = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_ptrs_early",
+            lod_ptrs_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+        let mut lod_ptrs_late = GpuBuffer::new(
+            device,
+            allocator,
+            "lod_ptrs_late",
+            lod_ptrs_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        )?;
+
+        let early_l_ptrs = LodPointers {
+            candidate_buffer: lod_candidates.device_address(),
+            visibility_buffer: lod_visibility.device_address(),
+            count_buffer: lod_counts_early.device_address(),
+            cmd_buffer: lod_cmd_early.device_address(),
+            draw_buffer: lod_draw_early.device_address(),
+        };
+        lod_ptrs_early.write_bytes(bytemuck::bytes_of(&early_l_ptrs))?;
+
+        let late_l_ptrs = LodPointers {
+            candidate_buffer: lod_candidates.device_address(),
+            visibility_buffer: lod_visibility.device_address(),
+            count_buffer: lod_counts_late.device_address(),
+            cmd_buffer: lod_cmd_late.device_address(),
+            draw_buffer: lod_draw_late.device_address(),
+        };
+        lod_ptrs_late.write_bytes(bytemuck::bytes_of(&late_l_ptrs))?;
+
+        Ok(Self {
+            chunk_candidates,
+            chunk_visibility,
+            chunk_counts_early,
+            chunk_counts_late,
+            opaque_cmd_early,
+            opaque_draw_early,
+            t1_cmd_early,
+            t1_draw_early,
+            cutout_cmd_early,
+            cutout_draw_early,
+            opaque_cmd_late,
+            opaque_draw_late,
+            t1_cmd_late,
+            t1_draw_late,
+            cutout_cmd_late,
+            cutout_draw_late,
+            translucent_cmd_late,
+            translucent_draw_late,
+            cull_ptrs_early,
+            cull_ptrs_late,
+            lod_candidates,
+            lod_visibility,
+            lod_counts_early,
+            lod_counts_late,
+            lod_cmd_early,
+            lod_draw_early,
+            lod_cmd_late,
+            lod_draw_late,
+            lod_ptrs_early,
+            lod_ptrs_late,
+        })
+    }
+
+    fn destroy(&mut self, device: &ash::Device, allocator: &vx_gpu::GpuAllocator) {
+        self.chunk_candidates.destroy(device, allocator);
+        self.chunk_visibility.destroy(device, allocator);
+        self.chunk_counts_early.destroy(device, allocator);
+        self.chunk_counts_late.destroy(device, allocator);
+        self.opaque_cmd_early.destroy(device, allocator);
+        self.opaque_draw_early.destroy(device, allocator);
+        self.t1_cmd_early.destroy(device, allocator);
+        self.t1_draw_early.destroy(device, allocator);
+        self.cutout_cmd_early.destroy(device, allocator);
+        self.cutout_draw_early.destroy(device, allocator);
+        self.opaque_cmd_late.destroy(device, allocator);
+        self.opaque_draw_late.destroy(device, allocator);
+        self.t1_cmd_late.destroy(device, allocator);
+        self.t1_draw_late.destroy(device, allocator);
+        self.cutout_cmd_late.destroy(device, allocator);
+        self.cutout_draw_late.destroy(device, allocator);
+        self.translucent_cmd_late.destroy(device, allocator);
+        self.translucent_draw_late.destroy(device, allocator);
+        self.cull_ptrs_early.destroy(device, allocator);
+        self.cull_ptrs_late.destroy(device, allocator);
+        self.lod_candidates.destroy(device, allocator);
+        self.lod_visibility.destroy(device, allocator);
+        self.lod_counts_early.destroy(device, allocator);
+        self.lod_counts_late.destroy(device, allocator);
+        self.lod_cmd_early.destroy(device, allocator);
+        self.lod_draw_early.destroy(device, allocator);
+        self.lod_cmd_late.destroy(device, allocator);
+        self.lod_draw_late.destroy(device, allocator);
+        self.lod_ptrs_early.destroy(device, allocator);
+        self.lod_ptrs_late.destroy(device, allocator);
+    }
 }
 
 const HOTBAR_ITEMS: [(&str, BlockStateId); 9] = [
@@ -284,9 +887,30 @@ struct App {
     frame_counter: u32,
     visible_chunks_last: usize,
     visible_lod_nodes_last: usize,
+
+    // MDI & Compute Culling
+    mdi_buffers: Option<MdiBuffers>,
+    chunk_slots: SlotAllocator<ChunkPos>,
+    lod_slots: SlotAllocator<vx_lod::coords::LodNodeKey>,
+
+    hiz_pyramid: Option<HiZPyramid>,
+    point_clamp_sampler: vk::Sampler,
+    cull_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    cull_descriptor_set: Option<vk::DescriptorSet>,
+    hiz_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    hiz_descriptor_pool: Option<vk::DescriptorPool>,
+    hiz_descriptor_sets: Vec<vk::DescriptorSet>,
+
+    hiz_pipeline: Option<ComputePipeline>,
+    hiz_comp_shader: Option<ShaderModule>,
+    cull_chunks_pipeline: Option<ComputePipeline>,
+    cull_chunks_comp_shader: Option<ShaderModule>,
+    cull_lod_pipeline: Option<ComputePipeline>,
+    cull_lod_comp_shader: Option<ShaderModule>,
 }
 
 impl App {
+    #[allow(clippy::too_many_lines)]
     fn new(validation: bool, seed: u64, view_distance: u32, world_dir: PathBuf) -> Self {
         let spawn_pos = Vec3::new(128.0, 45.0, 160.0);
         let mut camera = Camera::new(spawn_pos);
@@ -401,6 +1025,25 @@ impl App {
             frame_counter: 0,
             visible_chunks_last: 0,
             visible_lod_nodes_last: 0,
+
+            mdi_buffers: None,
+            chunk_slots: SlotAllocator::new(MAX_CHUNK_CANDIDATES as u32),
+            lod_slots: SlotAllocator::new(MAX_LOD_CANDIDATES as u32),
+
+            hiz_pyramid: None,
+            point_clamp_sampler: vk::Sampler::null(),
+            cull_descriptor_set_layout: None,
+            cull_descriptor_set: None,
+            hiz_descriptor_set_layout: None,
+            hiz_descriptor_pool: None,
+            hiz_descriptor_sets: Vec::new(),
+
+            hiz_pipeline: None,
+            hiz_comp_shader: None,
+            cull_chunks_pipeline: None,
+            cull_chunks_comp_shader: None,
+            cull_lod_pipeline: None,
+            cull_lod_comp_shader: None,
         }
     }
 
@@ -537,6 +1180,7 @@ impl App {
                     S2cMessage::ChunkUnload(unload) => {
                         let pos = ChunkPos::new(unload.chunk_x, unload.chunk_y, unload.chunk_z);
                         self.chunks.remove(&pos);
+                        self.chunk_slots.release(&pos);
                         if let (Some(mesh), Some(ctx)) =
                             (self.chunk_meshes.remove(&pos), &self.gpu_context)
                         {
@@ -549,13 +1193,16 @@ impl App {
                             lod.level, lod.node_x, lod.node_y, lod.node_z,
                         );
                         let words = lod.payload.to_words();
-                        if !words.is_empty() {
+                        if words.is_empty() {
+                            self.lod_slots.release(&key);
+                            if let (Some(mut mesh), Some(ctx)) =
+                                (self.lod_meshes.remove(&key), &self.gpu_context)
+                            {
+                                mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
+                            }
+                        } else {
                             self.pending_lod_uploads
                                 .insert(key, (lod.quad_count, words));
-                        } else if let (Some(mut mesh), Some(ctx)) =
-                            (self.lod_meshes.remove(&key), &self.gpu_context)
-                        {
-                            mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
                         }
                     }
                     S2cMessage::LodNodeUnload(unload) => {
@@ -566,6 +1213,7 @@ impl App {
                             unload.node_z,
                         );
                         self.pending_lod_uploads.remove(&key);
+                        self.lod_slots.release(&key);
                         if let (Some(mut mesh), Some(ctx)) =
                             (self.lod_meshes.remove(&key), &self.gpu_context)
                         {
@@ -716,6 +1364,7 @@ impl App {
 
             if opaque.is_none() && t1_opaque.is_none() && cutout.is_none() && translucent.is_none()
             {
+                self.chunk_slots.release(&pos);
                 if let Some(old_mesh) = self.chunk_meshes.remove(&pos) {
                     old_mesh.destroy(gpu_context);
                 }
@@ -759,6 +1408,7 @@ impl App {
         let pending: Vec<_> = self.pending_lod_uploads.drain().collect();
         for (key, (quad_count, words)) in pending {
             if quad_count == 0 || words.is_empty() {
+                self.lod_slots.release(&key);
                 if let Some(mut old_mesh) = self.lod_meshes.remove(&key) {
                     old_mesh.buffer.destroy(device, allocator);
                 }
@@ -800,6 +1450,220 @@ impl App {
         }
     }
 
+    fn setup_hiz_and_culling(&mut self) -> Result<()> {
+        let Some(gpu_context) = &self.gpu_context else {
+            return Ok(());
+        };
+        let device = gpu_context.device().raw();
+        let extent = gpu_context.extent();
+
+        // 1. Point clamp sampler for downsampling depth buffer and mips
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .min_lod(0.0)
+            .max_lod(16.0);
+        let point_clamp_sampler = unsafe { device.create_sampler(&sampler_info, None)? };
+        self.point_clamp_sampler = point_clamp_sampler;
+
+        // 2. Cull descriptor set layout (binding 0: combined image sampler for Hi-Z pyramid)
+        let cull_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE);
+        let cull_bindings = [cull_binding];
+        let cull_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&cull_bindings);
+        let cull_layout = unsafe { device.create_descriptor_set_layout(&cull_layout_info, None)? };
+        self.cull_descriptor_set_layout = Some(cull_layout);
+
+        // 3. Hi-Z descriptor set layout (binding 0: sampler2D in_depth, binding 1: image2D out_mip)
+        let hiz_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        let hiz_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&hiz_bindings);
+        let hiz_layout = unsafe { device.create_descriptor_set_layout(&hiz_layout_info, None)? };
+        self.hiz_descriptor_set_layout = Some(hiz_layout);
+
+        // 4. Descriptor pool for Hi-Z and culling
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(48),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(48),
+        ];
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(48)
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .pool_sizes(&pool_sizes);
+        let hiz_pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
+        self.hiz_descriptor_pool = Some(hiz_pool);
+
+        // 5. Compute pipelines
+        let hiz_spv = include_bytes!(concat!(env!("OUT_DIR"), "/hiz_generate.comp.spv"));
+        let hiz_module = ShaderModule::from_spv(device, hiz_spv)?;
+        let hiz_pc_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(size_of::<HiZPushConstants>() as u32);
+        let hiz_pipeline =
+            ComputePipeline::new(device, hiz_module.raw(), &[hiz_layout], &[hiz_pc_range])?;
+        self.hiz_comp_shader = Some(hiz_module);
+        self.hiz_pipeline = Some(hiz_pipeline);
+
+        let cull_spv = include_bytes!(concat!(env!("OUT_DIR"), "/cull_chunks.comp.spv"));
+        let cull_module = ShaderModule::from_spv(device, cull_spv)?;
+        let cull_pc_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(size_of::<CullPushConstants>() as u32);
+        let cull_pipeline =
+            ComputePipeline::new(device, cull_module.raw(), &[cull_layout], &[cull_pc_range])?;
+        self.cull_chunks_comp_shader = Some(cull_module);
+        self.cull_chunks_pipeline = Some(cull_pipeline);
+
+        let cull_lod_spv = include_bytes!(concat!(env!("OUT_DIR"), "/cull_lod.comp.spv"));
+        let cull_lod_module = ShaderModule::from_spv(device, cull_lod_spv)?;
+        let cull_lod_pipeline = ComputePipeline::new(
+            device,
+            cull_lod_module.raw(),
+            &[cull_layout],
+            &[cull_pc_range],
+        )?;
+        self.cull_lod_comp_shader = Some(cull_lod_module);
+        self.cull_lod_pipeline = Some(cull_lod_pipeline);
+
+        // 6. Hi-Z Pyramid allocation & descriptor sets
+        self.recreate_hiz_resources(extent)?;
+
+        Ok(())
+    }
+
+    fn recreate_hiz_resources(&mut self, extent: vk::Extent2D) -> Result<()> {
+        let Some(gpu_context) = &self.gpu_context else {
+            return Ok(());
+        };
+        let Some(depth_buffer) = &self.depth_buffer else {
+            return Ok(());
+        };
+        let Some(hiz_pool) = self.hiz_descriptor_pool else {
+            return Ok(());
+        };
+        let Some(cull_layout) = self.cull_descriptor_set_layout else {
+            return Ok(());
+        };
+        let Some(hiz_layout) = self.hiz_descriptor_set_layout else {
+            return Ok(());
+        };
+
+        let device = gpu_context.device().raw();
+        let allocator = gpu_context.allocator();
+
+        // Destroy previous pyramid if any
+        if let Some(mut old_hiz) = self.hiz_pyramid.take() {
+            old_hiz.destroy(device, allocator);
+        }
+
+        // Reset descriptor pool
+        unsafe {
+            device.reset_descriptor_pool(hiz_pool, vk::DescriptorPoolResetFlags::empty())?;
+        }
+        self.hiz_descriptor_sets.clear();
+
+        // Create new Hi-Z pyramid
+        let hiz_pyramid = HiZPyramid::new(device, allocator, extent)?;
+        let mip_levels = hiz_pyramid.mip_levels();
+
+        // Allocate cull descriptor set
+        let cull_layouts = [cull_layout];
+        let cull_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(hiz_pool)
+            .set_layouts(&cull_layouts);
+        let cull_set = unsafe { device.allocate_descriptor_sets(&cull_alloc_info)?[0] };
+
+        let cull_image_info = vk::DescriptorImageInfo::default()
+            .sampler(hiz_pyramid.sampler())
+            .image_view(hiz_pyramid.full_view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let cull_image_infos = [cull_image_info];
+        let cull_write = vk::WriteDescriptorSet::default()
+            .dst_set(cull_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&cull_image_infos);
+        let cull_writes = [cull_write];
+        unsafe {
+            device.update_descriptor_sets(&cull_writes, &[]);
+        }
+        self.cull_descriptor_set = Some(cull_set);
+
+        // Allocate Hi-Z descriptor sets for each mip level
+        let hiz_layouts = vec![hiz_layout; mip_levels as usize];
+        let hiz_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(hiz_pool)
+            .set_layouts(&hiz_layouts);
+        let hiz_sets = unsafe { device.allocate_descriptor_sets(&hiz_alloc_info)? };
+
+        for (k, &set) in hiz_sets.iter().enumerate().take(mip_levels as usize) {
+            let in_image_info = if k == 0 {
+                vk::DescriptorImageInfo::default()
+                    .sampler(self.point_clamp_sampler)
+                    .image_view(depth_buffer.view())
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            } else {
+                vk::DescriptorImageInfo::default()
+                    .sampler(self.point_clamp_sampler)
+                    .image_view(hiz_pyramid.mip_view(k - 1))
+                    .image_layout(vk::ImageLayout::GENERAL)
+            };
+
+            let out_image_info = vk::DescriptorImageInfo::default()
+                .image_view(hiz_pyramid.mip_view(k))
+                .image_layout(vk::ImageLayout::GENERAL);
+
+            let in_image_infos = [in_image_info];
+            let out_image_infos = [out_image_info];
+
+            let writes = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&in_image_infos),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(&out_image_infos),
+            ];
+
+            unsafe {
+                device.update_descriptor_sets(&writes, &[]);
+            }
+        }
+
+        self.hiz_descriptor_sets = hiz_sets;
+        self.hiz_pyramid = Some(hiz_pyramid);
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn render(&mut self) {
         self.poll_network();
@@ -839,7 +1703,7 @@ impl App {
             self.last_fps_time = now;
             info!(
                 fps,
-                visible = self.visible_chunks_last,
+                visible_chunks = self.visible_chunks_last,
                 visible_lods = self.visible_lod_nodes_last,
                 loaded_chunks = self.chunks.len(),
                 lod_meshes = self.lod_meshes.len(),
@@ -850,14 +1714,163 @@ impl App {
             );
         }
 
-        let (Some(gpu_context), Some(pipeline), Some(depth_buffer), Some(descriptor_set)) = (
+        let (
+            Some(gpu_context),
+            Some(pipeline),
+            Some(depth_buffer),
+            Some(descriptor_set),
+            Some(mdi),
+            Some(hiz_pyramid),
+            Some(cull_desc_set),
+            Some(cull_chunks_pipe),
+            Some(cull_lod_pipe),
+            Some(hiz_pipe),
+        ) = (
             &mut self.gpu_context,
             &self.pipeline,
             &mut self.depth_buffer,
             self.descriptor_set,
-        ) else {
+            &mut self.mdi_buffers,
+            &self.hiz_pyramid,
+            self.cull_descriptor_set,
+            &self.cull_chunks_pipeline,
+            &self.cull_lod_pipeline,
+            &self.hiz_pipeline,
+        )
+        else {
             return;
         };
+
+        // 1. Gather Chunk Cull Candidates
+        let mut chunk_candidates =
+            Vec::with_capacity(self.chunk_meshes.len().min(MAX_CHUNK_CANDIDATES));
+        for (&pos, mesh) in &self.chunk_meshes {
+            if chunk_candidates.len() >= MAX_CHUNK_CANDIDATES {
+                break;
+            }
+            let Some(chunk_id) = self.chunk_slots.get_or_allocate(pos) else {
+                continue;
+            };
+
+            let mut active_mask = 0u32;
+            let mut opaque_quad_address = 0u64;
+            let mut opaque_quad_count = 0u32;
+            let mut opaque_pattern_offset = 0u32;
+            if let Some(l) = &mesh.opaque {
+                active_mask |= 1;
+                opaque_quad_address = l.buffer.device_address();
+                opaque_quad_count = l.quad_count;
+                opaque_pattern_offset = l.pattern_offset;
+            }
+
+            let mut t1_quad_address = 0u64;
+            let mut t1_quad_count = 0u32;
+            let mut t1_pattern_offset = 0u32;
+            if let Some(l) = &mesh.t1_opaque {
+                active_mask |= 2;
+                t1_quad_address = l.buffer.device_address();
+                t1_quad_count = l.quad_count;
+                t1_pattern_offset = l.pattern_offset;
+            }
+
+            let mut cutout_quad_address = 0u64;
+            let mut cutout_quad_count = 0u32;
+            let mut cutout_pattern_offset = 0u32;
+            if let Some(l) = &mesh.cutout {
+                active_mask |= 4;
+                cutout_quad_address = l.buffer.device_address();
+                cutout_quad_count = l.quad_count;
+                cutout_pattern_offset = l.pattern_offset;
+            }
+
+            let mut translucent_quad_address = 0u64;
+            let mut translucent_quad_count = 0u32;
+            let mut translucent_pattern_offset = 0u32;
+            if let Some(l) = &mesh.translucent {
+                active_mask |= 8;
+                translucent_quad_address = l.buffer.device_address();
+                translucent_quad_count = l.quad_count;
+                translucent_pattern_offset = l.pattern_offset;
+            }
+
+            if active_mask == 0 {
+                continue;
+            }
+
+            chunk_candidates.push(ChunkCullCandidate {
+                min_x: mesh.min_aabb.x,
+                min_y: mesh.min_aabb.y,
+                min_z: mesh.min_aabb.z,
+                active_mask,
+                max_x: mesh.max_aabb.x,
+                max_y: mesh.max_aabb.y,
+                max_z: mesh.max_aabb.z,
+                chunk_id,
+                chunk_x: mesh.pos[0],
+                chunk_y: mesh.pos[1],
+                chunk_z: mesh.pos[2],
+                opaque_pattern_offset,
+                opaque_quad_address,
+                opaque_quad_count,
+                t1_pattern_offset,
+                t1_quad_address,
+                t1_quad_count,
+                cutout_pattern_offset,
+                cutout_quad_address,
+                cutout_quad_count,
+                translucent_pattern_offset,
+                translucent_quad_address,
+                translucent_quad_count,
+                _pad: 0,
+            });
+        }
+
+        // 2. Gather LOD Cull Candidates
+        let mut lod_candidates = Vec::with_capacity(self.lod_meshes.len().min(MAX_LOD_CANDIDATES));
+        for (&key, mesh) in &self.lod_meshes {
+            if lod_candidates.len() >= MAX_LOD_CANDIDATES {
+                break;
+            }
+            if mesh.quad_count == 0 {
+                continue;
+            }
+            let Some(lod_id) = self.lod_slots.get_or_allocate(key) else {
+                continue;
+            };
+
+            lod_candidates.push(LodCullCandidate {
+                min_x: mesh.min_aabb.x,
+                min_y: mesh.min_aabb.y,
+                min_z: mesh.min_aabb.z,
+                lod_id,
+                max_x: mesh.max_aabb.x,
+                max_y: mesh.max_aabb.y,
+                max_z: mesh.max_aabb.z,
+                level: u32::from(mesh.level),
+                node_x: mesh.node_pos[0],
+                node_y: mesh.node_pos[1],
+                node_z: mesh.node_pos[2],
+                quad_count: mesh.quad_count,
+                quad_address: mesh.buffer.device_address(),
+                _pad0: 0,
+                _pad1: 0,
+            });
+        }
+
+        // 3. Upload Candidates to Host-Visible GPU Buffers
+        if !chunk_candidates.is_empty() {
+            let _ = mdi
+                .chunk_candidates
+                .write_bytes(bytemuck::cast_slice(&chunk_candidates));
+        }
+        if !lod_candidates.is_empty() {
+            let _ = mdi
+                .lod_candidates
+                .write_bytes(bytemuck::cast_slice(&lod_candidates));
+        }
+
+        self.visible_chunks_last = chunk_candidates.len();
+        self.visible_lod_nodes_last = lod_candidates.len();
 
         let frame_data = match gpu_context.begin_frame() {
             Ok(Some(data)) => data,
@@ -874,15 +1887,150 @@ impl App {
 
         #[allow(clippy::cast_precision_loss)]
         let aspect = swapchain_extent.width as f32 / swapchain_extent.height as f32;
-        let view_proj = self.camera.view_proj_matrix(aspect);
-        let frustum = Frustum::from_view_proj(&view_proj);
+        let view_proj = self.camera.view_proj_matrix(aspect).to_cols_array();
 
         let device = gpu_context.device().raw();
+        let is_first_frame = u32::from(self.frame_counter <= 1);
+        let hiz_extent = hiz_pyramid.extent();
+        let hiz_levels = hiz_pyramid.mip_levels();
 
-        // SAFETY: Recording render barriers and drawing commands into active command buffer
+        // SAFETY: Recording barriers, compute culling dispatches, and MDI render passes
         unsafe {
-            // Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
-            let depth_barrier = vk::ImageMemoryBarrier2::default()
+            // First frame: transition Hi-Z image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
+            if self.frame_counter == 1 {
+                let init_barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .src_access_mask(vk::AccessFlags2::NONE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(hiz_pyramid.image())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: hiz_levels,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                let init_barriers = [init_barrier];
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(&init_barriers);
+                device.cmd_pipeline_barrier2(cmd, &dep_info);
+            }
+
+            // Memory barrier for uploaded candidates: HOST_WRITE -> COMPUTE_SHADER
+            let upload_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::HOST)
+                .src_access_mask(vk::AccessFlags2::HOST_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ);
+            let upload_barriers = [upload_barrier];
+            let dep_info = vk::DependencyInfo::default().memory_barriers(&upload_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            // Clear Early Count Buffers
+            device.cmd_fill_buffer(cmd, mdi.chunk_counts_early.raw(), 0, 16, 0);
+            device.cmd_fill_buffer(cmd, mdi.lod_counts_early.raw(), 0, 16, 0);
+
+            // Barrier: TRANSFER_WRITE -> COMPUTE_SHADER
+            let count_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(
+                    vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                );
+            let count_barriers = [count_barrier];
+            let dep_info = vk::DependencyInfo::default().memory_barriers(&count_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            // ==========================================
+            // PHASE 1: EARLY COMPUTE CULL
+            // ==========================================
+            let cull_pc = CullPushConstants {
+                view_proj,
+                camera_pos: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                cull_phase: 0,
+                hiz_width: hiz_extent.width,
+                hiz_height: hiz_extent.height,
+                candidate_count: chunk_candidates.len() as u32,
+                is_first_frame,
+                pointers_address: mdi.cull_ptrs_early.device_address(),
+            };
+
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cull_chunks_pipe.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                cull_chunks_pipe.layout(),
+                0,
+                &[cull_desc_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                cull_chunks_pipe.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&cull_pc),
+            );
+            if !chunk_candidates.is_empty() {
+                let groups = (chunk_candidates.len() as u32).div_ceil(64);
+                device.cmd_dispatch(cmd, groups, 1, 1);
+            }
+
+            // Early Cull LOD
+            let lod_cull_pc = CullPushConstants {
+                view_proj,
+                camera_pos: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                cull_phase: 0,
+                hiz_width: hiz_extent.width,
+                hiz_height: hiz_extent.height,
+                candidate_count: lod_candidates.len() as u32,
+                is_first_frame,
+                pointers_address: mdi.lod_ptrs_early.device_address(),
+            };
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cull_lod_pipe.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                cull_lod_pipe.layout(),
+                0,
+                &[cull_desc_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                cull_lod_pipe.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&lod_cull_pc),
+            );
+            if !lod_candidates.is_empty() {
+                let groups = (lod_candidates.len() as u32).div_ceil(64);
+                device.cmd_dispatch(cmd, groups, 1, 1);
+            }
+
+            // Barrier: Phase 1 Compute Write -> Indirect Command Read + Vertex Shader Read (BDA)
+            let early_render_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::DRAW_INDIRECT | vk::PipelineStageFlags2::VERTEX_SHADER,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::INDIRECT_COMMAND_READ | vk::AccessFlags2::SHADER_STORAGE_READ,
+                );
+
+            let depth_init_barrier = vk::ImageMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
                 .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
                 .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS)
@@ -901,10 +2049,16 @@ impl App {
                     layer_count: 1,
                 });
 
-            let depth_barriers = [depth_barrier];
-            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&depth_barriers);
+            let early_render_barriers = [early_render_barrier];
+            let depth_init_barriers = [depth_init_barrier];
+            let dep_info = vk::DependencyInfo::default()
+                .memory_barriers(&early_render_barriers)
+                .image_memory_barriers(&depth_init_barriers);
             device.cmd_pipeline_barrier2(cmd, &dep_info);
 
+            // ==========================================
+            // PHASE 1: EARLY RASTERIZATION PASSES
+            // ==========================================
             let color_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(image_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -920,10 +2074,10 @@ impl App {
                 .image_view(depth_buffer.view())
                 .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
                     depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
+                        depth: 0.0, // Reversed-Z: clear to 0.0!
                         stencil: 0,
                     },
                 });
@@ -939,18 +2093,7 @@ impl App {
                 .depth_attachment(&depth_attachment);
 
             device.cmd_begin_rendering(cmd, &rendering_info);
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
 
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout(),
-                0,
-                &[descriptor_set],
-                &[],
-            );
-
-            // Negative-height viewport: Vulkan clip space (+Y down) maps CCW to CCW
             #[allow(clippy::cast_precision_loss)]
             let viewport = vk::Viewport::default()
                 .x(0.0)
@@ -967,45 +2110,43 @@ impl App {
             };
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
-            // Pass 1: Opaque T0 Chunks
-            let mut visible_chunks = 0;
+            // Early Pass 1: Opaque T0
+            let t0_pc = TerrainMdiPushConstants {
+                view_proj,
+                draw_info_buffer_address: mdi.opaque_draw_early.device_address(),
+            };
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.layout(),
+                0,
+                &[descriptor_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                pipeline.layout(),
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&t0_pc),
+            );
+            device.cmd_draw_indirect_count(
+                cmd,
+                mdi.opaque_cmd_early.raw(),
+                0,
+                mdi.chunk_counts_early.raw(),
+                0,
+                MAX_CHUNK_CANDIDATES as u32,
+                16,
+            );
 
-            for mesh in self.chunk_meshes.values() {
-                if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
-                    continue;
-                }
-
-                visible_chunks += 1;
-
-                if let Some(layer) = &mesh.opaque {
-                    let pc = ChunkPushConstants {
-                        view_proj,
-                        chunk_pos: mesh.pos,
-                        pattern_offset: layer.pattern_offset,
-                        quad_buffer_address: layer.buffer.device_address(),
-                    };
-
-                    let pc_bytes = std::slice::from_raw_parts(
-                        std::ptr::from_ref(&pc).cast::<u8>(),
-                        size_of::<ChunkPushConstants>(),
-                    );
-
-                    device.cmd_push_constants(
-                        cmd,
-                        pipeline.layout(),
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        pc_bytes,
-                    );
-
-                    device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
-                }
-            }
-
-            self.visible_chunks_last = visible_chunks;
-
-            // Pass 2: Opaque T1 Sub-Cubes (Slabs & Stairs)
+            // Early Pass 2: Opaque T1
             if let Some(t1_pipeline) = &self.t1_pipeline {
+                let t1_pc = TerrainMdiPushConstants {
+                    view_proj,
+                    draw_info_buffer_address: mdi.t1_draw_early.device_address(),
+                };
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, t1_pipeline.raw());
                 device.cmd_bind_descriptor_sets(
                     cmd,
@@ -1015,40 +2156,30 @@ impl App {
                     &[descriptor_set],
                     &[],
                 );
-
-                for mesh in self.chunk_meshes.values() {
-                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
-                        continue;
-                    }
-
-                    if let Some(layer) = &mesh.t1_opaque {
-                        let pc = ChunkPushConstants {
-                            view_proj,
-                            chunk_pos: mesh.pos,
-                            pattern_offset: layer.pattern_offset,
-                            quad_buffer_address: layer.buffer.device_address(),
-                        };
-
-                        let pc_bytes = std::slice::from_raw_parts(
-                            std::ptr::from_ref(&pc).cast::<u8>(),
-                            size_of::<ChunkPushConstants>(),
-                        );
-
-                        device.cmd_push_constants(
-                            cmd,
-                            t1_pipeline.layout(),
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            pc_bytes,
-                        );
-
-                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
-                    }
-                }
+                device.cmd_push_constants(
+                    cmd,
+                    t1_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytemuck::bytes_of(&t1_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.t1_cmd_early.raw(),
+                    0,
+                    mdi.chunk_counts_early.raw(),
+                    4,
+                    MAX_CHUNK_CANDIDATES as u32,
+                    16,
+                );
             }
 
-            // Pass 3: Cutout T0 (Leaves & Glass with alpha discard)
+            // Early Pass 3: Cutout
             if let Some(cutout_pipeline) = &self.cutout_pipeline {
+                let cutout_pc = TerrainMdiPushConstants {
+                    view_proj,
+                    draw_info_buffer_address: mdi.cutout_draw_early.device_address(),
+                };
                 device.cmd_bind_pipeline(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -1062,82 +2193,497 @@ impl App {
                     &[descriptor_set],
                     &[],
                 );
-
-                for mesh in self.chunk_meshes.values() {
-                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
-                        continue;
-                    }
-
-                    if let Some(layer) = &mesh.cutout {
-                        let pc = ChunkPushConstants {
-                            view_proj,
-                            chunk_pos: mesh.pos,
-                            pattern_offset: layer.pattern_offset,
-                            quad_buffer_address: layer.buffer.device_address(),
-                        };
-
-                        let pc_bytes = std::slice::from_raw_parts(
-                            std::ptr::from_ref(&pc).cast::<u8>(),
-                            size_of::<ChunkPushConstants>(),
-                        );
-
-                        device.cmd_push_constants(
-                            cmd,
-                            cutout_pipeline.layout(),
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            pc_bytes,
-                        );
-
-                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
-                    }
-                }
+                device.cmd_push_constants(
+                    cmd,
+                    cutout_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytemuck::bytes_of(&cutout_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.cutout_cmd_early.raw(),
+                    0,
+                    mdi.chunk_counts_early.raw(),
+                    8,
+                    MAX_CHUNK_CANDIDATES as u32,
+                    16,
+                );
             }
 
-            // Pass 4: Far-field LOD draws
+            // Early Pass 4: LOD
             if let Some(lod_pipeline) = &self.lod_pipeline {
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
-                let mut visible_lods = 0;
                 let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
-
-                for mesh in self.lod_meshes.values() {
-                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
-                        continue;
-                    }
-
-                    visible_lods += 1;
-
-                    let pc = LodPushConstants {
-                        view_proj,
-                        node_pos: mesh.node_pos,
-                        level: u32::from(mesh.level),
-                        quad_count: mesh.quad_count,
-                        buffer_address: mesh.buffer.device_address(),
-                        camera_pos: self.camera.position,
-                        max_distance: max_dist,
-                    };
-
-                    let pc_bytes = std::slice::from_raw_parts(
-                        std::ptr::from_ref(&pc).cast::<u8>(),
-                        size_of::<LodPushConstants>(),
-                    );
-
-                    device.cmd_push_constants(
-                        cmd,
-                        lod_pipeline.layout(),
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        pc_bytes,
-                    );
-
-                    device.cmd_draw(cmd, mesh.quad_count * 6, 1, 0, 0);
-                }
-
-                self.visible_lod_nodes_last = visible_lods;
+                let lod_pc = LodMdiPushConstants {
+                    view_proj,
+                    camera_pos: [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                    ],
+                    max_distance: max_dist,
+                    draw_info_buffer_address: mdi.lod_draw_early.device_address(),
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
+                device.cmd_push_constants(
+                    cmd,
+                    lod_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&lod_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.lod_cmd_early.raw(),
+                    0,
+                    mdi.lod_counts_early.raw(),
+                    0,
+                    MAX_LOD_CANDIDATES as u32,
+                    16,
+                );
             }
 
-            // Pass 5: Translucent (Water with alpha blending and animated frames)
+            device.cmd_end_rendering(cmd);
+
+            // ==========================================
+            // HI-Z PYRAMID DOWNSAMPLING
+            // ==========================================
+            // Transition depth buffer: DEPTH_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+            let depth_to_sample_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+                .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(depth_buffer.raw())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            // Transition Hi-Z: SHADER_READ_ONLY_OPTIMAL -> GENERAL
+            let hiz_to_general_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(hiz_pyramid.image())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: hiz_levels,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            let hiz_barriers = [depth_to_sample_barrier, hiz_to_general_barrier];
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&hiz_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, hiz_pipe.raw());
+
+            // Mip 0 Dispatch: depth buffer -> Hi-Z level 0
+            let mip0_pc = HiZPushConstants {
+                in_extent: [swapchain_extent.width, swapchain_extent.height],
+                out_extent: [hiz_extent.width, hiz_extent.height],
+                is_mip0: 1,
+                _pad: 0,
+            };
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                hiz_pipe.layout(),
+                0,
+                &[self.hiz_descriptor_sets[0]],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                hiz_pipe.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&mip0_pc),
+            );
+            let gx0 = hiz_extent.width.div_ceil(16);
+            let gy0 = hiz_extent.height.div_ceil(16);
+            device.cmd_dispatch(cmd, gx0, gy0, 1);
+
+            // Subsequent Mip Dispatches (1 .. hiz_levels - 1)
+            let mut prev_w = hiz_extent.width;
+            let mut prev_h = hiz_extent.height;
+
+            for k in 1..hiz_levels as usize {
+                let cur_w = (prev_w >> 1).max(1);
+                let cur_h = (prev_h >> 1).max(1);
+
+                // Memory barrier: STORAGE_WRITE (mip k-1) -> SAMPLED_READ (for mip k)
+                let mip_barrier = vk::MemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ);
+                let mip_barriers = [mip_barrier];
+                let dep_info = vk::DependencyInfo::default().memory_barriers(&mip_barriers);
+                device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+                let sub_mip_pc = HiZPushConstants {
+                    in_extent: [prev_w, prev_h],
+                    out_extent: [cur_w, cur_h],
+                    is_mip0: 0,
+                    _pad: 0,
+                };
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    hiz_pipe.layout(),
+                    0,
+                    &[self.hiz_descriptor_sets[k]],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    hiz_pipe.layout(),
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    bytemuck::bytes_of(&sub_mip_pc),
+                );
+                let gx = cur_w.div_ceil(16);
+                let gy = cur_h.div_ceil(16);
+                device.cmd_dispatch(cmd, gx, gy, 1);
+
+                prev_w = cur_w;
+                prev_h = cur_h;
+            }
+
+            // Transition Hi-Z: GENERAL -> SHADER_READ_ONLY_OPTIMAL
+            let hiz_to_sample_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(hiz_pyramid.image())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: hiz_levels,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            let hiz_to_sample_barriers = [hiz_to_sample_barrier];
+            let dep_info =
+                vk::DependencyInfo::default().image_memory_barriers(&hiz_to_sample_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            // ==========================================
+            // PHASE 2: LATE COMPUTE CULL
+            // ==========================================
+            // Clear Late Count Buffers
+            device.cmd_fill_buffer(cmd, mdi.chunk_counts_late.raw(), 0, 16, 0);
+            device.cmd_fill_buffer(cmd, mdi.lod_counts_late.raw(), 0, 16, 0);
+
+            let count_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(
+                    vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                );
+            let count_barriers = [count_barrier];
+            let dep_info = vk::DependencyInfo::default().memory_barriers(&count_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            let late_cull_pc = CullPushConstants {
+                view_proj,
+                camera_pos: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                cull_phase: 1, // Late Phase!
+                hiz_width: hiz_extent.width,
+                hiz_height: hiz_extent.height,
+                candidate_count: chunk_candidates.len() as u32,
+                is_first_frame,
+                pointers_address: mdi.cull_ptrs_late.device_address(),
+            };
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cull_chunks_pipe.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                cull_chunks_pipe.layout(),
+                0,
+                &[cull_desc_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                cull_chunks_pipe.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&late_cull_pc),
+            );
+            if !chunk_candidates.is_empty() {
+                let groups = (chunk_candidates.len() as u32).div_ceil(64);
+                device.cmd_dispatch(cmd, groups, 1, 1);
+            }
+
+            // Late Cull LOD
+            let late_lod_cull_pc = CullPushConstants {
+                view_proj,
+                camera_pos: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                cull_phase: 1, // Late Phase!
+                hiz_width: hiz_extent.width,
+                hiz_height: hiz_extent.height,
+                candidate_count: lod_candidates.len() as u32,
+                is_first_frame,
+                pointers_address: mdi.lod_ptrs_late.device_address(),
+            };
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, cull_lod_pipe.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                cull_lod_pipe.layout(),
+                0,
+                &[cull_desc_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                cull_lod_pipe.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&late_lod_cull_pc),
+            );
+            if !lod_candidates.is_empty() {
+                let groups = (lod_candidates.len() as u32).div_ceil(64);
+                device.cmd_dispatch(cmd, groups, 1, 1);
+            }
+
+            // Barrier: Phase 2 Compute Write -> Indirect Command Read + Vertex Shader Read (BDA)
+            let late_render_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::DRAW_INDIRECT | vk::PipelineStageFlags2::VERTEX_SHADER,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::INDIRECT_COMMAND_READ | vk::AccessFlags2::SHADER_STORAGE_READ,
+                );
+
+            // Transition depth buffer back to DEPTH_ATTACHMENT_OPTIMAL for Late pass
+            let depth_back_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                )
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .image(depth_buffer.raw())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            let late_render_barriers = [late_render_barrier];
+            let depth_back_barriers = [depth_back_barrier];
+            let dep_info = vk::DependencyInfo::default()
+                .memory_barriers(&late_render_barriers)
+                .image_memory_barriers(&depth_back_barriers);
+            device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+            // ==========================================
+            // PHASE 2: LATE RASTERIZATION PASSES
+            // ==========================================
+            let late_color_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(image_view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::LOAD) // Preserve Early Pass color!
+                .store_op(vk::AttachmentStoreOp::STORE);
+
+            let late_depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(depth_buffer.view())
+                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::LOAD) // Preserve Early Pass depth!
+                .store_op(vk::AttachmentStoreOp::DONT_CARE);
+
+            let late_color_attachments = [late_color_attachment];
+            let late_rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: swapchain_extent,
+                })
+                .layer_count(1)
+                .color_attachments(&late_color_attachments)
+                .depth_attachment(&late_depth_attachment);
+
+            device.cmd_begin_rendering(cmd, &late_rendering_info);
+            device.cmd_set_viewport(cmd, 0, &[viewport]);
+            device.cmd_set_scissor(cmd, 0, &[scissor]);
+
+            // Late Pass 1: Opaque T0
+            let late_t0_pc = TerrainMdiPushConstants {
+                view_proj,
+                draw_info_buffer_address: mdi.opaque_draw_late.device_address(),
+            };
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.layout(),
+                0,
+                &[descriptor_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                pipeline.layout(),
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&late_t0_pc),
+            );
+            device.cmd_draw_indirect_count(
+                cmd,
+                mdi.opaque_cmd_late.raw(),
+                0,
+                mdi.chunk_counts_late.raw(),
+                0,
+                MAX_CHUNK_CANDIDATES as u32,
+                16,
+            );
+
+            // Late Pass 2: Opaque T1
+            if let Some(t1_pipeline) = &self.t1_pipeline {
+                let late_t1_pc = TerrainMdiPushConstants {
+                    view_proj,
+                    draw_info_buffer_address: mdi.t1_draw_late.device_address(),
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, t1_pipeline.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t1_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    t1_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytemuck::bytes_of(&late_t1_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.t1_cmd_late.raw(),
+                    0,
+                    mdi.chunk_counts_late.raw(),
+                    4,
+                    MAX_CHUNK_CANDIDATES as u32,
+                    16,
+                );
+            }
+
+            // Late Pass 3: Cutout
+            if let Some(cutout_pipeline) = &self.cutout_pipeline {
+                let late_cutout_pc = TerrainMdiPushConstants {
+                    view_proj,
+                    draw_info_buffer_address: mdi.cutout_draw_late.device_address(),
+                };
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    cutout_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    cutout_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    cutout_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytemuck::bytes_of(&late_cutout_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.cutout_cmd_late.raw(),
+                    0,
+                    mdi.chunk_counts_late.raw(),
+                    8,
+                    MAX_CHUNK_CANDIDATES as u32,
+                    16,
+                );
+            }
+
+            // Late Pass 4: LOD
+            if let Some(lod_pipeline) = &self.lod_pipeline {
+                let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
+                let late_lod_pc = LodMdiPushConstants {
+                    view_proj,
+                    camera_pos: [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                    ],
+                    max_distance: max_dist,
+                    draw_info_buffer_address: mdi.lod_draw_late.device_address(),
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
+                device.cmd_push_constants(
+                    cmd,
+                    lod_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&late_lod_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.lod_cmd_late.raw(),
+                    0,
+                    mdi.lod_counts_late.raw(),
+                    0,
+                    MAX_LOD_CANDIDATES as u32,
+                    16,
+                );
+            }
+
+            // Late Pass 5: Translucent (Water)
             if let Some(trans_pipeline) = &self.translucent_pipeline {
+                let trans_pc = TranslucentMdiPushConstants {
+                    view_proj,
+                    draw_info_buffer_address: mdi.translucent_draw_late.device_address(),
+                    frame_tick: self.frame_tick,
+                    water_base_layer: self.water_anim_info.base_layer,
+                    water_frame_count: self.water_anim_info.frame_count,
+                    _pad: 0,
+                };
                 device.cmd_bind_pipeline(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -1151,43 +2697,25 @@ impl App {
                     &[descriptor_set],
                     &[],
                 );
-
-                for mesh in self.chunk_meshes.values() {
-                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
-                        continue;
-                    }
-
-                    if let Some(layer) = &mesh.translucent {
-                        let pc = TranslucentPushConstants {
-                            view_proj,
-                            chunk_pos: mesh.pos,
-                            pattern_offset: layer.pattern_offset,
-                            quad_buffer_address: layer.buffer.device_address(),
-                            frame_tick: self.frame_tick,
-                            water_base_layer: self.water_anim_info.base_layer,
-                            water_frame_count: self.water_anim_info.frame_count,
-                            _pad: [0; 3],
-                        };
-
-                        let pc_bytes = std::slice::from_raw_parts(
-                            std::ptr::from_ref(&pc).cast::<u8>(),
-                            size_of::<TranslucentPushConstants>(),
-                        );
-
-                        device.cmd_push_constants(
-                            cmd,
-                            trans_pipeline.layout(),
-                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                            0,
-                            pc_bytes,
-                        );
-
-                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
-                    }
-                }
+                device.cmd_push_constants(
+                    cmd,
+                    trans_pipeline.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&trans_pc),
+                );
+                device.cmd_draw_indirect_count(
+                    cmd,
+                    mdi.translucent_cmd_late.raw(),
+                    0,
+                    mdi.chunk_counts_late.raw(),
+                    12,
+                    MAX_CHUNK_CANDIDATES as u32,
+                    16,
+                );
             }
 
-            // Pass 6: Block selection wireframe highlight (snapped to sub-cube bounds)
+            // Pass 6: Block selection wireframe highlight
             if let (Some(hit), Some(highlight_pipeline)) =
                 (self.targeted_block, &self.highlight_pipeline)
             {
@@ -1232,16 +2760,12 @@ impl App {
                         max_bound,
                         color: [0.05, 0.05, 0.05, 0.75],
                     };
-                    let pc_bytes = std::slice::from_raw_parts(
-                        std::ptr::from_ref(&pc).cast::<u8>(),
-                        size_of::<HighlightPushConstants>(),
-                    );
                     device.cmd_push_constants(
                         cmd,
                         highlight_pipeline.layout(),
                         vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
-                        pc_bytes,
+                        bytemuck::bytes_of(&pc),
                     );
                     device.cmd_draw(cmd, 24, 1, 0, 0);
                 }
@@ -1419,7 +2943,7 @@ impl ApplicationHandler for App {
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size(size_of::<ChunkPushConstants>() as u32);
+            .size(size_of::<TerrainMdiPushConstants>() as u32);
 
         let pipeline = match GraphicsPipeline::create_dynamic(
             gpu_context.device().raw(),
@@ -1551,7 +3075,7 @@ impl ApplicationHandler for App {
         let trans_push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(size_of::<TranslucentPushConstants>() as u32);
+            .size(size_of::<TranslucentMdiPushConstants>() as u32);
 
         let trans_pipeline = match GraphicsPipeline::create_dynamic_translucent(
             gpu_context.device().raw(),
@@ -1599,7 +3123,7 @@ impl ApplicationHandler for App {
         let lod_push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(size_of::<LodPushConstants>() as u32);
+            .size(size_of::<LodMdiPushConstants>() as u32);
 
         let lod_pipeline = match GraphicsPipeline::create_dynamic(
             gpu_context.device().raw(),
@@ -1694,8 +3218,24 @@ impl ApplicationHandler for App {
         self.descriptor_pool = Some(descriptor_pool);
         self.descriptor_set_layout = Some(descriptor_set_layout);
         self.descriptor_set = Some(descriptor_set);
+
+        let mdi_buffers = match MdiBuffers::new(&gpu_context) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::error!("Failed to create MDI buffers: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+        self.mdi_buffers = Some(mdi_buffers);
+
         self.gpu_context = Some(gpu_context);
         self.window = Some(window);
+
+        if let Err(err) = self.setup_hiz_and_culling() {
+            tracing::error!("Failed to setup Hi-Z and compute culling: {err}");
+            event_loop.exit();
+        }
     }
 
     fn device_event(
@@ -1842,6 +3382,13 @@ impl ApplicationHandler for App {
                         Ok(d) => self.depth_buffer = Some(d),
                         Err(err) => tracing::error!("Failed to recreate depth buffer: {err}"),
                     }
+                    let extent = vk::Extent2D {
+                        width: physical_size.width,
+                        height: physical_size.height,
+                    };
+                    if let Err(err) = self.recreate_hiz_resources(extent) {
+                        tracing::error!("Failed to recreate Hi-Z resources on resize: {err}");
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1854,6 +3401,7 @@ impl ApplicationHandler for App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.server_running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.server_handle.take() {
@@ -1862,89 +3410,131 @@ impl ApplicationHandler for App {
 
         if let Some(gpu_context) = &mut self.gpu_context {
             let _ = gpu_context.wait_idle();
+            let device = gpu_context.device().raw();
+            let allocator = gpu_context.allocator();
+
+            if let Some(mut mdi) = self.mdi_buffers.take() {
+                mdi.destroy(device, allocator);
+            }
+
+            if let Some(mut pipeline) = self.hiz_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.hiz_comp_shader.take() {
+                vert.destroy(device);
+            }
+
+            if let Some(mut pipeline) = self.cull_chunks_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.cull_chunks_comp_shader.take() {
+                vert.destroy(device);
+            }
+
+            if let Some(mut pipeline) = self.cull_lod_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.cull_lod_comp_shader.take() {
+                vert.destroy(device);
+            }
+
+            if let Some(mut hiz) = self.hiz_pyramid.take() {
+                hiz.destroy(device, allocator);
+            }
+
+            // SAFETY: Destroying sampler and descriptor pools/layouts on valid Vulkan device
+            unsafe {
+                if self.point_clamp_sampler != vk::Sampler::null() {
+                    device.destroy_sampler(self.point_clamp_sampler, None);
+                    self.point_clamp_sampler = vk::Sampler::null();
+                }
+                if let Some(pool) = self.hiz_descriptor_pool.take() {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+                if let Some(layout) = self.hiz_descriptor_set_layout.take() {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+                if let Some(layout) = self.cull_descriptor_set_layout.take() {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
 
             if let Some(mut pipeline) = self.pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(mut pipeline) = self.t1_pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.t1_vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.t1_frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(mut pipeline) = self.cutout_pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.cutout_vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.cutout_frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(mut pipeline) = self.translucent_pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.translucent_vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.translucent_frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(mut pipeline) = self.lod_pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.lod_vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.lod_frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(mut pipeline) = self.highlight_pipeline.take() {
-                pipeline.destroy(gpu_context.device().raw());
+                pipeline.destroy(device);
             }
             if let Some(mut vert) = self.highlight_vert_shader.take() {
-                vert.destroy(gpu_context.device().raw());
+                vert.destroy(device);
             }
             if let Some(mut frag) = self.highlight_frag_shader.take() {
-                frag.destroy(gpu_context.device().raw());
+                frag.destroy(device);
             }
 
             if let Some(pool) = self.descriptor_pool.take() {
                 // SAFETY: Destroying descriptor pool on valid device
                 unsafe {
-                    gpu_context
-                        .device()
-                        .raw()
-                        .destroy_descriptor_pool(pool, None);
+                    device.destroy_descriptor_pool(pool, None);
                 }
             }
 
             if let Some(layout) = self.descriptor_set_layout.take() {
                 // SAFETY: Destroying descriptor set layout on valid device
                 unsafe {
-                    gpu_context
-                        .device()
-                        .raw()
-                        .destroy_descriptor_set_layout(layout, None);
+                    device.destroy_descriptor_set_layout(layout, None);
                 }
             }
 
             if let Some(mut tex) = self.texture_array.take() {
-                tex.destroy(gpu_context.device().raw(), gpu_context.allocator());
+                tex.destroy(device, allocator);
             }
 
             for (_, mesh) in self.chunk_meshes.drain() {
@@ -1952,12 +3542,11 @@ impl ApplicationHandler for App {
             }
 
             for (_, mut mesh) in self.lod_meshes.drain() {
-                mesh.buffer
-                    .destroy(gpu_context.device().raw(), gpu_context.allocator());
+                mesh.buffer.destroy(device, allocator);
             }
 
             if let Some(mut depth) = self.depth_buffer.take() {
-                depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
+                depth.destroy(device, allocator);
             }
         }
     }

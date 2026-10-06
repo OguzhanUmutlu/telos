@@ -14,15 +14,13 @@ layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_textures;
 
-layout(push_constant) uniform PushConstants {
+layout(push_constant, std430) uniform PushConstants {
     mat4 view_proj;
-    ivec3 chunk_pos;
-    uint pattern_offset;
-    uint64_t quad_buffer_address;
+    uint64_t draw_info_buffer_address;
     uint frame_tick;
     uint water_base_layer;
     uint water_frame_count;
-    uint _pad[3];
+    uint _pad;
 } pc;
 
 const vec3 TORCH_COLOR = vec3(1.0, 0.82, 0.55);

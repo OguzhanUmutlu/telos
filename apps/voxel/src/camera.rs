@@ -25,8 +25,8 @@ impl Frustum {
             r3 - r0, // Right:  w - x >= 0
             r3 + r1, // Bottom: w + y >= 0
             r3 - r1, // Top:    w - y >= 0
-            r2,      // Near:   z >= 0
-            r3 - r2, // Far:    w - z >= 0
+            r3 - r2, // Near:   w - z >= 0 (in reversed-Z, z = w at near plane)
+            r2,      // Far:    z >= 0     (in reversed-Z, z = 0 at far plane)
         ];
 
         // Normalize plane equations so distance calculations are metric
@@ -120,10 +120,18 @@ impl Camera {
         Mat4::look_to_rh(self.position, dir, Vec3::Y)
     }
 
-    /// Perspective projection matrix for the given aspect ratio ($W/H$).
+    /// Perspective projection matrix for the given aspect ratio ($W/H$) with reversed-Z (ADR-02).
+    ///
+    /// Maps $z_{\text{near}} \to 1.0$ and $z_{\text{far}} \to 0.0$ for optimal floating-point depth precision.
     #[must_use]
     pub fn projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, aspect_ratio, self.z_near, self.z_far)
+        let f = 1.0 / (self.fov_y * 0.5).tan();
+        Mat4::from_cols(
+            Vec4::new(f / aspect_ratio, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, f, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, -1.0),
+            Vec4::new(0.0, 0.0, self.z_near, 0.0),
+        )
     }
 
     /// Combined View-Projection matrix.

@@ -1,0 +1,46 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D in_depth_texture;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D out_hiz_mip;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 in_extent;
+    uvec2 out_extent;
+    uint is_mip0;
+} pc;
+
+void main() {
+    uvec2 out_pos = gl_GlobalInvocationID.xy;
+    if (out_pos.x >= pc.out_extent.x || out_pos.y >= pc.out_extent.y) {
+        return;
+    }
+
+    float min_depth;
+
+    if (pc.is_mip0 != 0u) {
+        // Downsample depth buffer into Hi-Z level 0
+        // Sample footprint covering this output texel
+        vec2 uv = (vec2(out_pos) + 0.5) / vec2(pc.out_extent);
+        vec2 texel_size = 1.0 / vec2(pc.in_extent);
+
+        float d0 = texture(in_depth_texture, uv + vec2(-0.25, -0.25) * texel_size).r;
+        float d1 = texture(in_depth_texture, uv + vec2(0.25, -0.25) * texel_size).r;
+        float d2 = texture(in_depth_texture, uv + vec2(-0.25, 0.25) * texel_size).r;
+        float d3 = texture(in_depth_texture, uv + vec2(0.25, 0.25) * texel_size).r;
+
+        min_depth = min(min(d0, d1), min(d2, d3));
+    } else {
+        // Standard 2x2 reduction for subsequent mip levels
+        ivec2 src_pos = ivec2(out_pos) * 2;
+        float d0 = texelFetch(in_depth_texture, src_pos, 0).r;
+        float d1 = texelFetch(in_depth_texture, src_pos + ivec2(1, 0), 0).r;
+        float d2 = texelFetch(in_depth_texture, src_pos + ivec2(0, 1), 0).r;
+        float d3 = texelFetch(in_depth_texture, src_pos + ivec2(1, 1), 0).r;
+
+        min_depth = min(min(d0, d1), min(d2, d3));
+    }
+
+    imageStore(out_hiz_mip, ivec2(out_pos), vec4(min_depth, 0.0, 0.0, 0.0));
+}

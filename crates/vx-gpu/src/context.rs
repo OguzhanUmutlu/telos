@@ -273,9 +273,32 @@ impl GpuContext {
         res
     }
 
+    /// Creates an allocated GPU buffer with specified usage and memory location.
+    pub fn create_buffer(
+        &self,
+        name: &'static str,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        location: gpu_allocator::MemoryLocation,
+    ) -> Result<GpuBuffer, GpuError> {
+        GpuBuffer::new(
+            self.device.raw(),
+            &self.allocator,
+            name,
+            size,
+            usage,
+            location,
+        )
+    }
+
     /// Creates a 2D depth attachment buffer matching the current swapchain extent.
     pub fn create_depth_buffer(&self) -> Result<DepthBuffer, GpuError> {
         DepthBuffer::new(self.device.raw(), &self.allocator, self.current_extent)
+    }
+
+    /// Creates a power-of-two Hi-Z depth pyramid matching the current render extent.
+    pub fn create_hiz_pyramid(&self) -> Result<crate::hiz::HiZPyramid, GpuError> {
+        crate::hiz::HiZPyramid::new(self.device.raw(), &self.allocator, self.current_extent)
     }
 
     /// Creates a GPU 2D texture array and uploads raw mip slices via a staging transfer buffer.
