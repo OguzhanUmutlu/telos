@@ -39,6 +39,52 @@ impl RgbaImage {
         Self::from_png_bytes(&bytes, path)
     }
 
+    /// Loads an animated PNG strip from disk and returns all constituent square frames.
+    pub fn frames_from_file(path: &Path) -> Result<Vec<Self>, AssetError> {
+        let bytes = fs::read(path).map_err(|source| AssetError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        Self::frames_from_png_bytes(&bytes, path)
+    }
+
+    /// Decodes all constituent square frames from an animated PNG byte buffer.
+    pub fn frames_from_png_bytes(bytes: &[u8], path: &Path) -> Result<Vec<Self>, AssetError> {
+        let img = image::load_from_memory(bytes).map_err(|e| AssetError::Decode {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+
+        let rgba = img.to_rgba8();
+        let width = rgba.width();
+        let full_height = rgba.height();
+        let raw_pixels = rgba.into_raw();
+
+        if full_height >= width && full_height % width == 0 {
+            let frame_count = full_height / width;
+            let frame_byte_len = (width * width * 4) as usize;
+            let mut frames = Vec::with_capacity(frame_count as usize);
+
+            for f in 0..frame_count {
+                let start = (f as usize) * frame_byte_len;
+                let end = start + frame_byte_len;
+                frames.push(Self {
+                    width,
+                    height: width,
+                    data: raw_pixels[start..end].to_vec(),
+                });
+            }
+            Ok(frames)
+        } else {
+            Ok(vec![Self {
+                width,
+                height: full_height,
+                data: raw_pixels,
+            }])
+        }
+    }
+
     /// Decodes PNG byte data into an RGBA8 buffer.
     pub fn from_png_bytes(bytes: &[u8], path: &Path) -> Result<Self, AssetError> {
         let img = image::load_from_memory(bytes).map_err(|e| AssetError::Decode {

@@ -14,7 +14,7 @@ use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
 use mimalloc::MiMalloc;
 use tracing::info;
-use vx_assets::{ResourcePackStack, TextureArrayBuilder};
+use vx_assets::{AnimatedTextureInfo, ResourcePackStack, TextureArrayBuilder};
 use vx_core::{
     BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos, init_telemetry,
     raycast_voxels,
@@ -33,6 +33,7 @@ use vx_voxel::chunk::{Chunk, ChunkSnapshot};
 use vx_voxel::coords::LocalIdx;
 use vx_voxel::light::ChunkLight;
 use vx_voxel::registry::BlockRegistry;
+use vx_voxel::shape::BlockShape;
 use vx_voxel::state::BlockStateId;
 use winit::{
     application::ApplicationHandler,
@@ -100,22 +101,114 @@ struct HighlightPushConstants {
     color: [f32; 4],
 }
 
-const HOTBAR_ITEMS: [(&str, BlockStateId); 6] = [
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TranslucentPushConstants {
+    view_proj: glam::Mat4,
+    chunk_pos: [i32; 3],
+    pattern_offset: u32,
+    quad_buffer_address: u64,
+    frame_tick: u32,
+    water_base_layer: u32,
+    water_frame_count: u32,
+    _pad: [u32; 3],
+}
+
+const HOTBAR_ITEMS: [(&str, BlockStateId); 9] = [
     ("Stone", BlockStateId::new(1)),
     ("Dirt", BlockStateId::new(2)),
     ("Grass", BlockStateId::new(3)),
-    ("Bedrock", BlockStateId::new(4)),
-    ("Sand", BlockStateId::new(5)),
+    ("Oak Planks", BlockStateId::new(7)),
+    ("Stone Slab", BlockStateId::new(10)),
+    ("Oak Stairs", BlockStateId::new(11)),
+    ("Oak Leaves", BlockStateId::new(8)),
+    ("Glass", BlockStateId::new(9)),
     ("Water", BlockStateId::new(6)),
 ];
 
-struct GpuChunkMesh {
-    pos: [i32; 3],
+struct GpuMeshLayer {
     buffer: GpuBuffer,
     quad_count: u32,
     pattern_offset: u32,
+}
+
+struct GpuChunkMesh {
+    pos: [i32; 3],
     min_aabb: Vec3,
     max_aabb: Vec3,
+    opaque: Option<GpuMeshLayer>,
+    t1_opaque: Option<GpuMeshLayer>,
+    cutout: Option<GpuMeshLayer>,
+    translucent: Option<GpuMeshLayer>,
+}
+
+impl GpuChunkMesh {
+    fn destroy(mut self, ctx: &GpuContext) {
+        let device = ctx.device().raw();
+        let allocator = ctx.allocator();
+        if let Some(mut layer) = self.opaque.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+        if let Some(mut layer) = self.t1_opaque.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+        if let Some(mut layer) = self.cutout.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+        if let Some(mut layer) = self.translucent.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+    }
+}
+
+fn upload_t0_layer(
+    ctx: &GpuContext,
+    mesh: &vx_mesh::mesh::T0Mesh,
+    label: &'static str,
+) -> Option<GpuMeshLayer> {
+    if mesh.is_empty() {
+        return None;
+    }
+    let mut buffer_data = Vec::new();
+    mesh.write_to_u32_buffer(&mut buffer_data);
+    match ctx.create_buffer_with_data(label, &buffer_data, vk::BufferUsageFlags::empty()) {
+        Ok(buffer) => Some(GpuMeshLayer {
+            buffer,
+            #[allow(clippy::cast_possible_truncation)]
+            quad_count: mesh.quads.len() as u32,
+            #[allow(clippy::cast_possible_truncation)]
+            pattern_offset: mesh.quads.len() as u32,
+        }),
+        Err(err) => {
+            tracing::error!("Failed to create GPU buffer for {label}: {err}");
+            None
+        }
+    }
+}
+
+fn upload_t1_layer(
+    ctx: &GpuContext,
+    mesh: &vx_mesh::t1::T1Mesh,
+    label: &'static str,
+) -> Option<GpuMeshLayer> {
+    if mesh.is_empty() {
+        return None;
+    }
+    let mut buffer_data = Vec::new();
+    mesh.write_to_u32_buffer(&mut buffer_data);
+    match ctx.create_buffer_with_data(label, &buffer_data, vk::BufferUsageFlags::empty()) {
+        Ok(buffer) => Some(GpuMeshLayer {
+            buffer,
+            #[allow(clippy::cast_possible_truncation)]
+            quad_count: mesh.quads.len() as u32,
+            #[allow(clippy::cast_possible_truncation)]
+            pattern_offset: mesh.quads.len() as u32,
+        }),
+        Err(err) => {
+            tracing::error!("Failed to create GPU buffer for {label}: {err}");
+            None
+        }
+    }
 }
 
 struct GpuLodMesh {
@@ -140,6 +233,21 @@ struct App {
     pipeline: Option<GraphicsPipeline>,
     vert_shader: Option<ShaderModule>,
     frag_shader: Option<ShaderModule>,
+
+    t1_pipeline: Option<GraphicsPipeline>,
+    t1_vert_shader: Option<ShaderModule>,
+    t1_frag_shader: Option<ShaderModule>,
+
+    cutout_pipeline: Option<GraphicsPipeline>,
+    cutout_vert_shader: Option<ShaderModule>,
+    cutout_frag_shader: Option<ShaderModule>,
+
+    translucent_pipeline: Option<GraphicsPipeline>,
+    translucent_vert_shader: Option<ShaderModule>,
+    translucent_frag_shader: Option<ShaderModule>,
+
+    water_anim_info: AnimatedTextureInfo,
+    frame_tick: u32,
 
     lod_pipeline: Option<GraphicsPipeline>,
     lod_vert_shader: Option<ShaderModule>,
@@ -238,6 +346,25 @@ impl App {
             pipeline: None,
             vert_shader: None,
             frag_shader: None,
+
+            t1_pipeline: None,
+            t1_vert_shader: None,
+            t1_frag_shader: None,
+
+            cutout_pipeline: None,
+            cutout_vert_shader: None,
+            cutout_frag_shader: None,
+
+            translucent_pipeline: None,
+            translucent_vert_shader: None,
+            translucent_frag_shader: None,
+
+            water_anim_info: AnimatedTextureInfo {
+                base_layer: 9,
+                frame_count: 32,
+                frame_time: 2,
+            },
+            frame_tick: 0,
 
             lod_pipeline: None,
             lod_vert_shader: None,
@@ -410,10 +537,10 @@ impl App {
                     S2cMessage::ChunkUnload(unload) => {
                         let pos = ChunkPos::new(unload.chunk_x, unload.chunk_y, unload.chunk_z);
                         self.chunks.remove(&pos);
-                        if let (Some(mut mesh), Some(ctx)) =
+                        if let (Some(mesh), Some(ctx)) =
                             (self.chunk_meshes.remove(&pos), &self.gpu_context)
                         {
-                            mesh.buffer.destroy(ctx.device().raw(), ctx.allocator());
+                            mesh.destroy(ctx);
                         }
                         self.mark_dirty_neighbors(pos);
                     }
@@ -515,8 +642,6 @@ impl App {
         let Some(gpu_context) = &self.gpu_context else {
             return;
         };
-        let device = gpu_context.device().raw();
-        let allocator = gpu_context.allocator();
 
         let cam_cx = (self.camera.position.x / 32.0).floor() as i32;
         let cam_cy = (self.camera.position.y / 32.0).floor() as i32;
@@ -538,8 +663,8 @@ impl App {
             processed += 1;
 
             let Some(chunk) = self.chunks.get(&pos).cloned() else {
-                if let Some(mut mesh) = self.chunk_meshes.remove(&pos) {
-                    mesh.buffer.destroy(device, allocator);
+                if let Some(mesh) = self.chunk_meshes.remove(&pos) {
+                    mesh.destroy(gpu_context);
                 }
                 continue;
             };
@@ -548,8 +673,8 @@ impl App {
             if chunk.blocks().is_uniform()
                 && chunk.blocks().get(LocalIdx::from_coords_unchecked(0, 0, 0)) == BlockStateId::AIR
             {
-                if let Some(mut mesh) = self.chunk_meshes.remove(&pos) {
-                    mesh.buffer.destroy(device, allocator);
+                if let Some(mesh) = self.chunk_meshes.remove(&pos) {
+                    mesh.destroy(gpu_context);
                 }
                 continue;
             }
@@ -580,47 +705,41 @@ impl App {
                 .map(std::convert::AsRef::as_ref);
 
             let neighbors = [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z];
-            let mesh = vx_mesh::mesher::mesh_chunk_t0(&chunk, &neighbors);
+            let layers =
+                vx_mesh::mesher::mesh_chunk_multilayers(&chunk, &neighbors, &self.block_registry);
 
-            if mesh.is_empty() {
-                if let Some(mut old_mesh) = self.chunk_meshes.remove(&pos) {
-                    old_mesh.buffer.destroy(device, allocator);
+            let opaque = upload_t0_layer(gpu_context, &layers.opaque, "chunk_mesh_opaque");
+            let t1_opaque = upload_t1_layer(gpu_context, &layers.t1_opaque, "chunk_mesh_t1");
+            let cutout = upload_t0_layer(gpu_context, &layers.cutout, "chunk_mesh_cutout");
+            let translucent =
+                upload_t0_layer(gpu_context, &layers.translucent, "chunk_mesh_translucent");
+
+            if opaque.is_none() && t1_opaque.is_none() && cutout.is_none() && translucent.is_none()
+            {
+                if let Some(old_mesh) = self.chunk_meshes.remove(&pos) {
+                    old_mesh.destroy(gpu_context);
                 }
             } else {
-                let mut buffer_data = Vec::new();
-                mesh.write_to_u32_buffer(&mut buffer_data);
+                let (cx, cy, cz) = (pos.x(), pos.y(), pos.z());
+                let min_aabb = Vec3::new((cx * 32) as f32, (cy * 32) as f32, (cz * 32) as f32);
+                let max_aabb = Vec3::new(
+                    ((cx + 1) * 32) as f32,
+                    ((cy + 1) * 32) as f32,
+                    ((cz + 1) * 32) as f32,
+                );
 
-                match gpu_context.create_buffer_with_data(
-                    "chunk_mesh",
-                    &buffer_data,
-                    vk::BufferUsageFlags::empty(),
-                ) {
-                    Ok(buffer) => {
-                        let (cx, cy, cz) = (pos.x(), pos.y(), pos.z());
-                        let min_aabb =
-                            Vec3::new((cx * 32) as f32, (cy * 32) as f32, (cz * 32) as f32);
-                        let max_aabb = Vec3::new(
-                            ((cx + 1) * 32) as f32,
-                            ((cy + 1) * 32) as f32,
-                            ((cz + 1) * 32) as f32,
-                        );
+                let new_mesh = GpuChunkMesh {
+                    pos: [cx * 32, cy * 32, cz * 32],
+                    min_aabb,
+                    max_aabb,
+                    opaque,
+                    t1_opaque,
+                    cutout,
+                    translucent,
+                };
 
-                        let new_mesh = GpuChunkMesh {
-                            pos: [cx * 32, cy * 32, cz * 32],
-                            buffer,
-                            quad_count: mesh.quads.len() as u32,
-                            pattern_offset: mesh.quads.len() as u32,
-                            min_aabb,
-                            max_aabb,
-                        };
-
-                        if let Some(mut old_mesh) = self.chunk_meshes.insert(pos, new_mesh) {
-                            old_mesh.buffer.destroy(device, allocator);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!("Failed to create GPU buffer for chunk {pos:?}: {err}");
-                    }
+                if let Some(old_mesh) = self.chunk_meshes.insert(pos, new_mesh) {
+                    old_mesh.destroy(gpu_context);
                 }
             }
         }
@@ -713,6 +832,7 @@ impl App {
         self.targeted_block = raycast_voxels(origin, forward, max_reach, is_solid);
 
         self.frame_counter += 1;
+        self.frame_tick = self.frame_tick.wrapping_add(1);
         if now.duration_since(self.last_fps_time) >= Duration::from_secs(1) {
             let fps = self.frame_counter;
             self.frame_counter = 0;
@@ -847,7 +967,7 @@ impl App {
             };
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
-            // Frustum culling and BDA vertex pulling draws
+            // Pass 1: Opaque T0 Chunks
             let mut visible_chunks = 0;
 
             for mesh in self.chunk_meshes.values() {
@@ -857,32 +977,124 @@ impl App {
 
                 visible_chunks += 1;
 
-                let pc = ChunkPushConstants {
-                    view_proj,
-                    chunk_pos: mesh.pos,
-                    pattern_offset: mesh.pattern_offset,
-                    quad_buffer_address: mesh.buffer.device_address(),
-                };
+                if let Some(layer) = &mesh.opaque {
+                    let pc = ChunkPushConstants {
+                        view_proj,
+                        chunk_pos: mesh.pos,
+                        pattern_offset: layer.pattern_offset,
+                        quad_buffer_address: layer.buffer.device_address(),
+                    };
 
-                let pc_bytes = std::slice::from_raw_parts(
-                    std::ptr::from_ref(&pc).cast::<u8>(),
-                    size_of::<ChunkPushConstants>(),
-                );
+                    let pc_bytes = std::slice::from_raw_parts(
+                        std::ptr::from_ref(&pc).cast::<u8>(),
+                        size_of::<ChunkPushConstants>(),
+                    );
 
-                device.cmd_push_constants(
-                    cmd,
-                    pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    pc_bytes,
-                );
+                    device.cmd_push_constants(
+                        cmd,
+                        pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        pc_bytes,
+                    );
 
-                device.cmd_draw(cmd, mesh.quad_count * 6, 1, 0, 0);
+                    device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                }
             }
 
             self.visible_chunks_last = visible_chunks;
 
-            // Far-field LOD draws
+            // Pass 2: Opaque T1 Sub-Cubes (Slabs & Stairs)
+            if let Some(t1_pipeline) = &self.t1_pipeline {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, t1_pipeline.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t1_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+
+                for mesh in self.chunk_meshes.values() {
+                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
+                        continue;
+                    }
+
+                    if let Some(layer) = &mesh.t1_opaque {
+                        let pc = ChunkPushConstants {
+                            view_proj,
+                            chunk_pos: mesh.pos,
+                            pattern_offset: layer.pattern_offset,
+                            quad_buffer_address: layer.buffer.device_address(),
+                        };
+
+                        let pc_bytes = std::slice::from_raw_parts(
+                            std::ptr::from_ref(&pc).cast::<u8>(),
+                            size_of::<ChunkPushConstants>(),
+                        );
+
+                        device.cmd_push_constants(
+                            cmd,
+                            t1_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            pc_bytes,
+                        );
+
+                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                    }
+                }
+            }
+
+            // Pass 3: Cutout T0 (Leaves & Glass with alpha discard)
+            if let Some(cutout_pipeline) = &self.cutout_pipeline {
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    cutout_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    cutout_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+
+                for mesh in self.chunk_meshes.values() {
+                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
+                        continue;
+                    }
+
+                    if let Some(layer) = &mesh.cutout {
+                        let pc = ChunkPushConstants {
+                            view_proj,
+                            chunk_pos: mesh.pos,
+                            pattern_offset: layer.pattern_offset,
+                            quad_buffer_address: layer.buffer.device_address(),
+                        };
+
+                        let pc_bytes = std::slice::from_raw_parts(
+                            std::ptr::from_ref(&pc).cast::<u8>(),
+                            size_of::<ChunkPushConstants>(),
+                        );
+
+                        device.cmd_push_constants(
+                            cmd,
+                            cutout_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            pc_bytes,
+                        );
+
+                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                    }
+                }
+            }
+
+            // Pass 4: Far-field LOD draws
             if let Some(lod_pipeline) = &self.lod_pipeline {
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
                 let mut visible_lods = 0;
@@ -924,7 +1136,58 @@ impl App {
                 self.visible_lod_nodes_last = visible_lods;
             }
 
-            // Block selection wireframe highlight
+            // Pass 5: Translucent (Water with alpha blending and animated frames)
+            if let Some(trans_pipeline) = &self.translucent_pipeline {
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    trans_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    trans_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+
+                for mesh in self.chunk_meshes.values() {
+                    if !frustum.intersects_aabb(mesh.min_aabb, mesh.max_aabb) {
+                        continue;
+                    }
+
+                    if let Some(layer) = &mesh.translucent {
+                        let pc = TranslucentPushConstants {
+                            view_proj,
+                            chunk_pos: mesh.pos,
+                            pattern_offset: layer.pattern_offset,
+                            quad_buffer_address: layer.buffer.device_address(),
+                            frame_tick: self.frame_tick,
+                            water_base_layer: self.water_anim_info.base_layer,
+                            water_frame_count: self.water_anim_info.frame_count,
+                            _pad: [0; 3],
+                        };
+
+                        let pc_bytes = std::slice::from_raw_parts(
+                            std::ptr::from_ref(&pc).cast::<u8>(),
+                            size_of::<TranslucentPushConstants>(),
+                        );
+
+                        device.cmd_push_constants(
+                            cmd,
+                            trans_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            pc_bytes,
+                        );
+
+                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                    }
+                }
+            }
+
+            // Pass 6: Block selection wireframe highlight (snapped to sub-cube bounds)
             if let (Some(hit), Some(highlight_pipeline)) =
                 (self.targeted_block, &self.highlight_pipeline)
             {
@@ -935,24 +1198,53 @@ impl App {
                 );
                 #[allow(clippy::cast_precision_loss)]
                 let (bx, by, bz) = (hit.pos.x() as f32, hit.pos.y() as f32, hit.pos.z() as f32);
-                let pc = HighlightPushConstants {
-                    view_proj,
-                    min_bound: [bx - 0.002, by - 0.002, bz - 0.002, 0.0],
-                    max_bound: [bx + 1.002, by + 1.002, bz + 1.002, 0.0],
-                    color: [0.05, 0.05, 0.05, 0.75],
+
+                let (chunk_pos, local_idx) = vx_voxel::coords::split_block_pos(hit.pos);
+                let boxes = if let Some(snap) = self.chunks.get(&chunk_pos) {
+                    let state = snap.blocks().get(local_idx);
+                    match self.block_registry.shape(state) {
+                        BlockShape::Boxes(b) if !b.is_empty() => b.clone(),
+                        _ => vec![vx_voxel::shape::SubBox::FULL_CUBE],
+                    }
+                } else {
+                    vec![vx_voxel::shape::SubBox::FULL_CUBE]
                 };
-                let pc_bytes = std::slice::from_raw_parts(
-                    std::ptr::from_ref(&pc).cast::<u8>(),
-                    size_of::<HighlightPushConstants>(),
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    highlight_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    pc_bytes,
-                );
-                device.cmd_draw(cmd, 24, 1, 0, 0);
+
+                for b in boxes {
+                    #[allow(clippy::cast_precision_loss)]
+                    let min_bound = [
+                        bx + f32::from(b.min[0]) / 16.0 - 0.002,
+                        by + f32::from(b.min[1]) / 16.0 - 0.002,
+                        bz + f32::from(b.min[2]) / 16.0 - 0.002,
+                        0.0,
+                    ];
+                    #[allow(clippy::cast_precision_loss)]
+                    let max_bound = [
+                        bx + f32::from(b.max[0]) / 16.0 + 0.002,
+                        by + f32::from(b.max[1]) / 16.0 + 0.002,
+                        bz + f32::from(b.max[2]) / 16.0 + 0.002,
+                        0.0,
+                    ];
+
+                    let pc = HighlightPushConstants {
+                        view_proj,
+                        min_bound,
+                        max_bound,
+                        color: [0.05, 0.05, 0.05, 0.75],
+                    };
+                    let pc_bytes = std::slice::from_raw_parts(
+                        std::ptr::from_ref(&pc).cast::<u8>(),
+                        size_of::<HighlightPushConstants>(),
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        highlight_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        pc_bytes,
+                    );
+                    device.cmd_draw(cmd, 24, 1, 0, 0);
+                }
             }
 
             device.cmd_end_rendering(cmd);
@@ -1003,7 +1295,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        let texture_array = match load_and_upload_textures(&gpu_context) {
+        let (texture_array, water_anim_info) = match load_and_upload_textures(&gpu_context) {
             Ok(t) => t,
             Err(err) => {
                 tracing::error!("Failed to load and upload texture array: {err}");
@@ -1011,6 +1303,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        self.water_anim_info = water_anim_info;
 
         // Create Descriptor Set Layout for binding 0 (sampler2DArray)
         let binding = vk::DescriptorSetLayoutBinding::default()
@@ -1147,6 +1440,137 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Load T1 SPIR-V bytecode
+        let t1_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/chunk_t1.vert.spv"));
+        let t1_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/chunk_t1.frag.spv"));
+
+        let t1_vert_module = match ShaderModule::from_spv(gpu_context.device().raw(), t1_vert_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create T1 vertex shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let t1_frag_module = match ShaderModule::from_spv(gpu_context.device().raw(), t1_frag_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create T1 fragment shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let t1_pipeline = match GraphicsPipeline::create_dynamic(
+            gpu_context.device().raw(),
+            t1_vert_module.raw(),
+            t1_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::BACK,
+            vk::FrontFace::COUNTER_CLOCKWISE,
+            &[descriptor_set_layout],
+            &[push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic T1 graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Load Cutout SPIR-V bytecode
+        let cutout_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/cutout.vert.spv"));
+        let cutout_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/cutout.frag.spv"));
+
+        let cutout_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), cutout_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create cutout vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let cutout_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), cutout_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create cutout fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let cutout_pipeline = match GraphicsPipeline::create_dynamic_cutout(
+            gpu_context.device().raw(),
+            cutout_vert_module.raw(),
+            cutout_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[descriptor_set_layout],
+            &[push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic cutout graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Load Translucent SPIR-V bytecode
+        let trans_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/translucent.vert.spv"));
+        let trans_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/translucent.frag.spv"));
+
+        let trans_vert_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), trans_vert_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create translucent vertex shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let trans_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), trans_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create translucent fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let trans_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<TranslucentPushConstants>() as u32);
+
+        let trans_pipeline = match GraphicsPipeline::create_dynamic_translucent(
+            gpu_context.device().raw(),
+            trans_vert_module.raw(),
+            trans_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[descriptor_set_layout],
+            &[trans_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic translucent graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
         // Load LOD SPIR-V bytecode
         let lod_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/lod.vert.spv"));
         let lod_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/lod.frag.spv"));
@@ -1247,6 +1671,18 @@ impl ApplicationHandler for App {
         self.pipeline = Some(pipeline);
         self.vert_shader = Some(vert_module);
         self.frag_shader = Some(frag_module);
+
+        self.t1_pipeline = Some(t1_pipeline);
+        self.t1_vert_shader = Some(t1_vert_module);
+        self.t1_frag_shader = Some(t1_frag_module);
+
+        self.cutout_pipeline = Some(cutout_pipeline);
+        self.cutout_vert_shader = Some(cutout_vert_module);
+        self.cutout_frag_shader = Some(cutout_frag_module);
+
+        self.translucent_pipeline = Some(trans_pipeline);
+        self.translucent_vert_shader = Some(trans_vert_module);
+        self.translucent_frag_shader = Some(trans_frag_module);
         self.lod_pipeline = Some(lod_pipeline);
         self.lod_vert_shader = Some(lod_vert_module);
         self.lod_frag_shader = Some(lod_frag_module);
@@ -1374,6 +1810,9 @@ impl ApplicationHandler for App {
                     KeyCode::Digit4 if pressed => self.select_hotbar_slot(3),
                     KeyCode::Digit5 if pressed => self.select_hotbar_slot(4),
                     KeyCode::Digit6 if pressed => self.select_hotbar_slot(5),
+                    KeyCode::Digit7 if pressed => self.select_hotbar_slot(6),
+                    KeyCode::Digit8 if pressed => self.select_hotbar_slot(7),
+                    KeyCode::Digit9 if pressed => self.select_hotbar_slot(8),
                     KeyCode::Escape if pressed => {
                         if self.controller.mouse_captured {
                             self.controller.mouse_captured = false;
@@ -1434,6 +1873,36 @@ impl ApplicationHandler for App {
                 frag.destroy(gpu_context.device().raw());
             }
 
+            if let Some(mut pipeline) = self.t1_pipeline.take() {
+                pipeline.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut vert) = self.t1_vert_shader.take() {
+                vert.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut frag) = self.t1_frag_shader.take() {
+                frag.destroy(gpu_context.device().raw());
+            }
+
+            if let Some(mut pipeline) = self.cutout_pipeline.take() {
+                pipeline.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut vert) = self.cutout_vert_shader.take() {
+                vert.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut frag) = self.cutout_frag_shader.take() {
+                frag.destroy(gpu_context.device().raw());
+            }
+
+            if let Some(mut pipeline) = self.translucent_pipeline.take() {
+                pipeline.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut vert) = self.translucent_vert_shader.take() {
+                vert.destroy(gpu_context.device().raw());
+            }
+            if let Some(mut frag) = self.translucent_frag_shader.take() {
+                frag.destroy(gpu_context.device().raw());
+            }
+
             if let Some(mut pipeline) = self.lod_pipeline.take() {
                 pipeline.destroy(gpu_context.device().raw());
             }
@@ -1478,9 +1947,8 @@ impl ApplicationHandler for App {
                 tex.destroy(gpu_context.device().raw(), gpu_context.allocator());
             }
 
-            for (_, mut mesh) in self.chunk_meshes.drain() {
-                mesh.buffer
-                    .destroy(gpu_context.device().raw(), gpu_context.allocator());
+            for (_, mesh) in self.chunk_meshes.drain() {
+                mesh.destroy(gpu_context);
             }
 
             for (_, mut mesh) in self.lod_meshes.drain() {
@@ -1495,7 +1963,9 @@ impl ApplicationHandler for App {
     }
 }
 
-fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+fn load_and_upload_textures(
+    gpu_context: &GpuContext,
+) -> Result<(GpuTextureArray, AnimatedTextureInfo)> {
     let mut stack = ResourcePackStack::new();
     stack.add_root("dev-assets/faithful-32x");
     stack.add_root("dev-assets/classic-26.2");
@@ -1529,6 +1999,12 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
     );
     builder.insert("bedrock", stack.load_block_texture("bedrock")?);
     builder.insert("sand", stack.load_block_texture("sand")?);
+    builder.insert("oak_planks", stack.load_block_texture("oak_planks")?);
+    builder.insert("oak_leaves", stack.load_block_texture("oak_leaves")?);
+    builder.insert("glass", stack.load_block_texture("glass")?);
+
+    let water_frames = stack.load_animated_block_texture("water_still")?;
+    let water_anim = builder.insert_animated("water_still", water_frames, 2);
 
     let baked = builder.bake();
     info!(
@@ -1558,7 +2034,7 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
         &regions,
     )?;
 
-    Ok(texture_array)
+    Ok((texture_array, water_anim))
 }
 
 fn main() -> Result<()> {

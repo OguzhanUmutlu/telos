@@ -12,13 +12,17 @@ pub mod mesh;
 pub mod mesher;
 pub mod naive;
 pub mod quad;
+pub mod t1;
 
 pub use bitwise::NeighborSlices;
 pub use light::{
     LightPattern, LightPatternTable, OccupancyLightSampler, VoxelLightSampler, VoxelNeighborhood,
     compute_face_pattern,
 };
-pub use mesh::{QuadRange, T0Mesh};
-pub use mesher::{mesh_blocks_t0, mesh_blocks_with_occupancy, mesh_chunk_t0};
+pub use mesh::{ChunkMeshLayers, QuadRange, T0Mesh};
+pub use mesher::{
+    mesh_blocks_t0, mesh_blocks_with_occupancy, mesh_chunk_multilayers, mesh_chunk_t0,
+};
 pub use naive::NaiveMesher;
 pub use quad::{FaceDir, T0Quad};
+pub use t1::{T1Mesh, T1Quad, mesh_chunk_t1};

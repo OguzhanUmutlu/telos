@@ -10,7 +10,7 @@ pub mod image_buf;
 pub mod material;
 pub mod pack;
 
-pub use builder::{BakedTextureArray, MipCopyRegion, TextureArrayBuilder};
+pub use builder::{AnimatedTextureInfo, BakedTextureArray, MipCopyRegion, TextureArrayBuilder};
 pub use error::AssetError;
 pub use image_buf::RgbaImage;
 pub use material::MaterialTextureMap;

@@ -36,12 +36,24 @@ pub struct BakedTextureArray {
     pub copy_regions: Vec<MipCopyRegion>,
 }
 
+/// Metadata describing an animated sequence of consecutive texture layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimatedTextureInfo {
+    /// First texture layer index in the baked array.
+    pub base_layer: u32,
+    /// Total number of animation frames.
+    pub frame_count: u32,
+    /// Duration of each frame in game ticks.
+    pub frame_time: u32,
+}
+
 /// Builder that collects textures, enforces uniform resolution, and bakes mipmap chains.
 #[derive(Debug, Clone)]
 pub struct TextureArrayBuilder {
     resolution: u32,
     textures: Vec<(String, RgbaImage)>,
     name_to_index: HashMap<String, u32>,
+    animations: HashMap<String, AnimatedTextureInfo>,
 }
 
 impl TextureArrayBuilder {
@@ -52,6 +64,7 @@ impl TextureArrayBuilder {
             resolution,
             textures: Vec::new(),
             name_to_index: HashMap::new(),
+            animations: HashMap::new(),
         }
     }
 
@@ -77,6 +90,46 @@ impl TextureArrayBuilder {
         idx
     }
 
+    /// Registers an animated texture sequence as consecutive layers in the array.
+    pub fn insert_animated(
+        &mut self,
+        name: &str,
+        frames: Vec<RgbaImage>,
+        frame_time: u32,
+    ) -> AnimatedTextureInfo {
+        if let Some(&info) = self.animations.get(name) {
+            return info;
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
+        let frame_count = frames.len() as u32;
+        let mut base_layer = 0;
+
+        for (i, frame) in frames.into_iter().enumerate() {
+            let scaled = if frame.width != self.resolution || frame.height != self.resolution {
+                frame.rescale(self.resolution, self.resolution)
+            } else {
+                frame
+            };
+
+            #[allow(clippy::cast_possible_truncation)]
+            let layer_idx = self.textures.len() as u32;
+            if i == 0 {
+                base_layer = layer_idx;
+                self.name_to_index.insert(name.to_string(), base_layer);
+            }
+            self.textures.push((format!("{name}_{i}"), scaled));
+        }
+
+        let info = AnimatedTextureInfo {
+            base_layer,
+            frame_count,
+            frame_time,
+        };
+        self.animations.insert(name.to_string(), info);
+        info
+    }
+
     /// Number of registered texture layers.
     #[must_use]
     pub fn layer_count(&self) -> u32 {
@@ -88,6 +141,12 @@ impl TextureArrayBuilder {
     #[must_use]
     pub fn get_index(&self, name: &str) -> Option<u32> {
         self.name_to_index.get(name).copied()
+    }
+
+    /// Animation metadata for an animated texture, if registered.
+    #[must_use]
+    pub fn get_animation(&self, name: &str) -> Option<AnimatedTextureInfo> {
+        self.animations.get(name).copied()
     }
 
     /// Bakes all texture layers into a contiguous memory layout with full mipmap chains.

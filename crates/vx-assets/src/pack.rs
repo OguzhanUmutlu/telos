@@ -59,4 +59,13 @@ impl ResourcePackStack {
 
         RgbaImage::from_file(&path)
     }
+
+    /// Loads and decodes all frames of an animated block texture strip from the mounted packs.
+    pub fn load_animated_block_texture(&self, name: &str) -> Result<Vec<RgbaImage>, AssetError> {
+        let path = self
+            .find_block_texture(name)
+            .ok_or_else(|| AssetError::MissingTexture(name.to_string()))?;
+
+        RgbaImage::frames_from_file(&path)
+    }
 }

@@ -16,6 +16,7 @@ pub mod light;
 pub mod map;
 pub mod occupancy;
 pub mod registry;
+pub mod shape;
 pub mod state;
 pub mod storage;
 
@@ -25,5 +26,6 @@ pub use light::{ChunkHeightmap, ChunkLight, ColumnHeights, LightBfs, LightLayer}
 pub use map::{ChunkHandle, ChunkMap};
 pub use occupancy::{Occupancy, transpose_32x32};
 pub use registry::{Block, BlockRegistry};
+pub use shape::{BlockShape, FaceOcclusionMask, ShapeTier, SubBox};
 pub use state::{BlockStateId, StateFlags};
 pub use storage::{Blocks, HotBlocks, Packed, fill_box, from_dense};

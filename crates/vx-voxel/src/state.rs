@@ -61,6 +61,8 @@ bitflags! {
         const EMITS_LIGHT = 1 << 5;
         /// Translucent material requiring depth-sorted or blended passes (e.g. water, stained glass).
         const TRANSLUCENT = 1 << 6;
+        /// Alpha cutout material with sharp binary discard (e.g. leaves, glass, saplings).
+        const CUTOUT = 1 << 7;
     }
 }
 
@@ -72,4 +74,8 @@ impl StateFlags {
     pub const OPAQUE_CUBE: Self = Self::from_bits_truncate(
         Self::OPAQUE_FULL.bits() | Self::LIGHT_BLOCKING.bits() | Self::NON_EMPTY.bits(),
     );
+
+    /// Default flags for an alpha cutout full cube (glass, leaves).
+    pub const CUTOUT_CUBE: Self =
+        Self::from_bits_truncate(Self::CUTOUT.bits() | Self::NON_EMPTY.bits());
 }

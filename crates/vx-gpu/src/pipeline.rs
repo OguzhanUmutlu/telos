@@ -284,6 +284,237 @@ impl GraphicsPipeline {
         })
     }
 
+    /// Builds a dynamic rendering graphics pipeline for translucent surfaces (depth-tested, non-writing, alpha blended).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_dynamic_translucent(
+        device: &ash::Device,
+        vert_shader: vk::ShaderModule,
+        frag_shader: vk::ShaderModule,
+        color_format: vk::Format,
+        depth_format: Option<vk::Format>,
+        cull_mode: vk::CullModeFlags,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        push_constant_ranges: &[vk::PushConstantRange],
+    ) -> Result<Self, GpuError> {
+        let entry_point = c"main";
+
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader)
+                .name(entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader)
+                .name(entry_point),
+        ];
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(cull_mode)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE);
+
+        // Translucent: depth test enabled, depth write DISABLED
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(depth_format.is_some())
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        // Alpha blend: SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD);
+
+        let color_attachments = [color_blend_attachment];
+        let color_blending =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&color_attachments);
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(push_constant_ranges);
+
+        // SAFETY: Creating pipeline layout
+        let layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };
+
+        let color_formats = [color_format];
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        if let Some(depth_fmt) = depth_format {
+            rendering_info = rendering_info.depth_attachment_format(depth_fmt);
+        }
+
+        let mut pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state_info)
+            .layout(layout)
+            .push_next(&mut rendering_info);
+
+        if depth_format.is_some() {
+            pipeline_info = pipeline_info.depth_stencil_state(&depth_stencil);
+        }
+
+        // SAFETY: Creating graphics pipeline with dynamic rendering extension chain
+        let pipelines = unsafe {
+            device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|(_, err)| GpuError::Vk(err))?
+        };
+
+        info!("Dynamic rendering translucent graphics pipeline compiled successfully");
+
+        Ok(Self {
+            pipeline: pipelines[0],
+            layout,
+        })
+    }
+
+    /// Builds a dynamic rendering graphics pipeline for cutout foliage and alpha-test geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_dynamic_cutout(
+        device: &ash::Device,
+        vert_shader: vk::ShaderModule,
+        frag_shader: vk::ShaderModule,
+        color_format: vk::Format,
+        depth_format: Option<vk::Format>,
+        cull_mode: vk::CullModeFlags,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        push_constant_ranges: &[vk::PushConstantRange],
+    ) -> Result<Self, GpuError> {
+        let entry_point = c"main";
+
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader)
+                .name(entry_point),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader)
+                .name(entry_point),
+        ];
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(cull_mode)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE);
+
+        // Cutout: depth test enabled, depth write ENABLED
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(depth_format.is_some())
+            .depth_write_enable(depth_format.is_some())
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+        let color_attachments = [color_blend_attachment];
+        let color_blending =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&color_attachments);
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(push_constant_ranges);
+
+        // SAFETY: Creating pipeline layout
+        let layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };
+
+        let color_formats = [color_format];
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
+        if let Some(depth_fmt) = depth_format {
+            rendering_info = rendering_info.depth_attachment_format(depth_fmt);
+        }
+
+        let mut pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state_info)
+            .layout(layout)
+            .push_next(&mut rendering_info);
+
+        if depth_format.is_some() {
+            pipeline_info = pipeline_info.depth_stencil_state(&depth_stencil);
+        }
+
+        // SAFETY: Creating graphics pipeline with dynamic rendering extension chain
+        let pipelines = unsafe {
+            device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|(_, err)| GpuError::Vk(err))?
+        };
+
+        info!("Dynamic rendering cutout graphics pipeline compiled successfully");
+
+        Ok(Self {
+            pipeline: pipelines[0],
+            layout,
+        })
+    }
+
     /// Returns the raw `vk::Pipeline` handle.
     #[must_use]
     pub fn raw(&self) -> vk::Pipeline {

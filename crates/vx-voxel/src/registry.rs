@@ -46,6 +46,7 @@ pub struct BlockRegistry {
     blocks: Vec<Block>,
     by_identifier: HashMap<Identifier, usize>,
     state_to_flags: Vec<StateFlags>,
+    state_to_shape: Vec<crate::shape::BlockShape>,
     state_to_block: Vec<usize>,
     is_frozen: bool,
 }
@@ -56,13 +57,14 @@ impl Default for BlockRegistry {
             blocks: Vec::new(),
             by_identifier: HashMap::new(),
             state_to_flags: Vec::new(),
+            state_to_shape: Vec::new(),
             state_to_block: Vec::new(),
             is_frozen: false,
         };
 
         // Register default built-in air state (ID 0)
         let air_id = Identifier::new("voxel", "air").expect("Valid identifier");
-        registry.register(air_id, StateFlags::AIR);
+        registry.register_with_shape(air_id, StateFlags::AIR, crate::shape::BlockShape::Empty);
 
         registry
     }
@@ -75,11 +77,29 @@ impl BlockRegistry {
         Self::default()
     }
 
-    /// Registers a new simple block type with default flags.
+    /// Registers a new simple block type with default cube shape.
     ///
     /// # Panics
     /// Panics if the registry is already frozen or the identifier is registered.
     pub fn register(&mut self, identifier: Identifier, flags: StateFlags) -> BlockStateId {
+        let default_shape = if flags.contains(StateFlags::TRANSLUCENT) {
+            crate::shape::BlockShape::Fluid { level: 0 }
+        } else {
+            crate::shape::BlockShape::Cube
+        };
+        self.register_with_shape(identifier, flags, default_shape)
+    }
+
+    /// Registers a new block type with explicit shape geometry.
+    ///
+    /// # Panics
+    /// Panics if the registry is already frozen or the identifier is registered.
+    pub fn register_with_shape(
+        &mut self,
+        identifier: Identifier,
+        flags: StateFlags,
+        shape: crate::shape::BlockShape,
+    ) -> BlockStateId {
         assert!(!self.is_frozen, "Cannot register block: registry is frozen");
         assert!(
             !self.by_identifier.contains_key(&identifier),
@@ -91,6 +111,7 @@ impl BlockRegistry {
         let block_index = self.blocks.len();
 
         self.state_to_flags.push(flags);
+        self.state_to_shape.push(shape);
         self.state_to_block.push(block_index);
 
         let block = Block {
@@ -134,6 +155,27 @@ impl BlockRegistry {
             .unwrap_or(StateFlags::AIR)
     }
 
+    /// Looks up the `BlockShape` for a given `BlockStateId`.
+    #[inline]
+    #[must_use]
+    pub fn shape(&self, id: BlockStateId) -> &crate::shape::BlockShape {
+        static EMPTY_SHAPE: crate::shape::BlockShape = crate::shape::BlockShape::Empty;
+        self.state_to_shape
+            .get(id.as_usize())
+            .unwrap_or(&EMPTY_SHAPE)
+    }
+
+    /// Computes the 256-bit face occlusion mask for a given `BlockStateId` and direction.
+    #[inline]
+    #[must_use]
+    pub fn occlusion_mask(
+        &self,
+        id: BlockStateId,
+        face: vx_core::coords::Face,
+    ) -> crate::shape::FaceOcclusionMask {
+        self.shape(id).occlusion_mask(face)
+    }
+
     /// Total number of registered block states.
     #[must_use]
     pub fn total_states(&self) -> usize {
@@ -141,6 +183,7 @@ impl BlockRegistry {
     }
 
     /// Creates a standard registry populated with baseline voxel blocks (stone, dirt, grass, etc.).
+    #[allow(clippy::similar_names)]
     #[must_use]
     pub fn standard() -> Self {
         let mut reg = Self::new();
@@ -166,6 +209,36 @@ impl BlockRegistry {
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits() | StateFlags::TRANSLUCENT.bits(),
             ),
+        );
+
+        let planks_id = Identifier::new("voxel", "oak_planks").unwrap();
+        reg.register(planks_id, StateFlags::OPAQUE_CUBE);
+
+        let leaves_id = Identifier::new("voxel", "oak_leaves").unwrap();
+        reg.register(
+            leaves_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::CUTOUT.bits()
+                    | StateFlags::LIGHT_BLOCKING.bits(),
+            ),
+        );
+
+        let glass_id = Identifier::new("voxel", "glass").unwrap();
+        reg.register(glass_id, StateFlags::CUTOUT_CUBE);
+
+        let slab_id = Identifier::new("voxel", "stone_slab").unwrap();
+        reg.register_with_shape(
+            slab_id,
+            StateFlags::NON_EMPTY,
+            crate::shape::BlockShape::bottom_slab(),
+        );
+
+        let stairs_id = Identifier::new("voxel", "oak_stairs").unwrap();
+        reg.register_with_shape(
+            stairs_id,
+            StateFlags::NON_EMPTY,
+            crate::shape::BlockShape::stairs(vx_core::coords::Face::North, false),
         );
 
         reg.freeze();

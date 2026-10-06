@@ -32,7 +32,7 @@ impl QuadRange {
 
 /// Contiguous mesh buffer containing packed `T0Quad` entries organized by cardinal direction,
 /// followed by deduplicated `LightPattern` entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct T0Mesh {
     /// Contiguous array of all quads in the chunk mesh.
     pub quads: Vec<T0Quad>,
@@ -113,5 +113,42 @@ impl T0Mesh {
         for p in &self.patterns {
             dst.extend_from_slice(&p.raw);
         }
+    }
+}
+
+/// A complete chunk mesh partitioned into separate rendering layers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChunkMeshLayers {
+    /// Opaque full cubes (stone, dirt, grass, planks).
+    pub opaque: T0Mesh,
+    /// Alpha cutout geometry (leaves, glass).
+    pub cutout: T0Mesh,
+    /// Translucent geometry (water).
+    pub translucent: T0Mesh,
+    /// Opaque sub-cube geometry on the 1/16th grid (slabs, stairs).
+    pub t1_opaque: crate::t1::T1Mesh,
+}
+
+impl ChunkMeshLayers {
+    /// Creates an empty layered mesh.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            opaque: T0Mesh::empty(),
+            cutout: T0Mesh::empty(),
+            translucent: T0Mesh::empty(),
+            t1_opaque: crate::t1::T1Mesh::empty(),
+        }
+    }
+
+    /// Returns `true` if all layers have 0 quads.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.opaque.is_empty()
+            && self.cutout.is_empty()
+            && self.translucent.is_empty()
+            && self.t1_opaque.is_empty()
     }
 }
