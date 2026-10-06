@@ -1,4 +1,4 @@
-//! High-throughput 64-bit binary greedy meshing entry points.
+//! High-throughput 64-bit binary greedy meshing entry points with smooth lighting.
 
 use vx_voxel::{
     chunk::ChunkSnapshot,
@@ -11,7 +11,11 @@ use vx_voxel::{
 
 use crate::{
     bitwise::{NeighborSlices, extract_face_slice},
-    greedy::{greedy_merge_slice, greedy_merge_slice_uniform},
+    greedy::greedy_merge_slice_with_light,
+    light::{
+        LightPatternTable, OccupancyLightSampler, VoxelLightSampler, VoxelNeighborhood,
+        compute_face_pattern,
+    },
     mesh::{QuadRange, T0Mesh},
     quad::{FaceDir, T0Quad},
 };
@@ -27,7 +31,13 @@ pub fn mesh_chunk_t0(chunk: &ChunkSnapshot, neighbors: &[Option<&ChunkSnapshot>;
     }
 
     let neighbor_slices = NeighborSlices::from_snapshots(neighbors);
-    mesh_blocks_internal(chunk.blocks(), chunk.occupancy(), &neighbor_slices)
+    let neighborhood = VoxelNeighborhood::new(chunk, neighbors);
+    mesh_blocks_with_sampler(
+        chunk.blocks(),
+        chunk.occupancy(),
+        &neighbor_slices,
+        &neighborhood,
+    )
 }
 
 /// Meshes an arbitrary `Blocks` container given its occupancy and neighbor boundary bitboards.
@@ -44,7 +54,8 @@ pub fn mesh_blocks_with_occupancy(
         return T0Mesh::empty();
     }
 
-    mesh_blocks_internal(blocks, occ, neighbors)
+    let sampler = OccupancyLightSampler::new(occ, neighbors);
+    mesh_blocks_with_sampler(blocks, occ, neighbors, &sampler)
 }
 
 /// Meshes blocks and computes occupancy on the fly using the registry flags.
@@ -61,7 +72,12 @@ pub fn mesh_blocks_t0(
     mesh_blocks_with_occupancy(blocks, &occ, &neighbor_slices)
 }
 
-fn mesh_blocks_internal(blocks: &Blocks, occ: &Occupancy, neighbors: &NeighborSlices) -> T0Mesh {
+fn mesh_blocks_with_sampler<S: VoxelLightSampler>(
+    blocks: &Blocks,
+    occ: &Occupancy,
+    neighbors: &NeighborSlices,
+    sampler: &S,
+) -> T0Mesh {
     let mut buckets: [Vec<T0Quad>; 6] = [
         Vec::with_capacity(64),
         Vec::with_capacity(64),
@@ -70,6 +86,7 @@ fn mesh_blocks_internal(blocks: &Blocks, occ: &Occupancy, neighbors: &NeighborSl
         Vec::with_capacity(64),
         Vec::with_capacity(64),
     ];
+    let mut pattern_table = LightPatternTable::new();
 
     let is_uniform = blocks.is_uniform();
     let uniform_mat = if is_uniform {
@@ -87,23 +104,47 @@ fn mesh_blocks_internal(blocks: &Blocks, occ: &Occupancy, neighbors: &NeighborSl
                 continue;
             }
 
-            if is_uniform {
-                greedy_merge_slice_uniform(slice, uniform_mat, |u, v, w, h, mat| {
-                    let (x, y, z) = map_coords(dir, d as u32, u, v);
-                    bucket.push(T0Quad::new(x, y, z, w, h, dir, mat, 0));
-                });
-            } else {
-                let get_mat = |u: u32, v: u32| -> u16 {
-                    let (x, y, z) = map_coords(dir, d as u32, u, v);
+            // Per-slice 4 KiB stack cache to evaluate each exposed cell's lighting at most once
+            let mut cache = [0u32; 1024];
+
+            let mut get_cell = |u: u32, v: u32| -> (u16, u16, bool, bool) {
+                let cell_idx = ((v << 5) | u) as usize;
+                let cached = cache[cell_idx];
+                if (cached & 0x8000_0000) != 0 {
+                    let mat = cached as u16;
+                    let pat_idx = ((cached >> 16) & 0x3FFF) as u16;
+                    let can_u = ((cached >> 30) & 1) != 0;
+                    let can_v = ((cached >> 29) & 1) != 0;
+                    return (mat, pat_idx, can_u, can_v);
+                }
+
+                let (x, y, z) = map_coords(dir, d as u32, u, v);
+                let mat = if is_uniform {
+                    uniform_mat
+                } else {
                     let idx = LocalIdx::from_coords_unchecked(x, y, z);
                     blocks.get(idx).0 as u16
                 };
 
-                greedy_merge_slice(slice, get_mat, |u, v, w, h, mat| {
-                    let (x, y, z) = map_coords(dir, d as u32, u, v);
-                    bucket.push(T0Quad::new(x, y, z, w, h, dir, mat, 0));
-                });
-            }
+                let pattern = compute_face_pattern(sampler, x, y, z, dir);
+                let pat_idx = pattern_table.insert(pattern);
+                let can_u = pattern.can_merge_u();
+                let can_v = pattern.can_merge_v();
+
+                let packed = u32::from(mat)
+                    | ((u32::from(pat_idx) & 0x3FFF) << 16)
+                    | (u32::from(can_v) << 29)
+                    | (u32::from(can_u) << 30)
+                    | 0x8000_0000;
+                cache[cell_idx] = packed;
+
+                (mat, pat_idx, can_u, can_v)
+            };
+
+            greedy_merge_slice_with_light(slice, &mut get_cell, |u, v, w, h, mat, pat_idx| {
+                let (x, y, z) = map_coords(dir, d as u32, u, v);
+                bucket.push(T0Quad::new(x, y, z, w, h, dir, mat, pat_idx));
+            });
         }
     }
 
@@ -119,6 +160,7 @@ fn mesh_blocks_internal(blocks: &Blocks, occ: &Occupancy, neighbors: &NeighborSl
 
     T0Mesh {
         quads: all_quads,
+        patterns: pattern_table.into_patterns(),
         ranges,
     }
 }

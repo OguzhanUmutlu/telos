@@ -46,7 +46,7 @@ struct Args {
 struct ChunkPushConstants {
     view_proj: glam::Mat4,
     chunk_pos: [i32; 3],
-    _pad: u32,
+    pattern_offset: u32,
     quad_buffer_address: u64,
 }
 
@@ -54,6 +54,7 @@ struct GpuChunkMesh {
     pos: [i32; 3],
     buffer: GpuBuffer,
     quad_count: u32,
+    pattern_offset: u32,
     min_aabb: Vec3,
     max_aabb: Vec3,
 }
@@ -258,7 +259,7 @@ impl App {
                 let pc = ChunkPushConstants {
                     view_proj,
                     chunk_pos: mesh.pos,
-                    _pad: 0,
+                    pattern_offset: mesh.pattern_offset,
                     quad_buffer_address: mesh.buffer.device_address(),
                 };
 
@@ -721,6 +722,7 @@ fn load_and_upload_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray>
     Ok(texture_array)
 }
 
+#[allow(clippy::too_many_lines)]
 fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
     const GRID_XZ: i32 = 8;
     const GRID_Y: i32 = 2;
@@ -728,15 +730,72 @@ fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
     let reg = BlockRegistry::standard();
     let generator = vx_worldgen::WorldGenerator::new(0x5EED_C0DE_1234_5678, &reg);
 
-    // snapshots[cz][cy][cx]
-    let mut snapshots = Vec::with_capacity(GRID_XZ as usize);
-
+    // 1. Generate raw chunks
+    let mut raw_chunks = Vec::with_capacity(GRID_XZ as usize);
     for cz in 0..GRID_XZ {
         let mut y_plane = Vec::with_capacity(GRID_Y as usize);
         for cy in 0..GRID_Y {
             let mut row = Vec::with_capacity(GRID_XZ as usize);
             for cx in 0..GRID_XZ {
-                let mut chunk = generator.generate_chunk(ChunkPos::new(cx, cy, cz));
+                let chunk = generator.generate_chunk(ChunkPos::new(cx, cy, cz));
+                row.push(chunk);
+            }
+            y_plane.push(row);
+        }
+        raw_chunks.push(y_plane);
+    }
+
+    // 2. Compute column-wide heightmaps across stacked cubic chunks
+    let mut column_heights = Vec::with_capacity(GRID_XZ as usize);
+    for cz in 0..GRID_XZ {
+        let mut heights_row = Vec::with_capacity(GRID_XZ as usize);
+        for cx in 0..GRID_XZ {
+            let mut col_h = vx_voxel::light::ColumnHeights::new();
+            for cy in 0..GRID_Y {
+                let chunk = &raw_chunks[cz as usize][cy as usize][cx as usize];
+                let local_h = vx_voxel::light::ChunkHeightmap::from_occupancy(chunk.occupancy());
+                col_h.update_chunk(cy, &local_h);
+            }
+            heights_row.push(col_h);
+        }
+        column_heights.push(heights_row);
+    }
+
+    // 3. Propagate initial sky lighting with LightBfs
+    let mut bfs = vx_voxel::light::LightBfs::new();
+    for cz in 0..GRID_XZ {
+        for cy in 0..GRID_Y {
+            for cx in 0..GRID_XZ {
+                let chunk = &mut raw_chunks[cz as usize][cy as usize][cx as usize];
+                let col_h = &column_heights[cz as usize][cx as usize];
+
+                let mut chunk_light = vx_voxel::light::ChunkLight::default();
+                let is_opaque = |idx: usize| -> u8 {
+                    let x = (idx & 0x1F) as u32;
+                    let z = ((idx >> 5) & 0x1F) as u32;
+                    let y = ((idx >> 10) & 0x1F) as u32;
+                    if chunk.occupancy().is_solid(x, y, z) {
+                        15
+                    } else {
+                        0
+                    }
+                };
+
+                bfs.compute_initial_sky_light(cy, col_h, &mut chunk_light.sky, is_opaque);
+                chunk_light.try_collapse();
+                chunk.set_light(Some(chunk_light));
+            }
+        }
+    }
+
+    // 4. Publish immutable snapshots for meshing
+    let mut snapshots = Vec::with_capacity(GRID_XZ as usize);
+    for cz in 0..GRID_XZ {
+        let mut y_plane = Vec::with_capacity(GRID_Y as usize);
+        for cy in 0..GRID_Y {
+            let mut row = Vec::with_capacity(GRID_XZ as usize);
+            for cx in 0..GRID_XZ {
+                let chunk = &mut raw_chunks[cz as usize][cy as usize][cx as usize];
                 row.push(chunk.publish_snapshot());
             }
             y_plane.push(row);
@@ -784,9 +843,12 @@ fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
                 let mesh = vx_mesh::mesher::mesh_chunk_t0(chunk, &neighbors);
 
                 if !mesh.is_empty() {
+                    let mut buffer_data = Vec::new();
+                    mesh.write_to_u32_buffer(&mut buffer_data);
+
                     let buffer = gpu_context.create_buffer_with_data(
                         "chunk_mesh",
-                        &mesh.quads,
+                        &buffer_data,
                         vk::BufferUsageFlags::empty(),
                     )?;
 
@@ -804,6 +866,7 @@ fn generate_test_chunks(gpu_context: &GpuContext) -> Result<Vec<GpuChunkMesh>> {
                         pos: [cx * 32, cy * 32, cz * 32],
                         buffer,
                         quad_count: mesh.quads.len() as u32,
+                        pattern_offset: mesh.quads.len() as u32,
                         min_aabb,
                         max_aabb,
                     });

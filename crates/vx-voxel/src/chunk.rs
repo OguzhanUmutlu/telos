@@ -16,6 +16,7 @@ pub struct ChunkSnapshot {
     position: ChunkPos,
     blocks: Blocks,
     occupancy: Occupancy,
+    light: Option<crate::light::ChunkLight>,
     content_version: u64,
     face_version: [u64; 6],
     world_epoch: u64,
@@ -57,6 +58,12 @@ impl ChunkSnapshot {
     pub const fn world_epoch(&self) -> u64 {
         self.world_epoch
     }
+
+    /// Explicit chunk lighting data if present within simulation radius.
+    #[must_use]
+    pub const fn light(&self) -> Option<&crate::light::ChunkLight> {
+        self.light.as_ref()
+    }
 }
 
 /// Active mutable chunk with version counters and dirty tracking.
@@ -65,6 +72,7 @@ pub struct Chunk {
     position: ChunkPos,
     blocks: HotBlocks,
     occupancy: Occupancy,
+    light: Option<crate::light::ChunkLight>,
     content_version: u64,
     face_version: [u64; 6],
     world_epoch: u64,
@@ -86,6 +94,7 @@ impl Chunk {
             position,
             blocks,
             occupancy,
+            light: None,
             content_version: 0,
             face_version: [0; 6],
             world_epoch: 0,
@@ -107,6 +116,7 @@ impl Chunk {
             position,
             blocks: hot_blocks,
             occupancy,
+            light: None,
             content_version: 0,
             face_version: [0; 6],
             world_epoch: 0,
@@ -118,6 +128,12 @@ impl Chunk {
     #[must_use]
     pub const fn position(&self) -> ChunkPos {
         self.position
+    }
+
+    /// 3-axis occupancy bitmasks for greedy meshing.
+    #[must_use]
+    pub const fn occupancy(&self) -> &Occupancy {
+        &self.occupancy
     }
 
     /// Returns the frozen immutable `Blocks` representation of this chunk.
@@ -192,10 +208,28 @@ impl Chunk {
             position: self.position,
             blocks: Blocks::from_hot(&self.blocks),
             occupancy: self.occupancy.clone(),
+            light: self.light.clone(),
             content_version: self.content_version,
             face_version: self.face_version,
             world_epoch: self.world_epoch,
         })
+    }
+
+    /// Accesses the chunk's lighting data if allocated.
+    #[must_use]
+    pub const fn light(&self) -> Option<&crate::light::ChunkLight> {
+        self.light.as_ref()
+    }
+
+    /// Mutably accesses the chunk's lighting data.
+    pub fn light_mut(&mut self) -> Option<&mut crate::light::ChunkLight> {
+        self.light.as_mut()
+    }
+
+    /// Sets or drops the chunk's lighting data.
+    pub fn set_light(&mut self, light: Option<crate::light::ChunkLight>) {
+        self.light = light;
+        self.is_dirty = true;
     }
 
     /// Returns `true` if chunk has uncommitted edits.

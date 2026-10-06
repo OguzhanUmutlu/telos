@@ -5,6 +5,7 @@ layout(location = 1) in vec3 v_world_pos;
 layout(location = 2) flat in uint v_material;
 layout(location = 3) flat in uint v_dir;
 layout(location = 4) in vec2 v_uv;
+layout(location = 5) in vec3 v_light; // x: ao (0..3), y: sky (0..15), z: block (0..15)
 
 layout(location = 0) out vec4 out_color;
 
@@ -29,6 +30,8 @@ uint get_texture_layer(uint mat, uint dir) {
     }
 }
 
+const vec3 TORCH_COLOR = vec3(1.0, 0.82, 0.55);
+
 void main() {
     uint layer = get_texture_layer(v_material, v_dir);
 
@@ -40,17 +43,38 @@ void main() {
         tex_color.rgb *= vec3(0.474, 0.753, 0.353);
     }
 
-    // Directional face shading for voxel readability
-    float light = 0.75;
+    // Directional face shading factor
+    float face_shade = 0.75;
     if (v_normal.y > 0.5) {
-        light = 1.0;
+        face_shade = 1.0;
     } else if (v_normal.y < -0.5) {
-        light = 0.5;
+        face_shade = 0.5;
     } else if (abs(v_normal.z) > 0.5) {
-        light = 0.85;
+        face_shade = 0.85;
     } else {
-        light = 0.75;
+        face_shade = 0.75;
     }
 
-    out_color = vec4(tex_color.rgb * light, tex_color.a);
+    // Unpack smooth interpolated light components
+    float ao_raw = v_light.x;    // 0.0 .. 3.0
+    float sky_raw = v_light.y;   // 0.0 .. 15.0
+    float block_raw = v_light.z; // 0.0 .. 15.0
+
+    // Smooth ambient occlusion factor
+    float ao_factor = mix(0.35, 1.0, ao_raw / 3.0);
+
+    // Sky light with directional sunlight modulation
+    float sky_norm = clamp(sky_raw / 15.0, 0.0, 1.0);
+    vec3 sun_light = vec3(sky_norm * face_shade);
+
+    // Block light (warm torch color with quadratic falloff)
+    float block_norm = clamp(block_raw / 15.0, 0.0, 1.0);
+    vec3 torch_light = TORCH_COLOR * (block_norm * block_norm * 0.85 + block_norm * 0.15);
+
+    // Ambient light floor for deep caves
+    const float AMBIENT_FLOOR = 0.04;
+    vec3 total_light = (max(vec3(AMBIENT_FLOOR), sun_light) + torch_light) * ao_factor;
+    total_light = clamp(total_light, 0.0, 1.0);
+
+    out_color = vec4(tex_color.rgb * total_light, tex_color.a);
 }

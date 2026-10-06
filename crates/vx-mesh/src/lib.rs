@@ -7,12 +7,17 @@
 
 pub mod bitwise;
 pub mod greedy;
+pub mod light;
 pub mod mesh;
 pub mod mesher;
 pub mod naive;
 pub mod quad;
 
 pub use bitwise::NeighborSlices;
+pub use light::{
+    LightPattern, LightPatternTable, OccupancyLightSampler, VoxelLightSampler, VoxelNeighborhood,
+    compute_face_pattern,
+};
 pub use mesh::{QuadRange, T0Mesh};
 pub use mesher::{mesh_blocks_t0, mesh_blocks_with_occupancy, mesh_chunk_t0};
 pub use naive::NaiveMesher;

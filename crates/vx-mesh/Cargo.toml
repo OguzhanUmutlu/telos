@@ -13,6 +13,7 @@ vx-core = { workspace = true }
 vx-voxel = { workspace = true }
 glam = { workspace = true }
 tracing = { workspace = true }
+hashbrown = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

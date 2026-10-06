@@ -24,5 +24,9 @@ criterion = { workspace = true }
 name = "storage"
 harness = false
 
+[[bench]]
+name = "light_bench"
+harness = false
+
 [lints]
 workspace = true

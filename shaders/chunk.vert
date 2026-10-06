@@ -15,7 +15,7 @@ layout(buffer_reference, scalar) readonly buffer QuadBuffer {
 layout(push_constant) uniform PushConstants {
     mat4 view_proj;
     ivec3 chunk_pos;
-    uint pad;
+    uint pattern_offset;
     uint64_t quad_buffer_address;
 } pc;
 
@@ -24,6 +24,7 @@ layout(location = 1) out vec3 v_world_pos;
 layout(location = 2) flat out uint v_material;
 layout(location = 3) flat out uint v_dir;
 layout(location = 4) out vec2 v_uv;
+layout(location = 5) out vec3 v_light; // x: ao (0..3), y: sky (0..15), z: block (0..15)
 
 const uint CORNER_INDICES[6] = uint[](0, 1, 2, 2, 3, 0);
 
@@ -81,6 +82,13 @@ void main() {
 
     // Decode Word 1
     uint material = quad.word1 & 0xFFFFu;
+    uint pattern_idx = (quad.word1 >> 16) & 0x3FFFu;
+
+    // Unpack LightPattern from table
+    PackedQuad pattern = quad_buffer.quads[pc.pattern_offset + pattern_idx];
+    uint sky = (pattern.word0 >> (corner * 4u)) & 0xFu;
+    uint block = (pattern.word0 >> (16u + corner * 4u)) & 0xFu;
+    uint ao = (pattern.word1 >> (corner * 2u)) & 0x3u;
 
     vec2 uv_offsets[4] = vec2[](
         vec2(0.0, 0.0),
@@ -102,4 +110,5 @@ void main() {
     v_material = material;
     v_dir = dir;
     v_uv = corner_uv;
+    v_light = vec3(float(ao), float(sky), float(block));
 }

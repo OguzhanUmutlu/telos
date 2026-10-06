@@ -84,6 +84,7 @@ impl NaiveMesher {
 
         T0Mesh {
             quads: all_quads,
+            patterns: vec![crate::light::LightPattern::full_sky()],
             ranges,
         }
     }

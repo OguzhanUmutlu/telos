@@ -12,6 +12,7 @@
 
 pub mod chunk;
 pub mod coords;
+pub mod light;
 pub mod map;
 pub mod occupancy;
 pub mod registry;
@@ -20,6 +21,7 @@ pub mod storage;
 
 pub use chunk::{Chunk, ChunkSnapshot};
 pub use coords::{CHUNK_SIZE, CHUNK_VOLUME, LocalIdx, split_block_pos, to_block_pos};
+pub use light::{ChunkHeightmap, ChunkLight, ColumnHeights, LightBfs, LightLayer};
 pub use map::{ChunkHandle, ChunkMap};
 pub use occupancy::{Occupancy, transpose_32x32};
 pub use registry::{Block, BlockRegistry};
