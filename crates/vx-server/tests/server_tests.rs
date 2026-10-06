@@ -1352,3 +1352,139 @@ fn test_server_chat_broadcasting_and_commands() {
         "Bob should have received at most 5 messages due to burst rate limit, got {bob_chat_count}"
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_server_wasm_mod_event_and_world_mutation() {
+    use vx_mod::{ModConfig, ModPermissions};
+
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 2,
+        vertical_view_distance: 2,
+        ..Default::default()
+    };
+    let mut server = Server::new(777, config);
+
+    // A mod in WAT that reacts to BlockPlaced by placing oak planks (state 7) directly above it
+    let wat = r#"
+        (module
+            (import "vx" "vx_subscribe_events" (func $sub (param i32) (result i32)))
+            (import "vx" "vx_set_block" (func $set_block (param i32 i32 i32 i32) (result i32)))
+
+            (func (export "vx_init")
+                ;; Subscribe to BLOCK_PLACED (1 << 1 = 2)
+                (drop (call $sub (i32.const 2)))
+            )
+
+            (func (export "vx_on_event") (param $event_id i32) (param $p1 i64) (param $p2 i64) (param $p3 i64) (param $p4 i64) (result i32)
+                (if (i32.eq (local.get $event_id) (i32.const 2))
+                    (then
+                        ;; x = p1, y = p2 + 1, z = p3, state = 7
+                        (drop (call $set_block
+                            (i32.wrap_i64 (local.get $p1))
+                            (i32.add (i32.wrap_i64 (local.get $p2)) (i32.const 1))
+                            (i32.wrap_i64 (local.get $p3))
+                            (i32.const 7)
+                        ))
+                    )
+                )
+                (i32.const 0)
+            )
+        )
+    "#;
+
+    server
+        .load_mod_from_wat(
+            "builder_mod",
+            wat,
+            ModPermissions::all_permissions(),
+            ModConfig::default(),
+        )
+        .expect("Failed to load mod");
+
+    assert_eq!(server.mod_manager.loaded_count(), 1);
+
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    let _session_id = server.add_connection(Box::new(server_conn));
+
+    // Complete login handshake
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("ModTester").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(C2sConfigAck)),
+        )
+        .unwrap();
+    server.tick();
+
+    // Drain initial login packets
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+
+    // Set player position to near origin (0, 64, 0)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: true,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Client places block at (0, 64, 0) with face Up -> target is (0, 65, 0) with state 1 (Stone)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::BlockAction(C2sBlockAction {
+                sequence: 1,
+                action: BlockActionKind::Place {
+                    state_id: BlockStateId::new(1),
+                    hit_face: 1, // Face::Up
+                },
+                x: 0,
+                y: 64,
+                z: 0,
+                input_tick: 1,
+            })),
+        )
+        .unwrap();
+
+    // Tick server: processes place -> emits BlockPlaced event -> mod triggers -> queues (0, 66, 0) -> applied!
+    server.tick();
+
+    // Verify player placed block at (0, 65, 0)
+    let state_65 = server.world_mut().get_block(BlockPos::new(0, 65, 0));
+    assert_eq!(state_65, BlockStateId::new(1));
+
+    // Verify mod placed block at (0, 66, 0)
+    let state_66 = server.world_mut().get_block(BlockPos::new(0, 66, 0));
+    assert_eq!(state_66, BlockStateId::new(7));
+}

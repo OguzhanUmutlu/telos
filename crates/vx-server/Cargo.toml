@@ -18,6 +18,7 @@ vx-lod = { workspace = true }
 vx-storage = { workspace = true }
 vx-content = { workspace = true }
 vx-sim = { workspace = true }
+vx-mod = { workspace = true }
 bevy_ecs = { workspace = true }
 tracing = { workspace = true }
 hashbrown = { workspace = true }

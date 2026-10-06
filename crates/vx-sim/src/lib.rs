@@ -10,6 +10,7 @@ pub mod bundles;
 pub mod command;
 pub mod crafting;
 pub mod entity;
+pub mod event;
 pub mod experience;
 pub mod hunger;
 pub mod inventory;
@@ -27,6 +28,7 @@ pub use entity::{
     AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,
     Position, Rotation, Velocity, mob_ai_system, mob_hurt_decay_system, mob_movement_system,
 };
+pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{
     Experience, level_from_total_points, points_for_next_level, total_points_for_level,
 };

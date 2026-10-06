@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 use vx_content::{FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order};
 use vx_core::coords::{BlockPos, Face};
+use vx_mod::{ModConfig, ModManager, ModPermissions, ModResult};
 use vx_net::{Connection, Lane, Payload};
 use vx_protocol::bounded::{BoundedString, BoundedVec};
 use vx_protocol::messages::{
@@ -18,6 +19,7 @@ use vx_protocol::messages::{
     S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use vx_sim::command::{CommandContext, CommandDispatcher, register_builtins};
+use vx_sim::event::{EventQueue, GameEvent};
 use vx_sim::{
     CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
     ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams, Velocity,
@@ -55,6 +57,10 @@ pub struct Server {
     pub last_mob_spawn_tick: u64,
     /// Authoritative command dispatcher and syntax tree.
     pub command_dispatcher: Arc<CommandDispatcher>,
+    /// Central manager for sandboxed WebAssembly mods and scripts.
+    pub mod_manager: ModManager,
+    /// Bounded event queue buffering simulation events during the tick.
+    pub event_queue: EventQueue,
 }
 
 impl Server {
@@ -111,6 +117,9 @@ impl Server {
         register_builtins(&mut dispatcher);
         let command_dispatcher = Arc::new(dispatcher);
 
+        let mod_manager = ModManager::new().expect("ModManager engine initialization");
+        let event_queue = EventQueue::default();
+
         Self {
             config,
             world,
@@ -128,7 +137,33 @@ impl Server {
             mob_yaws: HashMap::new(),
             last_mob_spawn_tick: 0,
             command_dispatcher,
+            mod_manager,
+            event_queue,
         }
+    }
+
+    /// Loads a sandboxed mod from WebAssembly text format (`.wat`).
+    pub fn load_mod_from_wat(
+        &mut self,
+        mod_id: &str,
+        wat: &str,
+        permissions: ModPermissions,
+        config: ModConfig,
+    ) -> ModResult<()> {
+        self.mod_manager
+            .load_mod_from_wat(mod_id, wat, permissions, config)
+    }
+
+    /// Loads a sandboxed mod from WebAssembly binary bytes (`.wasm`).
+    pub fn load_mod_from_bytes(
+        &mut self,
+        mod_id: &str,
+        bytes: &[u8],
+        permissions: ModPermissions,
+        config: ModConfig,
+    ) -> ModResult<()> {
+        self.mod_manager
+            .load_mod_from_bytes(mod_id, bytes, permissions, config)
     }
 
     /// Returns the active frozen registries.
@@ -348,6 +383,7 @@ impl Server {
 
         // 1. Process inbound network packets across all sessions
         let mut disconnected = Vec::new();
+        let mut player_joined = Vec::new();
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
         let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
         let mut player_commands: Vec<(u64, C2sPlayerCommand)> = Vec::new();
@@ -442,6 +478,7 @@ impl Server {
                             C2sMessage::ConfigAck(_) => {
                                 info!(session_id, "Client config acked, entering Play");
                                 session.phase = ConnectionPhase::Play;
+                                player_joined.push((session.entity_id, session.username.clone()));
 
                                 let join = S2cMessage::JoinGame(S2cJoinGame {
                                     entity_id: session.entity_id,
@@ -591,8 +628,19 @@ impl Server {
             }
         }
 
+        for (entity_id, username) in player_joined {
+            self.event_queue.push(GameEvent::PlayerJoined {
+                entity_net_id: entity_id,
+                username,
+            });
+        }
+
         for id in disconnected {
             if let Some(session) = self.sessions.remove(&id) {
+                self.event_queue.push(GameEvent::PlayerLeft {
+                    entity_net_id: session.entity_id,
+                    username: session.username.clone(),
+                });
                 if let Some(entity) = session.ecs_entity {
                     self.ecs_world.despawn(entity);
                 }
@@ -707,6 +755,12 @@ impl Server {
                         is_dead = true;
                     }
                 }
+
+                self.event_queue.push(GameEvent::EntityDamage {
+                    target_net_id: interact.target_net_id,
+                    damage: 4.0,
+                    attacker_net_id: self.sessions.get(&session_id).map(|s| s.entity_id),
+                });
 
                 if let Some(mut hurt_time) = self.ecs_world.get_mut::<HurtTime>(target_entity) {
                     hurt_time.0 = 10;
@@ -848,7 +902,7 @@ impl Server {
                     args: hashbrown::HashMap::new(),
                 };
 
-                let output = self.command_dispatcher.execute(text, &mut cmd_ctx);
+                let mut output = self.command_dispatcher.execute(text, &mut cmd_ctx);
 
                 // Apply world side-effects for built-in commands
                 if output.success {
@@ -915,6 +969,17 @@ impl Server {
                                 f64::from(target.z),
                             );
                         }
+                    }
+                }
+
+                if !output.success {
+                    let cmd_str = text.trim_start_matches('/');
+                    let mut parts = cmd_str.splitn(2, ' ');
+                    let cmd_name = parts.next().unwrap_or("");
+                    let cmd_args = parts.next().unwrap_or("");
+                    if self.mod_manager.dispatch_command(cmd_name, cmd_args) {
+                        output.success = true;
+                        output.message = format!("Command '{cmd_name}' executed by mod");
                     }
                 }
 
@@ -1039,8 +1104,26 @@ impl Server {
             let is_in_reach = dist_sq <= max_reach * max_reach;
             let is_in_bounds = target_pos.y() >= -1024 && target_pos.y() < 2048;
 
+            let old_state = self.world.get_block(target_pos);
             if is_in_reach && is_in_bounds {
                 if let Some((_snapshot, version)) = self.world.set_block(target_pos, new_state) {
+                    match action.action {
+                        BlockActionKind::Break => {
+                            self.event_queue.push(GameEvent::BlockBroken {
+                                pos: target_pos,
+                                old_state,
+                                actor_net_id: Some(u64::from(session.entity_id)),
+                            });
+                        }
+                        BlockActionKind::Place { .. } => {
+                            self.event_queue.push(GameEvent::BlockPlaced {
+                                pos: target_pos,
+                                new_state,
+                                actor_net_id: Some(u64::from(session.entity_id)),
+                            });
+                        }
+                    }
+
                     let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
                         x: target_pos.x(),
                         y: target_pos.y(),
@@ -1131,6 +1214,31 @@ impl Server {
         }
         for id in fallen_mobs {
             self.despawn_mob(id);
+        }
+
+        // 5b. Mod event dispatching and world edit application
+        self.event_queue.push(GameEvent::Tick {
+            tick: self.tick_count,
+        });
+        let events = self.event_queue.drain();
+        let mod_edits = self.mod_manager.dispatch_events(&events);
+        for edit in mod_edits {
+            if let Some((_snapshot, version)) = self.world.set_block(edit.pos, edit.state) {
+                let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                    x: edit.pos.x(),
+                    y: edit.pos.y(),
+                    z: edit.pos.z(),
+                    state_id: edit.state,
+                    version,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                    }
+                }
+            }
         }
 
         for session in self.sessions.values_mut() {

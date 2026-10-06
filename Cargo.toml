@@ -15,6 +15,7 @@ members = [
     "crates/vx-lod",
     "crates/vx-ui",
     "crates/vx-sim",
+    "crates/vx-mod",
     "apps/voxel-server",
     "apps/voxel",
     "apps/voxel-web",
@@ -45,6 +46,7 @@ vx-server = { version = "0.1.0", path = "crates/vx-server" }
 vx-lod = { version = "0.1.0", path = "crates/vx-lod" }
 vx-ui = { version = "0.1.0", path = "crates/vx-ui" }
 vx-sim = { version = "0.1.0", path = "crates/vx-sim" }
+vx-mod = { version = "0.1.0", path = "crates/vx-mod" }
 
 # ECS & Gameplay
 bevy_ecs = { version = "0.15", default-features = false }
@@ -104,6 +106,7 @@ ron = "0.8"
 toml = "0.8"
 semver = { version = "1.0", features = ["serde"] }
 blake3 = "1.6"
+wasmtime = { version = "30", default-features = false, features = ["runtime", "cranelift", "component-model", "wat", "std"] }
 
 # Networking & Async
 tokio = { version = "1.43", default-features = false, features = ["sync", "rt", "net", "time", "macros"] }
