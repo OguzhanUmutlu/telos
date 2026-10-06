@@ -19,8 +19,8 @@ use tracing::info;
 use vx_assets::{AnimatedTextureInfo, ResourcePackStack, TextureArrayBuilder};
 use vx_content::FrozenRegistries;
 use vx_core::{
-    BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos, init_telemetry,
-    raycast_voxels,
+    AppDirs, BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos,
+    init_telemetry, raycast_voxels,
 };
 use vx_gpu::{
     ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
@@ -78,9 +78,25 @@ struct Args {
     #[arg(long, default_value_t = false)]
     validation: bool,
 
-    /// World save directory for singleplayer server.
-    #[arg(short, long, default_value = "worlds/default")]
-    world_dir: PathBuf,
+    /// World save directory for singleplayer server (defaults to platform saves dir).
+    #[arg(short, long)]
+    world_dir: Option<PathBuf>,
+
+    /// Run in portable mode with all data, configuration, and caches isolated locally.
+    #[arg(long)]
+    portable: bool,
+
+    /// Custom root application data directory override.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// Custom configuration directory override.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
+
+    /// Custom cache directory override (LOD clipmaps, shaders).
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
 
     /// Vertical chunk view distance radius.
     #[arg(long, default_value_t = 12)]
@@ -1047,6 +1063,8 @@ struct GpuLodMesh {
 
 #[allow(clippy::struct_excessive_bools)]
 struct App {
+    #[allow(dead_code)]
+    dirs: AppDirs,
     validation: bool,
     view_distance: u32,
     window: Option<Window>,
@@ -1250,9 +1268,39 @@ impl App {
         let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
         let client_conn: Box<dyn Connection<C2sMessage, S2cMessage>> = Box::new(client_conn);
 
+        let app_dirs = if args.portable {
+            AppDirs::portable(".")
+        } else if let Some(ref data) = args.data_dir {
+            let mut dirs = AppDirs::from_data_dir(data);
+            if let Some(ref cfg) = args.config_dir {
+                dirs = dirs.with_config_dir(cfg);
+            }
+            if let Some(ref cache) = args.cache_dir {
+                dirs = dirs.with_cache_dir(cache);
+            }
+            dirs
+        } else {
+            let mut dirs = AppDirs::standard_with_local_fallback();
+            if let Some(ref cfg) = args.config_dir {
+                dirs = dirs.with_config_dir(cfg);
+            }
+            if let Some(ref cache) = args.cache_dir {
+                dirs = dirs.with_cache_dir(cache);
+            }
+            dirs
+        };
+
+        let _ = app_dirs.ensure_dirs_exist();
+
         let view_distance = args.view_distance;
         let vertical_view_distance = args.vertical_view_distance;
-        let world_dir = args.world_dir.clone();
+        let world_dir = args.world_dir.clone().unwrap_or_else(|| {
+            if std::path::Path::new("worlds").is_dir() {
+                PathBuf::from("worlds/default")
+            } else {
+                app_dirs.world_save_dir("default")
+            }
+        });
         let seed = args.seed;
 
         let server_handle = std::thread::Builder::new()
@@ -1460,6 +1508,7 @@ impl App {
             chat_state: ChatHudState::new(),
             lan_listener: vx_net::LanDiscoveryListener::new().ok(),
             suggest_query_id: 0,
+            dirs: app_dirs,
             args,
             total_frames: 0,
             manual_screenshot_requested: false,
@@ -7276,6 +7325,7 @@ fn main() -> Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         seed = args.seed,
         view_distance = args.view_distance,
+        portable = args.portable,
         world_dir = ?args.world_dir,
         "Starting Voxel client"
     );

@@ -4,12 +4,12 @@ use anyhow::Context;
 use clap::Parser;
 use mimalloc::MiMalloc;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use vx_core::{FixedTimestep, TelemetryConfig, init_telemetry};
+use vx_core::{AppDirs, FixedTimestep, TelemetryConfig, init_telemetry};
 use vx_server::{Server, ServerConfig};
 
 #[global_allocator]
@@ -59,6 +59,18 @@ struct Args {
     #[arg(long)]
     save_dir: Option<PathBuf>,
 
+    /// Run in portable mode with all data, configuration, and logs isolated in current directory.
+    #[arg(long)]
+    portable: bool,
+
+    /// Custom root application data directory override.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// Custom configuration directory override.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
+
     /// Message of the day shown in connection listings.
     #[arg(long)]
     motd: Option<String>,
@@ -72,14 +84,43 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    if args.init_config {
-        let path = Path::new("server.toml");
-        if path.exists() {
-            anyhow::bail!("A 'server.toml' file already exists in the current directory.");
+    // 1. Resolve application directories adhering to platform standards / portable mode
+    let app_dirs = if args.portable {
+        AppDirs::portable(".")
+    } else if let Some(ref data) = args.data_dir {
+        let mut dirs = AppDirs::from_data_dir(data);
+        if let Some(ref cfg) = args.config_dir {
+            dirs = dirs.with_config_dir(cfg);
         }
-        std::fs::write(path, ServerConfig::default_toml_template())
-            .context("Failed to write server.toml template")?;
-        println!("Generated 'server.toml' template in current directory.");
+        dirs
+    } else {
+        let mut dirs = AppDirs::standard_with_local_fallback();
+        if let Some(ref cfg) = args.config_dir {
+            dirs = dirs.with_config_dir(cfg);
+        }
+        dirs
+    };
+
+    if args.init_config {
+        let path = args
+            .config
+            .unwrap_or_else(|| app_dirs.config_file("server.toml"));
+        if path.exists() {
+            anyhow::bail!(
+                "A configuration file already exists at '{}'.",
+                path.display()
+            );
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, ServerConfig::default_toml_template()).with_context(|| {
+            format!(
+                "Failed to write server.toml template to '{}'",
+                path.display()
+            )
+        })?;
+        println!("Generated 'server.toml' template at '{}'.", path.display());
         return Ok(());
     }
 
@@ -92,16 +133,27 @@ fn main() -> anyhow::Result<()> {
     println!("{BANNER}");
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
+        portable = app_dirs.is_portable(),
+        data_dir = %app_dirs.data_dir().display(),
+        config_dir = %app_dirs.config_dir().display(),
         "Starting Telos dedicated voxel server..."
     );
 
-    // 1. Resolve configuration from file (if provided or default exists)
+    // 2. Ensure runtime directories exist
+    let _ = app_dirs.ensure_dirs_exist();
+
+    // 3. Resolve configuration from file (if provided or default exists)
     let config_path = args.config.or_else(|| {
-        let default_file = PathBuf::from("server.toml");
-        if default_file.exists() {
-            Some(default_file)
+        let local_file = PathBuf::from("server.toml");
+        if local_file.exists() {
+            Some(local_file)
         } else {
-            None
+            let app_file = app_dirs.config_file("server.toml");
+            if app_file.exists() {
+                Some(app_file)
+            } else {
+                None
+            }
         }
     });
 
@@ -114,7 +166,7 @@ fn main() -> anyhow::Result<()> {
         ServerConfig::default()
     };
 
-    // 2. Apply CLI overrides
+    // 4. Apply CLI overrides
     if let Some(bind_override) = args.bind {
         config.bind_address = bind_override;
     }
@@ -130,6 +182,8 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(save_dir_override) = args.save_dir {
         config.save_directory = Some(save_dir_override);
+    } else if config.save_directory.is_none() {
+        config.save_directory = Some(app_dirs.world_save_dir("world"));
     }
     if let Some(motd_override) = args.motd {
         config.motd = motd_override;

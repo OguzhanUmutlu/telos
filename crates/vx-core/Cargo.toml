@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Core primitive types, coordinates, identifiers, and telemetry for voxel"
 
 [dependencies]
+dirs = { workspace = true }
 glam = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -18,6 +19,7 @@ tracing-tracy = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []
