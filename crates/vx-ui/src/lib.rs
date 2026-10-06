@@ -7,6 +7,7 @@
 pub mod font;
 pub mod frame;
 pub mod hud;
+pub mod inventory;
 pub mod quad;
 pub mod scale;
 pub mod tree;
@@ -14,6 +15,10 @@ pub mod tree;
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;
 pub use hud::{HudState, UiLayers, render_hud};
+pub use inventory::{
+    CONTAINER_HEIGHT, CONTAINER_WIDTH, INVENTORY_SLOT_COUNT, UiSlotItem, item_icon_uv,
+    render_inventory_screen, slot_at_pos, slot_pos,
+};
 pub use quad::{QuadKind, UiQuad};
 pub use scale::{compute_gui_scale, snap_to_physical, to_physical_pixels};
 pub use tree::{DirtyFlags, NodeId, UiTree, WidgetKind, WidgetNode};

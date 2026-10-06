@@ -27,10 +27,13 @@ use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
 use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
-    PlayerCommandKind, S2cMessage,
+    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition,
+    ChunkPayload, ConnectionPhase, PlayerCommandKind, S2cMessage,
 };
-use vx_ui::{BitmapFont, HudState, UiLayers, UiQuad, compute_gui_scale, render_hud};
+use vx_ui::{
+    BitmapFont, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale, render_hud,
+    render_inventory_screen, slot_at_pos,
+};
 use vx_voxel::chunk::{Chunk, ChunkSnapshot};
 use vx_voxel::coords::LocalIdx;
 use vx_voxel::light::ChunkLight;
@@ -992,6 +995,11 @@ struct App {
     ui_font: Option<BitmapFont>,
     ui_layers: UiLayers,
     hud_state: HudState,
+    inventory_sim: vx_sim::Inventory,
+    inventory_open: bool,
+    mouse_cursor_pos: [f32; 2],
+    inventory_hovered_slot: Option<usize>,
+    shift_held: bool,
 
     // Day/Night & Celestial Rendering
     client_time_of_day: f32,
@@ -1155,6 +1163,11 @@ impl App {
             ui_font: None,
             ui_layers: UiLayers::default(),
             hud_state: HudState::default(),
+            inventory_sim: vx_sim::Inventory::default(),
+            inventory_open: false,
+            mouse_cursor_pos: [0.0, 0.0],
+            inventory_hovered_slot: None,
+            shift_held: false,
 
             client_time_of_day: 6000.0,
             client_world_age: 0,
@@ -1172,16 +1185,50 @@ impl App {
     }
 
     fn select_hotbar_slot(&mut self, slot: usize) {
-        if slot < HOTBAR_ITEMS.len() {
+        if slot < 9 {
             self.selected_hotbar_slot = slot;
             self.hud_state.selected_slot = slot;
-            self.selected_block_state = HOTBAR_ITEMS[slot].1;
+            self.inventory_sim.selected_slot = slot;
+            let item = self.inventory_sim.slots[slot].item;
+            if item > 0 {
+                self.selected_block_state = BlockStateId::new(item);
+            } else if slot < HOTBAR_ITEMS.len() {
+                self.selected_block_state = HOTBAR_ITEMS[slot].1;
+            }
             info!(
                 slot = slot + 1,
-                item = HOTBAR_ITEMS[slot].0,
+                item = vx_sim::item_name(item),
                 state_id = self.selected_block_state.as_u32(),
                 "Selected hotbar slot"
             );
+        }
+    }
+
+    fn handle_inventory_swap_hotbar(&mut self, hotbar_idx: usize) {
+        if let Some(hovered) = self.inventory_hovered_slot {
+            let predicted_carried = self.inventory_sim.carried;
+            let click_msg = C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: hovered as u16,
+                button: hotbar_idx as u8,
+                mode: 2, // SwapHotbar
+                predicted_carried_item: predicted_carried.item,
+                predicted_carried_count: predicted_carried.count,
+            });
+            let _ = self
+                .client_conn
+                .send(Lane::Control, Payload::Msg(click_msg));
+            self.inventory_sim.selected_slot = hotbar_idx;
+            let _ = vx_sim::inventory_click(
+                &mut self.inventory_sim,
+                hovered,
+                if hotbar_idx == 0 {
+                    vx_sim::ClickButton::Right
+                } else {
+                    vx_sim::ClickButton::Left
+                },
+                vx_sim::ClickMode::SwapHotbar,
+            );
+            self.selected_block_state = BlockStateId::new(self.inventory_sim.selected_item().item);
         }
     }
 
@@ -1369,17 +1416,28 @@ impl App {
                         self.hud_state.xp_progress = stats.xp_progress;
                     }
                     S2cMessage::InventoryBulk(bulk) => {
-                        for (i, slot) in bulk.slots.iter().enumerate().take(9) {
-                            if slot.count > 0 && i == self.selected_hotbar_slot {
-                                self.selected_block_state = BlockStateId::new(slot.item);
+                        for (i, slot) in bulk.slots.iter().enumerate() {
+                            if i < self.inventory_sim.slots.len() {
+                                self.inventory_sim.slots[i] =
+                                    vx_sim::ItemStack::new(slot.item, slot.count);
                             }
                         }
+                        self.inventory_sim.carried =
+                            vx_sim::ItemStack::new(bulk.carried.item, bulk.carried.count);
+                        let selected_item = self.inventory_sim.selected_item();
+                        if selected_item.count > 0 {
+                            self.selected_block_state = BlockStateId::new(selected_item.item);
+                        }
                     }
-                    S2cMessage::InventorySlot(slot_msg)
-                        if slot_msg.slot as usize == self.selected_hotbar_slot
-                            && slot_msg.count > 0 =>
-                    {
-                        self.selected_block_state = BlockStateId::new(slot_msg.item);
+                    S2cMessage::InventorySlot(slot_msg) => {
+                        let idx = slot_msg.slot as usize;
+                        if idx < self.inventory_sim.slots.len() {
+                            self.inventory_sim.slots[idx] =
+                                vx_sim::ItemStack::new(slot_msg.item, slot_msg.count);
+                            if idx == self.selected_hotbar_slot && slot_msg.count > 0 {
+                                self.selected_block_state = BlockStateId::new(slot_msg.item);
+                            }
+                        }
                     }
                     _ => {}
                 },
@@ -3138,7 +3196,7 @@ impl App {
                 }
                 .to_string();
 
-                let mut ui_quads = Vec::with_capacity(256);
+                let mut ui_quads = Vec::with_capacity(512);
                 render_hud(
                     &self.hud_state,
                     font,
@@ -3148,6 +3206,36 @@ impl App {
                     gui_scale,
                     &mut ui_quads,
                 );
+
+                if self.inventory_open {
+                    let mut ui_slots = [UiSlotItem::EMPTY; vx_ui::INVENTORY_SLOT_COUNT];
+                    for (i, slot) in self
+                        .inventory_sim
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .take(vx_ui::INVENTORY_SLOT_COUNT)
+                    {
+                        ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                    }
+                    let ui_carried = UiSlotItem::new(
+                        self.inventory_sim.carried.item,
+                        self.inventory_sim.carried.count,
+                    );
+                    render_inventory_screen(
+                        &ui_slots,
+                        ui_carried,
+                        self.inventory_hovered_slot,
+                        swapchain_extent.width,
+                        swapchain_extent.height,
+                        gui_scale,
+                        font,
+                        &self.ui_layers,
+                        vx_sim::item_name,
+                        self.mouse_cursor_pos,
+                        &mut ui_quads,
+                    );
+                }
 
                 if !ui_quads.is_empty() {
                     let required_bytes =
@@ -4108,6 +4196,9 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        if self.inventory_open {
+            return;
+        }
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             self.controller.on_mouse_move(&mut self.camera, dx, dy);
         }
@@ -4130,11 +4221,67 @@ impl ApplicationHandler for App {
                 info!("Close requested, exiting application");
                 event_loop.exit();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_cursor_pos = [position.x as f32, position.y as f32];
+                if self.inventory_open {
+                    let win_size = window.inner_size();
+                    let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                    self.inventory_hovered_slot = slot_at_pos(
+                        self.mouse_cursor_pos,
+                        win_size.width,
+                        win_size.height,
+                        gui_scale,
+                    );
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
                 ..
             } => {
+                if self.inventory_open {
+                    let click_btn = match button {
+                        MouseButton::Left => 0u8,
+                        MouseButton::Right => 1u8,
+                        _ => 255u8,
+                    };
+                    if click_btn <= 1
+                        && let Some(hovered) = self.inventory_hovered_slot
+                    {
+                        let mode = u8::from(self.shift_held); // 1 = QuickMove, 0 = Pickup
+                        let predicted_carried = self.inventory_sim.carried;
+                        let click_msg = C2sMessage::InventoryClick(C2sInventoryClick {
+                            slot: hovered as u16,
+                            button: click_btn,
+                            mode,
+                            predicted_carried_item: predicted_carried.item,
+                            predicted_carried_count: predicted_carried.count,
+                        });
+                        let _ = self
+                            .client_conn
+                            .send(Lane::Control, Payload::Msg(click_msg));
+
+                        let btn_sim = if click_btn == 0 {
+                            vx_sim::ClickButton::Left
+                        } else {
+                            vx_sim::ClickButton::Right
+                        };
+                        let mode_sim = if mode == 1 {
+                            vx_sim::ClickMode::QuickMove
+                        } else {
+                            vx_sim::ClickMode::Pickup
+                        };
+                        let _ = vx_sim::inventory_click(
+                            &mut self.inventory_sim,
+                            hovered,
+                            btn_sim,
+                            mode_sim,
+                        );
+                        self.selected_block_state =
+                            BlockStateId::new(self.inventory_sim.selected_item().item);
+                    }
+                    return;
+                }
                 if self.controller.mouse_captured {
                     match button {
                         MouseButton::Left => {
@@ -4198,7 +4345,69 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = state.is_pressed();
+                if code == KeyCode::ShiftLeft || code == KeyCode::ShiftRight {
+                    self.shift_held = pressed;
+                }
+
+                if self.inventory_open {
+                    match code {
+                        KeyCode::KeyE if pressed => {
+                            self.inventory_open = false;
+                            self.controller.mouse_captured = true;
+                            let _ = window
+                                .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                .or_else(|_| {
+                                    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                                });
+                            window.set_cursor_visible(false);
+                            self.inventory_hovered_slot = None;
+                        }
+                        KeyCode::Escape if pressed => {
+                            self.inventory_open = false;
+                            self.controller.mouse_captured = true;
+                            let _ = window
+                                .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                .or_else(|_| {
+                                    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                                });
+                            window.set_cursor_visible(false);
+                            self.inventory_hovered_slot = None;
+                        }
+                        KeyCode::Digit1 if pressed => self.handle_inventory_swap_hotbar(0),
+                        KeyCode::Digit2 if pressed => self.handle_inventory_swap_hotbar(1),
+                        KeyCode::Digit3 if pressed => self.handle_inventory_swap_hotbar(2),
+                        KeyCode::Digit4 if pressed => self.handle_inventory_swap_hotbar(3),
+                        KeyCode::Digit5 if pressed => self.handle_inventory_swap_hotbar(4),
+                        KeyCode::Digit6 if pressed => self.handle_inventory_swap_hotbar(5),
+                        KeyCode::Digit7 if pressed => self.handle_inventory_swap_hotbar(6),
+                        KeyCode::Digit8 if pressed => self.handle_inventory_swap_hotbar(7),
+                        KeyCode::Digit9 if pressed => self.handle_inventory_swap_hotbar(8),
+                        _ => {}
+                    }
+                    return;
+                }
+
                 match code {
+                    KeyCode::KeyE if pressed => {
+                        self.inventory_open = true;
+                        self.controller.mouse_captured = false;
+                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                        let win_size = window.inner_size();
+                        let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                        self.inventory_hovered_slot = slot_at_pos(
+                            self.mouse_cursor_pos,
+                            win_size.width,
+                            win_size.height,
+                            gui_scale,
+                        );
+                    }
                     KeyCode::KeyW => self.controller.forward = pressed,
                     KeyCode::KeyS => self.controller.backward = pressed,
                     KeyCode::KeyA => self.controller.left = pressed,
@@ -4256,6 +4465,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.inventory_open {
+                    return;
+                }
                 let scroll = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     #[allow(clippy::cast_possible_truncation)]
@@ -4599,7 +4811,7 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
     stack.add_root("dev-assets/classic-26.2");
     stack.add_root("assets/voxel");
 
-    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 5) as usize];
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 7) as usize];
 
     // Helper to copy a sub-image into a 256x256 layer at specified offset
     let copy_to_layer_at = |dest: &mut [u8],
@@ -4849,7 +5061,115 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
         });
     copy_to_layer_at(&mut pixel_data, 4, 0, 24, &xp_bar_progress_img);
 
-    let regions: Vec<TextureMipRegion> = (0..5)
+    // Layer 5: Inventory Container Background (176x166)
+    let inv_bg_img = stack
+        .find_texture("textures/gui/container/inventory.png")
+        .and_then(|p| vx_assets::RgbaImage::from_file_exact(&p).ok())
+        .unwrap_or_else(|| {
+            let mut img = vx_assets::RgbaImage::new(176, 166);
+            for y in 0..166 {
+                for x in 0..176 {
+                    let idx = ((y * 176 + x) * 4) as usize;
+                    let is_border = x == 0 || x == 175 || y == 0 || y == 165;
+                    let color = if is_border { 40 } else { 198 };
+                    img.data[idx] = color;
+                    img.data[idx + 1] = color;
+                    img.data[idx + 2] = color;
+                    img.data[idx + 3] = 255;
+                }
+            }
+            img
+        });
+    copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
+
+    // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for items 1..=19)
+    let item_textures: [(u32, &str, [u8; 4]); 19] = [
+        (1, "textures/block/stone.png", [128, 128, 128, 255]),
+        (2, "textures/block/dirt.png", [134, 96, 67, 255]),
+        (3, "textures/block/grass_block_side.png", [90, 160, 60, 255]),
+        (4, "textures/block/cobblestone.png", [100, 100, 100, 255]),
+        (5, "textures/block/oak_log.png", [103, 82, 49, 255]),
+        (6, "textures/block/water_still.png", [64, 100, 200, 255]),
+        (7, "textures/block/oak_planks.png", [162, 130, 78, 255]),
+        (8, "textures/block/oak_leaves.png", [50, 120, 40, 255]),
+        (9, "textures/block/glass.png", [200, 220, 240, 180]),
+        (10, "textures/block/stone.png", [120, 120, 120, 255]), // Slab
+        (11, "textures/block/oak_planks.png", [162, 130, 78, 255]), // Stairs
+        (12, "textures/block/sand.png", [219, 207, 156, 255]),
+        (13, "textures/item/stick.png", [140, 100, 50, 255]),
+        (
+            14,
+            "textures/block/crafting_table_front.png",
+            [170, 120, 70, 255],
+        ),
+        (15, "textures/block/torch.png", [255, 200, 50, 255]),
+        (16, "textures/item/iron_helmet.png", [220, 220, 220, 255]),
+        (
+            17,
+            "textures/item/iron_chestplate.png",
+            [220, 220, 220, 255],
+        ),
+        (18, "textures/item/iron_leggings.png", [200, 200, 200, 255]),
+        (19, "textures/item/iron_boots.png", [180, 180, 180, 255]),
+    ];
+
+    let copy_icon =
+        |dest: &mut [u8], x_offset: usize, y_offset: usize, img: &vx_assets::RgbaImage| {
+            let layer_offset = 6 * (UI_RES * UI_RES * 4) as usize;
+            for y in 0..16usize {
+                for x in 0..16usize {
+                    let src_x = (x * img.width as usize) / 16;
+                    let src_y = (y * img.height as usize) / 16;
+                    let src_idx = (src_y * img.width as usize + src_x) * 4;
+                    let dst_idx =
+                        layer_offset + ((y_offset + y) * UI_RES as usize + (x_offset + x)) * 4;
+                    if src_idx + 4 <= img.data.len() && dst_idx + 4 <= dest.len() {
+                        dest[dst_idx..dst_idx + 4].copy_from_slice(&img.data[src_idx..src_idx + 4]);
+                    }
+                }
+            }
+        };
+
+    for (item_id, rel_path, fallback_color) in item_textures {
+        let idx = (item_id - 1) as usize;
+        let col = idx % 16;
+        let row = idx / 16;
+        let x_offset = col * 16;
+        let y_offset = row * 16;
+
+        let icon_img = stack
+            .find_texture(rel_path)
+            .and_then(|p| vx_assets::RgbaImage::from_file(&p).ok())
+            .unwrap_or_else(|| {
+                let mut img = vx_assets::RgbaImage::new(16, 16);
+                for y in 0..16 {
+                    for x in 0..16 {
+                        let i = ((y * 16 + x) * 4) as usize;
+                        let is_edge = x == 0 || x == 15 || y == 0 || y == 15;
+                        img.data[i] = if is_edge {
+                            fallback_color[0].saturating_sub(40)
+                        } else {
+                            fallback_color[0]
+                        };
+                        img.data[i + 1] = if is_edge {
+                            fallback_color[1].saturating_sub(40)
+                        } else {
+                            fallback_color[1]
+                        };
+                        img.data[i + 2] = if is_edge {
+                            fallback_color[2].saturating_sub(40)
+                        } else {
+                            fallback_color[2]
+                        };
+                        img.data[i + 3] = fallback_color[3];
+                    }
+                }
+                img
+            });
+        copy_icon(&mut pixel_data, x_offset, y_offset, &icon_img);
+    }
+
+    let regions: Vec<TextureMipRegion> = (0..7)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
             layer,
@@ -4859,9 +5179,11 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
         })
         .collect();
 
-    let texture_array = gpu_context.create_texture_array(UI_RES, 5, 1, &pixel_data, &regions)?;
+    let texture_array = gpu_context.create_texture_array(UI_RES, 7, 1, &pixel_data, &regions)?;
 
-    info!("UI texture array loaded (5 layers, 256x256, font baked, survival icons)");
+    info!(
+        "UI texture array loaded (7 layers, 256x256, font baked, survival icons, inventory background, item icons)"
+    );
 
     Ok((texture_array, font))
 }

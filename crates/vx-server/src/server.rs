@@ -218,8 +218,10 @@ impl Server {
                                 let mut inv = Inventory::default();
                                 inv.slots[0] = ItemStack::new(1, 64); // Stone
                                 inv.slots[1] = ItemStack::new(2, 64); // Dirt
-                                inv.slots[2] = ItemStack::new(5, 64); // Planks
+                                inv.slots[2] = ItemStack::new(5, 64); // Oak Log
                                 inv.slots[3] = ItemStack::new(4, 64); // Cobblestone
+                                inv.slots[4] = ItemStack::new(7, 64); // Oak Planks
+                                inv.update_crafting();
 
                                 let ecs_entity = self
                                     .ecs_world
@@ -245,7 +247,7 @@ impl Server {
                                     .connection
                                     .send(Lane::Control, Payload::Msg(stats_msg));
 
-                                let mut slot_vec = Vec::with_capacity(36);
+                                let mut slot_vec = Vec::with_capacity(inv.slots.len());
                                 for slot in &inv.slots {
                                     slot_vec.push(SlotData {
                                         item: slot.item,
@@ -253,7 +255,7 @@ impl Server {
                                     });
                                 }
                                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                                    slots: BoundedVec::new(slot_vec).expect("36 <= 40"),
+                                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
                                     carried: SlotData {
                                         item: inv.carried.item,
                                         count: inv.carried.count,
@@ -370,7 +372,7 @@ impl Server {
 
             let slot_idx = click.slot as usize;
             if vx_sim::inventory_click(&mut inv, slot_idx, button, mode).is_ok() {
-                let mut slot_vec = Vec::with_capacity(36);
+                let mut slot_vec = Vec::with_capacity(inv.slots.len());
                 for slot in &inv.slots {
                     slot_vec.push(SlotData {
                         item: slot.item,
@@ -378,7 +380,7 @@ impl Server {
                     });
                 }
                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                    slots: BoundedVec::new(slot_vec).expect("36 <= 40"),
+                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
                     carried: SlotData {
                         item: inv.carried.item,
                         count: inv.carried.count,

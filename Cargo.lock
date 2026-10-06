@@ -2781,6 +2781,7 @@ dependencies = [
  "vx-net",
  "vx-protocol",
  "vx-server",
+ "vx-sim",
  "vx-ui",
  "vx-voxel",
  "vx-worldgen",

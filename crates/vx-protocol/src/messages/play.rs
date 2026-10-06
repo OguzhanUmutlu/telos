@@ -1313,7 +1313,7 @@ impl S2cInventorySlot {
         let slot = decode_varint(cursor)? as u16;
         let item = decode_varint(cursor)?;
         let count_raw = decode_varint(cursor)?;
-        if slot >= 36 {
+        if slot >= 64 {
             return Err(ProtocolError::InvalidValue {
                 field: "inventory_slot.slot",
                 reason: "Slot index out of bounds".to_string(),
@@ -1331,11 +1331,11 @@ impl S2cInventorySlot {
     }
 }
 
-/// Server synchronizes the entire player inventory (36 slots + carried).
+/// Server synchronizes the entire player inventory (up to 64 slots + carried).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S2cInventoryBulk {
-    /// All 36 inventory slots.
-    pub slots: BoundedVec<SlotData, 40>,
+    /// All inventory slots.
+    pub slots: BoundedVec<SlotData, 64>,
     /// Carried cursor slot.
     pub carried: SlotData,
 }
@@ -1349,7 +1349,7 @@ impl S2cInventoryBulk {
 
     /// Decodes from wire buffer.
     pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
-        let slots = BoundedVec::<SlotData, 40>::decode_with(cursor, SlotData::decode)?;
+        let slots = BoundedVec::<SlotData, 64>::decode_with(cursor, SlotData::decode)?;
         let carried = SlotData::decode(cursor)?;
         Ok(Self { slots, carried })
     }
@@ -1358,7 +1358,7 @@ impl S2cInventoryBulk {
 /// Client clicks on an inventory slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct C2sInventoryClick {
-    /// Slot index clicked (0..35).
+    /// Slot index clicked (0..63).
     pub slot: u16,
     /// Mouse button: 0 = Left, 1 = Right.
     pub button: u8,
@@ -1393,7 +1393,7 @@ impl C2sInventoryClick {
         let predicted_carried_item = decode_varint(cursor)?;
         let predicted_carried_count = decode_varint(cursor)? as u16;
 
-        if slot >= 36 || button > 1 || mode > 3 || predicted_carried_count > 64 {
+        if slot >= 64 || button > 1 || mode > 3 || predicted_carried_count > 64 {
             return Err(ProtocolError::InvalidValue {
                 field: "inventory_click",
                 reason: "Invalid slot, button, mode, or count".to_string(),

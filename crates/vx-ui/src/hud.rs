@@ -40,6 +40,12 @@ pub struct UiLayers {
     pub xp_bar_bg_uv: [f32; 4],
     /// Experience bar progress fill UV bounds `[u0, v0, u1, v1]`.
     pub xp_bar_progress_uv: [f32; 4],
+    /// Inventory container background texture layer.
+    pub inventory_bg: u32,
+    /// Inventory container background UV bounds `[u0, v0, u1, v1]`.
+    pub inventory_bg_uv: [f32; 4],
+    /// Item icons atlas texture layer.
+    pub item_icons: u32,
 }
 
 impl Default for UiLayers {
@@ -61,6 +67,9 @@ impl Default for UiLayers {
             food_half_uv: [80.0 / 256.0, 0.0 / 256.0, 89.0 / 256.0, 9.0 / 256.0],
             xp_bar_bg_uv: [0.0 / 256.0, 16.0 / 256.0, 182.0 / 256.0, 21.0 / 256.0],
             xp_bar_progress_uv: [0.0 / 256.0, 24.0 / 256.0, 182.0 / 256.0, 29.0 / 256.0],
+            inventory_bg: 5,
+            inventory_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
+            item_icons: 6,
         }
     }
 }

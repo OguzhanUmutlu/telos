@@ -564,7 +564,7 @@ fn test_survival_stats_and_inventory_interaction() {
                 got_stats = true;
             }
             S2cMessage::InventoryBulk(bulk) => {
-                assert_eq!(bulk.slots.len(), 36);
+                assert_eq!(bulk.slots.len(), 46);
                 assert_eq!(bulk.slots[0].item, 1); // Stone
                 assert_eq!(bulk.slots[0].count, 64);
                 assert_eq!(bulk.carried.count, 0);
@@ -646,5 +646,65 @@ fn test_survival_stats_and_inventory_interaction() {
     assert!(
         inventory_swapped,
         "Inventory click must update inventory bulk"
+    );
+
+    // Test Server-Authoritative 2x2 Crafting:
+    // 1. Put stone back into slot 0
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 0,
+                button: 0, // Left
+                mode: 0,   // Pickup
+                predicted_carried_item: 1,
+                predicted_carried_count: 64,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // 2. Pick up 1 Oak Log (slot 2: item 5) with right click
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 2,
+                button: 1, // Right click: split
+                mode: 0,   // Pickup
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // 3. Place 1 Oak Log into crafting input slot 40
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 40,
+                button: 1, // Right click: place 1
+                mode: 0,   // Pickup
+                predicted_carried_item: 5,
+                predicted_carried_count: 32,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut got_crafting_result = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::InventoryBulk(bulk)) = incoming.into_msg()
+            && bulk.slots[44].item == 7
+            && bulk.slots[44].count == 4
+        {
+            got_crafting_result = true;
+        }
+    }
+    assert!(
+        got_crafting_result,
+        "Slot 44 must compute 4 Oak Planks from 1 Oak Log in slot 40"
     );
 }
