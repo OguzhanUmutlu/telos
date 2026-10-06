@@ -124,7 +124,10 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             "water",
             "Water",
             BlockDef {
-                shape: BlockShapeDef::Fluid { level: 0 },
+                shape: BlockShapeDef::Fluid {
+                    level: 0,
+                    falling: false,
+                },
                 render_layer: RenderLayerDef::Translucent,
                 opacity: OpacityDef::Filter(3),
                 hardness: 100.0,
@@ -239,7 +242,7 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             "torch",
             "Torch",
             BlockDef {
-                shape: BlockShapeDef::Empty, // Or detailed model in future phase
+                shape: BlockShapeDef::Torch { wall: None },
                 render_layer: RenderLayerDef::Cutout,
                 opacity: OpacityDef::Transparent,
                 light_emission: 14,
@@ -249,6 +252,38 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 sound: Some("voxel:wood".into()),
                 item: BlockItemPolicy::Auto,
                 material_texture_index: Some(15),
+                ..Default::default()
+            },
+        ),
+        (
+            "poppy",
+            "Poppy",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("voxel:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(16),
+                ..Default::default()
+            },
+        ),
+        (
+            "dandelion",
+            "Dandelion",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("voxel:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(17),
                 ..Default::default()
             },
         ),

@@ -13,6 +13,7 @@ pub mod mesher;
 pub mod naive;
 pub mod quad;
 pub mod t1;
+pub mod t2;
 
 pub use bitwise::NeighborSlices;
 pub use light::{
@@ -26,3 +27,4 @@ pub use mesher::{
 pub use naive::NaiveMesher;
 pub use quad::{FaceDir, T0Quad};
 pub use t1::{T1Mesh, T1Quad, mesh_chunk_t1};
+pub use t2::{T2Mesh, T2Quad, T2Vertex};

@@ -158,10 +158,19 @@ pub enum BlockShape {
     Cube,
     /// 1 to 8 axis-aligned sub-cuboids (T1).
     Boxes(Vec<SubBox>),
-    /// Fluid block (water/lava) with surface level.
+    /// Fluid block (water/lava) with surface level and falling state.
     Fluid {
-        /// Fluid level (0 = source block).
+        /// Fluid level (0 = source block, 1..=7 = flowing).
         level: u8,
+        /// Whether fluid is falling from above.
+        falling: bool,
+    },
+    /// Cutout diagonal cross geometry (flowers, tall grass, saplings).
+    Cross,
+    /// Upright floor torch or directional wall-mounted torch.
+    Torch {
+        /// If attached to a wall, the cardinal face the torch is mounted onto.
+        wall: Option<Face>,
     },
     /// Completely empty air block.
     #[default]
@@ -173,8 +182,9 @@ impl BlockShape {
     #[must_use]
     pub const fn tier(&self) -> ShapeTier {
         match self {
-            Self::Cube | Self::Fluid { .. } | Self::Empty => ShapeTier::T0,
+            Self::Cube | Self::Empty => ShapeTier::T0,
             Self::Boxes(_) => ShapeTier::T1,
+            Self::Fluid { .. } | Self::Cross | Self::Torch { .. } => ShapeTier::T2,
         }
     }
 
@@ -183,7 +193,9 @@ impl BlockShape {
     pub fn occlusion_mask(&self, face: Face) -> FaceOcclusionMask {
         match self {
             Self::Cube => FaceOcclusionMask::ALL_ONES,
-            Self::Empty | Self::Fluid { .. } => FaceOcclusionMask::EMPTY,
+            Self::Empty | Self::Fluid { .. } | Self::Cross | Self::Torch { .. } => {
+                FaceOcclusionMask::EMPTY
+            }
             Self::Boxes(boxes) => {
                 let mut mask = FaceOcclusionMask::EMPTY;
                 for b in boxes {
@@ -225,6 +237,24 @@ impl BlockShape {
         };
 
         Self::Boxes(vec![base_box, step_box])
+    }
+
+    /// Standard diagonal cross model (flowers, saplings, tall grass).
+    #[must_use]
+    pub const fn cross() -> Self {
+        Self::Cross
+    }
+
+    /// Standard floor torch or wall-mounted torch.
+    #[must_use]
+    pub const fn torch(wall: Option<Face>) -> Self {
+        Self::Torch { wall }
+    }
+
+    /// Fluid block shape with specified level and falling flag.
+    #[must_use]
+    pub const fn fluid(level: u8, falling: bool) -> Self {
+        Self::Fluid { level, falling }
     }
 }
 
@@ -279,5 +309,29 @@ mod tests {
         let up_mask = stair.occlusion_mask(Face::Up);
         assert!(!up_mask.is_all_ones());
         assert!(!up_mask.is_empty());
+    }
+
+    #[test]
+    fn test_t2_shapes_and_tiers() {
+        let cross = BlockShape::cross();
+        assert_eq!(cross.tier(), ShapeTier::T2);
+        for face in Face::ALL {
+            assert!(cross.occlusion_mask(face).is_empty());
+        }
+
+        let floor_torch = BlockShape::torch(None);
+        assert_eq!(floor_torch.tier(), ShapeTier::T2);
+        let wall_torch = BlockShape::torch(Some(Face::North));
+        assert_eq!(wall_torch.tier(), ShapeTier::T2);
+        for face in Face::ALL {
+            assert!(floor_torch.occlusion_mask(face).is_empty());
+            assert!(wall_torch.occlusion_mask(face).is_empty());
+        }
+
+        let fluid = BlockShape::fluid(3, false);
+        assert_eq!(fluid.tier(), ShapeTier::T2);
+        for face in Face::ALL {
+            assert!(fluid.occlusion_mask(face).is_empty());
+        }
     }
 }

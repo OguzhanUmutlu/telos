@@ -80,10 +80,12 @@ impl BlockRegistry {
     /// Registers a new simple block type with default cube shape.
     ///
     /// # Panics
-    /// Panics if the registry is already frozen or the identifier is registered.
     pub fn register(&mut self, identifier: Identifier, flags: StateFlags) -> BlockStateId {
         let default_shape = if flags.contains(StateFlags::TRANSLUCENT) {
-            crate::shape::BlockShape::Fluid { level: 0 }
+            crate::shape::BlockShape::Fluid {
+                level: 0,
+                falling: false,
+            }
         } else {
             crate::shape::BlockShape::Cube
         };
@@ -239,6 +241,34 @@ impl BlockRegistry {
             stairs_id,
             StateFlags::NON_EMPTY,
             crate::shape::BlockShape::stairs(vx_core::coords::Face::North, false),
+        );
+
+        let poppy_id = Identifier::new("voxel", "poppy").unwrap();
+        reg.register_with_shape(
+            poppy_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let dandelion_id = Identifier::new("voxel", "dandelion").unwrap();
+        reg.register_with_shape(
+            dandelion_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let torch_id = Identifier::new("voxel", "torch").unwrap();
+        reg.register_with_shape(
+            torch_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT | StateFlags::EMISSIVE,
+            crate::shape::BlockShape::torch(None),
+        );
+
+        let flowing_water_id = Identifier::new("voxel", "flowing_water").unwrap();
+        reg.register_with_shape(
+            flowing_water_id,
+            StateFlags::NON_EMPTY | StateFlags::TRANSLUCENT,
+            crate::shape::BlockShape::fluid(1, false),
         );
 
         reg.freeze();

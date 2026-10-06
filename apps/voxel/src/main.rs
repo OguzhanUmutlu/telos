@@ -219,6 +219,22 @@ const _: () = assert!(size_of::<TranslucentMdiPushConstants>() == 88);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct T2PushConstants {
+    view_proj: [f32; 16],
+    quad_buffer_address: u64,
+    chunk_x: i32,
+    chunk_y: i32,
+    chunk_z: i32,
+    frame_tick: u32,
+    water_base_layer: u32,
+    water_frame_count: u32,
+    is_translucent: u32,
+    _pad: u32,
+}
+const _: () = assert!(size_of::<T2PushConstants>() == 104);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LodMdiPushConstants {
     view_proj: [f32; 16],
     camera_pos: [f32; 3],
@@ -885,6 +901,8 @@ struct GpuChunkMesh {
     t1_opaque: Option<GpuMeshLayer>,
     cutout: Option<GpuMeshLayer>,
     translucent: Option<GpuMeshLayer>,
+    t2_cutout: Option<GpuMeshLayer>,
+    t2_translucent: Option<GpuMeshLayer>,
 }
 
 impl GpuChunkMesh {
@@ -901,6 +919,12 @@ impl GpuChunkMesh {
             layer.buffer.destroy(device, allocator);
         }
         if let Some(mut layer) = self.translucent.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+        if let Some(mut layer) = self.t2_cutout.take() {
+            layer.buffer.destroy(device, allocator);
+        }
+        if let Some(mut layer) = self.t2_translucent.take() {
             layer.buffer.destroy(device, allocator);
         }
     }
@@ -934,6 +958,31 @@ fn upload_t0_layer(
 fn upload_t1_layer(
     ctx: &GpuContext,
     mesh: &vx_mesh::t1::T1Mesh,
+    label: &'static str,
+) -> Option<GpuMeshLayer> {
+    if mesh.is_empty() {
+        return None;
+    }
+    let mut buffer_data = Vec::new();
+    mesh.write_to_u32_buffer(&mut buffer_data);
+    match ctx.create_buffer_with_data(label, &buffer_data, vk::BufferUsageFlags::empty()) {
+        Ok(buffer) => Some(GpuMeshLayer {
+            buffer,
+            #[allow(clippy::cast_possible_truncation)]
+            quad_count: mesh.quads.len() as u32,
+            #[allow(clippy::cast_possible_truncation)]
+            pattern_offset: mesh.quads.len() as u32,
+        }),
+        Err(err) => {
+            tracing::error!("Failed to create GPU buffer for {label}: {err}");
+            None
+        }
+    }
+}
+
+fn upload_t2_layer(
+    ctx: &GpuContext,
+    mesh: &vx_mesh::t2::T2Mesh,
     label: &'static str,
 ) -> Option<GpuMeshLayer> {
     if mesh.is_empty() {
@@ -990,6 +1039,11 @@ struct App {
     translucent_pipeline: Option<GraphicsPipeline>,
     translucent_vert_shader: Option<ShaderModule>,
     translucent_frag_shader: Option<ShaderModule>,
+
+    t2_cutout_pipeline: Option<GraphicsPipeline>,
+    t2_translucent_pipeline: Option<GraphicsPipeline>,
+    t2_vert_shader: Option<ShaderModule>,
+    t2_frag_shader: Option<ShaderModule>,
 
     water_anim_info: AnimatedTextureInfo,
     frame_tick: u32,
@@ -1192,6 +1246,11 @@ impl App {
             translucent_pipeline: None,
             translucent_vert_shader: None,
             translucent_frag_shader: None,
+
+            t2_cutout_pipeline: None,
+            t2_translucent_pipeline: None,
+            t2_vert_shader: None,
+            t2_frag_shader: None,
 
             water_anim_info: AnimatedTextureInfo {
                 base_layer: 9,
@@ -1831,7 +1890,8 @@ impl App {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::similar_names
+        clippy::similar_names,
+        clippy::too_many_lines
     )]
     fn rebuild_dirty_meshes(&mut self, budget: usize) {
         let Some(gpu_context) = &self.gpu_context else {
@@ -1908,8 +1968,19 @@ impl App {
             let cutout = upload_t0_layer(gpu_context, &layers.cutout, "chunk_mesh_cutout");
             let translucent =
                 upload_t0_layer(gpu_context, &layers.translucent, "chunk_mesh_translucent");
+            let t2_cutout = upload_t2_layer(gpu_context, &layers.t2_cutout, "chunk_mesh_t2_cutout");
+            let t2_translucent = upload_t2_layer(
+                gpu_context,
+                &layers.t2_translucent,
+                "chunk_mesh_t2_translucent",
+            );
 
-            if opaque.is_none() && t1_opaque.is_none() && cutout.is_none() && translucent.is_none()
+            if opaque.is_none()
+                && t1_opaque.is_none()
+                && cutout.is_none()
+                && translucent.is_none()
+                && t2_cutout.is_none()
+                && t2_translucent.is_none()
             {
                 self.chunk_slots.release(&pos);
                 if let Some(old_mesh) = self.chunk_meshes.remove(&pos) {
@@ -1932,6 +2003,8 @@ impl App {
                     t1_opaque,
                     cutout,
                     translucent,
+                    t2_cutout,
+                    t2_translucent,
                 };
 
                 if let Some(old_mesh) = self.chunk_meshes.insert(pos, new_mesh) {
@@ -3362,6 +3435,54 @@ impl App {
                 );
             }
 
+            // Late Pass 3b: Cutout T2 (Flora & torches: poppy, dandelion, torch)
+            if let Some(t2_cutout_pipeline) = &self.t2_cutout_pipeline {
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t2_cutout_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t2_cutout_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+                let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
+                for mesh in self.chunk_meshes.values() {
+                    if let Some(layer) = &mesh.t2_cutout
+                        && layer.quad_count > 0
+                    {
+                        let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
+                        if center.distance_squared(self.camera.position) > max_dist_sq {
+                            continue;
+                        }
+                        let pc = T2PushConstants {
+                            view_proj,
+                            quad_buffer_address: layer.buffer.device_address(),
+                            chunk_x: mesh.pos[0],
+                            chunk_y: mesh.pos[1],
+                            chunk_z: mesh.pos[2],
+                            frame_tick: self.frame_tick,
+                            water_base_layer: self.water_anim_info.base_layer,
+                            water_frame_count: self.water_anim_info.frame_count,
+                            is_translucent: 0,
+                            _pad: 0,
+                        };
+                        device.cmd_push_constants(
+                            cmd,
+                            t2_cutout_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            bytemuck::bytes_of(&pc),
+                        );
+                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                    }
+                }
+            }
+
             // Late Pass 4: LOD
             if let Some(lod_pipeline) = &self.lod_pipeline {
                 let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
@@ -3479,6 +3600,54 @@ impl App {
                     MAX_CHUNK_CANDIDATES as u32,
                     16,
                 );
+            }
+
+            // Late Pass 5b: Translucent T2 (Sloped fluids & waterlogging)
+            if let Some(t2_trans_pipeline) = &self.t2_translucent_pipeline {
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t2_trans_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    t2_trans_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
+                let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
+                for mesh in self.chunk_meshes.values() {
+                    if let Some(layer) = &mesh.t2_translucent
+                        && layer.quad_count > 0
+                    {
+                        let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
+                        if center.distance_squared(self.camera.position) > max_dist_sq {
+                            continue;
+                        }
+                        let pc = T2PushConstants {
+                            view_proj,
+                            quad_buffer_address: layer.buffer.device_address(),
+                            chunk_x: mesh.pos[0],
+                            chunk_y: mesh.pos[1],
+                            chunk_z: mesh.pos[2],
+                            frame_tick: self.frame_tick,
+                            water_base_layer: self.water_anim_info.base_layer,
+                            water_frame_count: self.water_anim_info.frame_count,
+                            is_translucent: 1,
+                            _pad: 0,
+                        };
+                        device.cmd_push_constants(
+                            cmd,
+                            t2_trans_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            bytemuck::bytes_of(&pc),
+                        );
+                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                    }
+                }
             }
 
             // Pass 14: Dynamic Entities (Mobs: Zombie, Pig, Cow)
@@ -4213,6 +4382,70 @@ impl ApplicationHandler for App {
             Ok(p) => p,
             Err(err) => {
                 tracing::error!("Failed to create dynamic translucent graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Load T2 SPIR-V bytecode
+        let t2_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/chunk_t2.vert.spv"));
+        let t2_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/chunk_t2.frag.spv"));
+
+        let t2_vert_module = match ShaderModule::from_spv(gpu_context.device().raw(), t2_vert_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create T2 vertex shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let t2_frag_module = match ShaderModule::from_spv(gpu_context.device().raw(), t2_frag_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create T2 fragment shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let t2_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<T2PushConstants>() as u32);
+
+        let t2_cutout_pipeline = match GraphicsPipeline::create_dynamic_cutout(
+            gpu_context.device().raw(),
+            t2_vert_module.raw(),
+            t2_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[descriptor_set_layout],
+            &[t2_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic T2 cutout graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let t2_trans_pipeline = match GraphicsPipeline::create_dynamic_translucent(
+            gpu_context.device().raw(),
+            t2_vert_module.raw(),
+            t2_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            vk::CullModeFlags::NONE,
+            &[descriptor_set_layout],
+            &[t2_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create dynamic T2 translucent graphics pipeline: {err}");
                 event_loop.exit();
                 return;
             }
@@ -5021,6 +5254,11 @@ impl ApplicationHandler for App {
         self.translucent_pipeline = Some(trans_pipeline);
         self.translucent_vert_shader = Some(trans_vert_module);
         self.translucent_frag_shader = Some(trans_frag_module);
+
+        self.t2_cutout_pipeline = Some(t2_cutout_pipeline);
+        self.t2_translucent_pipeline = Some(t2_trans_pipeline);
+        self.t2_vert_shader = Some(t2_vert_module);
+        self.t2_frag_shader = Some(t2_frag_module);
         self.lod_pipeline = Some(lod_pipeline);
         self.lod_vert_shader = Some(lod_vert_module);
         self.lod_frag_shader = Some(lod_frag_module);
@@ -5673,6 +5911,19 @@ impl ApplicationHandler for App {
                 frag.destroy(device);
             }
 
+            if let Some(mut pipeline) = self.t2_cutout_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut pipeline) = self.t2_translucent_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.t2_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.t2_frag_shader.take() {
+                frag.destroy(device);
+            }
+
             if let Some(mut pipeline) = self.lod_pipeline.take() {
                 pipeline.destroy(device);
             }
@@ -5878,6 +6129,9 @@ fn load_and_upload_textures(
     builder.insert("oak_planks", stack.load_block_texture("oak_planks")?);
     builder.insert("oak_leaves", stack.load_block_texture("oak_leaves")?);
     builder.insert("glass", stack.load_block_texture("glass")?);
+    builder.insert("poppy", stack.load_block_texture("poppy")?);
+    builder.insert("dandelion", stack.load_block_texture("dandelion")?);
+    builder.insert("torch", stack.load_block_texture("torch")?);
 
     let water_frames = stack.load_animated_block_texture("water_still")?;
     let water_anim = builder.insert_animated("water_still", water_frames, 2);

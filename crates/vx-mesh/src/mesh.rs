@@ -127,6 +127,10 @@ pub struct ChunkMeshLayers {
     pub translucent: T0Mesh,
     /// Opaque sub-cube geometry on the 1/16th grid (slabs, stairs).
     pub t1_opaque: crate::t1::T1Mesh,
+    /// Alpha cutout arbitrary geometry (flowers, tall grass, torches).
+    pub t2_cutout: crate::t2::T2Mesh,
+    /// Translucent sloped/flowing fluid geometry and waterlogged fluid volume.
+    pub t2_translucent: crate::t2::T2Mesh,
 }
 
 impl ChunkMeshLayers {
@@ -139,6 +143,8 @@ impl ChunkMeshLayers {
             cutout: T0Mesh::empty(),
             translucent: T0Mesh::empty(),
             t1_opaque: crate::t1::T1Mesh::empty(),
+            t2_cutout: crate::t2::T2Mesh::empty(),
+            t2_translucent: crate::t2::T2Mesh::empty(),
         }
     }
 
@@ -150,5 +156,7 @@ impl ChunkMeshLayers {
             && self.cutout.is_empty()
             && self.translucent.is_empty()
             && self.t1_opaque.is_empty()
+            && self.t2_cutout.is_empty()
+            && self.t2_translucent.is_empty()
     }
 }

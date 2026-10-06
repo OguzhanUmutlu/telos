@@ -29,6 +29,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../shaders/weather.frag");
     println!("cargo:rerun-if-changed=../../shaders/entity.vert");
     println!("cargo:rerun-if-changed=../../shaders/entity.frag");
+    println!("cargo:rerun-if-changed=../../shaders/chunk_t2.vert");
+    println!("cargo:rerun-if-changed=../../shaders/chunk_t2.frag");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -52,6 +54,8 @@ fn main() {
         ("../../shaders/cutout.frag", "cutout.frag.spv"),
         ("../../shaders/chunk_t1.vert", "chunk_t1.vert.spv"),
         ("../../shaders/chunk_t1.frag", "chunk_t1.frag.spv"),
+        ("../../shaders/chunk_t2.vert", "chunk_t2.vert.spv"),
+        ("../../shaders/chunk_t2.frag", "chunk_t2.frag.spv"),
         ("../../shaders/translucent.vert", "translucent.vert.spv"),
         ("../../shaders/translucent.frag", "translucent.frag.spv"),
         ("../../shaders/hiz_generate.comp", "hiz_generate.comp.spv"),

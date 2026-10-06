@@ -53,11 +53,22 @@ pub enum BlockShapeDef {
     },
     /// Empty shape without geometry (e.g. Air).
     Empty,
-    /// Fluid block shape with height level.
+    /// Fluid block shape with height level and falling flag.
     Fluid {
         /// Fluid level (0..=7).
         #[serde(default)]
         level: u8,
+        /// Whether fluid is falling from above.
+        #[serde(default)]
+        falling: bool,
+    },
+    /// Tier 2 diagonal cross shape (flowers, saplings, tall grass).
+    Cross,
+    /// Tier 2 upright or wall-mounted torch.
+    Torch {
+        /// Optional wall facing ("north", "south", "east", "west").
+        #[serde(default)]
+        wall: Option<String>,
     },
 }
 
@@ -224,7 +235,20 @@ impl BlockDef {
                 let is_upside_down = half.to_lowercase() == "top";
                 BlockShape::stairs(face, is_upside_down)
             }
-            BlockShapeDef::Fluid { level } => BlockShape::Fluid { level: *level },
+            BlockShapeDef::Fluid { level, falling } => BlockShape::Fluid {
+                level: *level,
+                falling: *falling,
+            },
+            BlockShapeDef::Cross => BlockShape::Cross,
+            BlockShapeDef::Torch { wall } => {
+                let wall_face = wall.as_deref().map(|w| match w.to_lowercase().as_str() {
+                    "south" => Face::South,
+                    "east" => Face::East,
+                    "west" => Face::West,
+                    _ => Face::North,
+                });
+                BlockShape::Torch { wall: wall_face }
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ use vx_voxel::{
     coords::LocalIdx,
     occupancy::Occupancy,
     registry::BlockRegistry,
+    shape::BlockShape,
     state::{BlockStateId, StateFlags},
     storage::Blocks,
 };
@@ -170,7 +171,7 @@ fn assemble_t0_mesh(buckets: [Vec<T0Quad>; 6], pattern_table: LightPatternTable)
 }
 
 /// Meshes all layers (opaque T0, cutout T0, translucent T0, and T1 sub-cubes) of a chunk snapshot.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
 #[must_use]
 pub fn mesh_chunk_multilayers(
     chunk: &ChunkSnapshot,
@@ -245,6 +246,13 @@ pub fn mesh_chunk_multilayers(
     ];
     let mut trans_patterns = LightPatternTable::new();
 
+    // 4. T2 Cutout and Translucent layers
+    let mut t2_cutout_quads = Vec::new();
+    let mut t2_trans_quads = Vec::new();
+
+    let get_shape_fn =
+        |x: i32, y: i32, z: i32| -> BlockShape { reg.shape(get_state_at(x, y, z)).clone() };
+
     let blocks = chunk.blocks();
     for bz in 0..32u32 {
         for by in 0..32u32 {
@@ -252,51 +260,101 @@ pub fn mesh_chunk_multilayers(
                 let idx = LocalIdx::from_coords_unchecked(bx, by, bz);
                 let state = blocks.get(idx);
                 let flags = reg.flags(state);
+                let shape = reg.shape(state);
 
                 if flags.contains(StateFlags::CUTOUT) {
                     let mat = state.0 as u16;
-                    for dir in FaceDir::ALL {
-                        let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
-                        let n_state = get_state_at(nx, ny, nz);
-                        let n_flags = reg.flags(n_state);
-
-                        // Opaque full block culls cutout face
-                        if n_flags.contains(StateFlags::OPAQUE_FULL) {
-                            continue;
+                    match shape {
+                        BlockShape::Cross => {
+                            let sky = neighborhood.get_sky_light(bx as i32, by as i32, bz as i32);
+                            let block =
+                                neighborhood.get_block_light(bx as i32, by as i32, bz as i32);
+                            crate::t2::mesh_cross_model(
+                                bx,
+                                by,
+                                bz,
+                                mat,
+                                sky,
+                                block,
+                                &mut t2_cutout_quads,
+                            );
                         }
-                        // Same glass block culls internal face
-                        if n_state == state
-                            && flags.contains(StateFlags::CUTOUT)
-                            && !flags.contains(StateFlags::LIGHT_BLOCKING)
-                        {
-                            continue;
+                        BlockShape::Torch { wall } => {
+                            crate::t2::mesh_torch_model(
+                                bx,
+                                by,
+                                bz,
+                                *wall,
+                                mat,
+                                &mut t2_cutout_quads,
+                            );
                         }
+                        _ => {
+                            // T0 full-cube cutout (leaves, glass)
+                            for dir in FaceDir::ALL {
+                                let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
+                                let n_state = get_state_at(nx, ny, nz);
+                                let n_flags = reg.flags(n_state);
 
-                        let pattern = compute_face_pattern(&neighborhood, bx, by, bz, dir);
-                        let pat_idx = cutout_patterns.insert(pattern);
-                        cutout_buckets[dir as usize]
-                            .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
+                                // Opaque full block culls cutout face
+                                if n_flags.contains(StateFlags::OPAQUE_FULL) {
+                                    continue;
+                                }
+                                // Same glass block culls internal face
+                                if n_state == state
+                                    && flags.contains(StateFlags::CUTOUT)
+                                    && !flags.contains(StateFlags::LIGHT_BLOCKING)
+                                {
+                                    continue;
+                                }
+
+                                let pattern = compute_face_pattern(&neighborhood, bx, by, bz, dir);
+                                let pat_idx = cutout_patterns.insert(pattern);
+                                cutout_buckets[dir as usize]
+                                    .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
+                            }
+                        }
                     }
                 } else if flags.contains(StateFlags::TRANSLUCENT) {
                     let mat = state.0 as u16;
-                    for dir in FaceDir::ALL {
-                        let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
-                        let n_state = get_state_at(nx, ny, nz);
-                        let n_flags = reg.flags(n_state);
-
-                        // Water-water internal culling
-                        if n_flags.contains(StateFlags::TRANSLUCENT) {
-                            continue;
+                    match shape {
+                        BlockShape::Fluid { .. } => {
+                            let sky = neighborhood.get_sky_light(bx as i32, by as i32, bz as i32);
+                            let block =
+                                neighborhood.get_block_light(bx as i32, by as i32, bz as i32);
+                            crate::t2::mesh_fluid_cell(
+                                bx,
+                                by,
+                                bz,
+                                mat,
+                                sky,
+                                block,
+                                &get_shape_fn,
+                                &mut t2_trans_quads,
+                            );
                         }
-                        // Water against solid opaque block
-                        if n_flags.contains(StateFlags::OPAQUE_FULL) {
-                            continue;
-                        }
+                        _ => {
+                            // T0 full-cube translucent
+                            for dir in FaceDir::ALL {
+                                let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
+                                let n_state = get_state_at(nx, ny, nz);
+                                let n_flags = reg.flags(n_state);
 
-                        let pattern = compute_face_pattern(&neighborhood, bx, by, bz, dir);
-                        let pat_idx = trans_patterns.insert(pattern);
-                        trans_buckets[dir as usize]
-                            .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
+                                // Translucent-translucent internal culling
+                                if n_flags.contains(StateFlags::TRANSLUCENT) {
+                                    continue;
+                                }
+                                // Translucent against solid opaque block
+                                if n_flags.contains(StateFlags::OPAQUE_FULL) {
+                                    continue;
+                                }
+
+                                let pattern = compute_face_pattern(&neighborhood, bx, by, bz, dir);
+                                let pat_idx = trans_patterns.insert(pattern);
+                                trans_buckets[dir as usize]
+                                    .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
+                            }
+                        }
                     }
                 }
             }
@@ -306,7 +364,7 @@ pub fn mesh_chunk_multilayers(
     let cutout = assemble_t0_mesh(cutout_buckets, cutout_patterns);
     let translucent = assemble_t0_mesh(trans_buckets, trans_patterns);
 
-    // 4. T1 Sub-Cube layer
+    // 5. T1 Sub-Cube layer
     let t1_opaque = crate::t1::mesh_chunk_t1(chunk.blocks(), neighbors, &neighborhood, reg);
 
     crate::mesh::ChunkMeshLayers {
@@ -314,6 +372,12 @@ pub fn mesh_chunk_multilayers(
         cutout,
         translucent,
         t1_opaque,
+        t2_cutout: crate::t2::T2Mesh {
+            quads: t2_cutout_quads,
+        },
+        t2_translucent: crate::t2::T2Mesh {
+            quads: t2_trans_quads,
+        },
     }
 }
 
@@ -399,16 +463,28 @@ mod tests {
             1,
         );
 
+        // Place a poppy (T2 cross cutout)
+        let poppy = BlockStateId::new(12); // poppy in standard registry
+        chunk.set(
+            LocalIdx::from_coords_unchecked(15, 15, 15),
+            poppy,
+            StateFlags::AIR,
+            reg.flags(poppy),
+            1,
+        );
+
         let snap = chunk.publish_snapshot();
         let neighbors = [None; 6];
         let layers = mesh_chunk_multilayers(&snap, &neighbors, &reg);
 
         // Verify opaque T0 has stone faces
         assert!(!layers.opaque.is_empty());
-        // Verify cutout has leaf faces
+        // Verify cutout T0 has leaf faces
         assert!(!layers.cutout.is_empty());
-        // Verify translucent has water faces (with internal face culled: 2 blocks * 6 = 12 faces - 2 shared = 10 faces)
-        assert_eq!(layers.translucent.total_quads(), 10);
+        // Verify T2 cutout has poppy cross quads (4 quads)
+        assert_eq!(layers.t2_cutout.quad_count(), 4);
+        // Verify T2 translucent has water faces (2 blocks with shared internal face culled: 10 quads)
+        assert_eq!(layers.t2_translucent.quad_count(), 10);
         // Verify T1 has slab faces
         assert!(!layers.t1_opaque.is_empty());
     }

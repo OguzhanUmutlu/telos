@@ -67,6 +67,9 @@ bitflags! {
 }
 
 impl StateFlags {
+    /// Alias for light-emitting blocks (torches, glowstone).
+    pub const EMISSIVE: Self = Self::EMITS_LIGHT;
+
     /// Default flags for air (all flags clear).
     pub const AIR: Self = Self::empty();
 
