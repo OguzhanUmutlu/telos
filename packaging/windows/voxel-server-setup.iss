@@ -1,5 +1,5 @@
 ; Inno Setup Script for Voxel Headless Server
-; https://github.com/larvance/voxel
+; https://github.com/larvance/telos
 
 #ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
@@ -7,7 +7,7 @@
 
 #define MyAppName "Voxel Server"
 #define MyAppPublisher "Larvance"
-#define MyAppURL "https://github.com/larvance/voxel"
+#define MyAppURL "https://github.com/larvance/telos"
 #define MyAppExeName "voxel-server.exe"
 
 [Setup]

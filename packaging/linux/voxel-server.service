@@ -1,6 +1,6 @@
 [Unit]
 Description=Voxel Dedicated Headless Server
-Documentation=https://github.com/larvance/voxel
+Documentation=https://github.com/larvance/telos
 After=network.target
 
 [Service]
@@ -8,7 +8,7 @@ Type=simple
 User=voxel
 Group=voxel
 WorkingDirectory=/var/lib/voxel
-ExecStart=/usr/bin/voxel-server --world-dir /var/lib/voxel/world --config /etc/voxel/server.toml
+ExecStart=/usr/bin/voxel-server --save-dir /var/lib/voxel/world --config /etc/voxel/server.toml
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536

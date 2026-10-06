@@ -6,11 +6,11 @@ VERSION="${VERSION#v}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-DIST_DIR="${ROOT_DIR}/target/dist"
+DIST_DIR="${DIST_DIR:-${ROOT_DIR}/target/dist}"
 
 mkdir -p "${DIST_DIR}"
 
-CLIENT_BIN="${ROOT_DIR}/target/release/voxel"
+CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/target/release/voxel}"
 
 if [[ ! -f "${CLIENT_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/voxel" ]]; then
     CLIENT_BIN="${ROOT_DIR}/target/debug/voxel"

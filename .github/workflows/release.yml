@@ -55,52 +55,8 @@ jobs:
             spirv-tools \
             desktop-file-utils
 
-      - name: Build release binaries
-        run: cargo build --release --bin voxel --bin voxel-server
-
-      - name: Build Debian packages (.deb)
-        run: bash packaging/linux/build-deb.sh "${{ steps.version.outputs.version }}"
-
-      - name: Build AppImage (.AppImage)
-        run: bash packaging/linux/build-appimage.sh "${{ steps.version.outputs.version }}"
-
-      - name: Build Portable Tarballs (.tar.gz)
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          DIST_DIR="target/dist"
-          mkdir -p "${DIST_DIR}"
-
-          # Client tarball
-          CLIENT_STAGE="target/tar-client/voxel-${VERSION}"
-          mkdir -p "${CLIENT_STAGE}"
-          cp target/release/voxel "${CLIENT_STAGE}/"
-          cp packaging/linux/voxel.desktop "${CLIENT_STAGE}/"
-          cp packaging/linux/voxel.png "${CLIENT_STAGE}/"
-          if [ -d "assets/voxel" ]; then
-            mkdir -p "${CLIENT_STAGE}/assets"
-            cp -r assets/voxel "${CLIENT_STAGE}/assets/" 2>/dev/null || true
-          fi
-          cat > "${CLIENT_STAGE}/run.sh" << 'EOF'
-          #!/bin/sh
-          DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$DIR/voxel" "$@"
-          EOF
-          chmod +x "${CLIENT_STAGE}/run.sh"
-          tar -czvf "${DIST_DIR}/voxel-${VERSION}-linux-x86_64.tar.gz" -C target/tar-client "voxel-${VERSION}"
-
-          # Server tarball
-          SERVER_STAGE="target/tar-server/voxel-server-${VERSION}"
-          mkdir -p "${SERVER_STAGE}"
-          cp target/release/voxel-server "${SERVER_STAGE}/"
-          cp packaging/server.toml "${SERVER_STAGE}/"
-          cat > "${SERVER_STAGE}/run.sh" << 'EOF'
-          #!/bin/sh
-          DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$DIR/voxel-server" "$@"
-          EOF
-          chmod +x "${SERVER_STAGE}/run.sh"
-          tar -czvf "${DIST_DIR}/voxel-server-${VERSION}-linux-x86_64.tar.gz" -C target/tar-server "voxel-server-${VERSION}"
+      - name: Build and package Linux release distributions
+        run: cargo run -p xtask -- dist --version "${{ steps.version.outputs.version }}"
 
       - name: Upload Linux Dist Artifacts
         uses: actions/upload-artifact@v4

@@ -6,12 +6,12 @@ VERSION="${VERSION#v}" # Strip leading 'v' if present
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-DIST_DIR="${ROOT_DIR}/target/dist"
+DIST_DIR="${DIST_DIR:-${ROOT_DIR}/target/dist}"
 
 mkdir -p "${DIST_DIR}"
 
-CLIENT_BIN="${ROOT_DIR}/target/release/voxel"
-SERVER_BIN="${ROOT_DIR}/target/release/voxel-server"
+CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/target/release/voxel}"
+SERVER_BIN="${SERVER_BIN:-${ROOT_DIR}/target/release/voxel-server}"
 
 if [[ ! -f "${CLIENT_BIN}" ]] && [[ -f "${ROOT_DIR}/target/debug/voxel" ]]; then
     CLIENT_BIN="${ROOT_DIR}/target/debug/voxel"

@@ -54,6 +54,28 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         no_cull: bool,
     },
+    /// Build distribution packages (.deb, portable tarballs, `AppImage`)
+    Dist {
+        /// Target version string (defaults to Cargo.toml package version)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Only build portable archives (.tar.gz and .zip)
+        #[arg(long)]
+        portable_only: bool,
+
+        /// Skip building `AppImage` bundle
+        #[arg(long)]
+        no_appimage: bool,
+
+        /// Skip building Debian packages (.deb)
+        #[arg(long)]
+        no_deb: bool,
+
+        /// Output directory for distribution packages
+        #[arg(long, default_value = "target/dist")]
+        output_dir: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -72,6 +94,19 @@ fn main() -> Result<()> {
             output,
             no_cull,
         } => run_screenshot(&pos, yaw, pitch, frames, &output, no_cull)?,
+        Commands::Dist {
+            version,
+            portable_only,
+            no_appimage,
+            no_deb,
+            output_dir,
+        } => run_dist(
+            version.as_deref(),
+            portable_only,
+            no_appimage,
+            no_deb,
+            &output_dir,
+        )?,
     }
 
     Ok(())
@@ -441,4 +476,322 @@ fn run_screenshot(
 
     println!("   ✓ Screenshot successfully saved to {output}");
     Ok(())
+}
+
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+fn run_dist(
+    version: Option<&str>,
+    portable_only: bool,
+    no_appimage: bool,
+    no_deb: bool,
+    output_dir: &str,
+) -> Result<()> {
+    let start = Instant::now();
+    let ver = match version {
+        Some(v) => v.trim_start_matches(['v', 'V']).to_string(),
+        None => extract_workspace_version()?,
+    };
+
+    println!("============================================================");
+    println!("       VOXEL CROSS-PLATFORM DISTRIBUTION PACKAGER           ");
+    println!("============================================================");
+    println!("Target Version:   v{ver}");
+    println!("Output Directory: {output_dir}");
+    println!("Portable Only:    {portable_only}");
+    if !portable_only {
+        println!("Include Debian:   {}", !no_deb);
+        println!("Include AppImage: {}", !no_appimage);
+    }
+    println!("------------------------------------------------------------");
+
+    // 1. Build release binaries
+    println!("\n>> 1. Building release binaries (voxel, voxel-server)...");
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--bin",
+            "voxel",
+            "--bin",
+            "voxel-server",
+        ])
+        .status()
+        .context("Failed to execute cargo build --release")?;
+    if !status.success() {
+        bail!("cargo build --release failed with status {status}");
+    }
+
+    let root_dir = std::env::current_dir()?;
+    let dist_dir = root_dir.join(output_dir);
+    std::fs::create_dir_all(&dist_dir)?;
+
+    let client_bin = root_dir.join("target/release/voxel");
+    let server_bin = root_dir.join("target/release/voxel-server");
+
+    // 2. Build portable tarballs
+    println!("\n>> 2. Assembling portable tarballs (.tar.gz)...");
+
+    // Stage client
+    let client_stage_dir = root_dir.join("target/tar-client");
+    let client_stage = client_stage_dir.join(format!("voxel-{ver}"));
+    let _ = std::fs::remove_dir_all(&client_stage);
+    std::fs::create_dir_all(&client_stage)?;
+
+    std::fs::copy(&client_bin, client_stage.join("voxel"))?;
+    set_executable_perms(&client_stage.join("voxel"))?;
+
+    let desktop_file = root_dir.join("packaging/linux/voxel.desktop");
+    if desktop_file.exists() {
+        std::fs::copy(&desktop_file, client_stage.join("voxel.desktop"))?;
+    }
+    let icon_file = root_dir.join("packaging/linux/voxel.png");
+    if icon_file.exists() {
+        std::fs::copy(&icon_file, client_stage.join("voxel.png"))?;
+    }
+
+    let assets_dir = root_dir.join("assets/voxel");
+    if assets_dir.exists() {
+        let client_assets = client_stage.join("assets/voxel");
+        copy_dir_all(&assets_dir, &client_assets)?;
+    }
+
+    let client_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport VOXEL_ASSETS_DIR=\"$DIR/assets/voxel\"\nexec \"$DIR/voxel\" \"$@\"\n";
+    std::fs::write(client_stage.join("run.sh"), client_run_script)?;
+    set_executable_perms(&client_stage.join("run.sh"))?;
+
+    let client_tar_name = format!("voxel-{ver}-linux-x86_64.tar.gz");
+    let client_tar_path = dist_dir.join(&client_tar_name);
+    let tar_client_status = Command::new("tar")
+        .args([
+            "-czf",
+            client_tar_path.to_str().unwrap(),
+            "-C",
+            client_stage_dir.to_str().unwrap(),
+            &format!("voxel-{ver}"),
+        ])
+        .status()
+        .context("Failed to run tar for client archive")?;
+    if !tar_client_status.success() {
+        bail!("Failed to create client tarball");
+    }
+    println!("   ✓ Created client tarball: {client_tar_name}");
+
+    // Stage server
+    let server_stage_dir = root_dir.join("target/tar-server");
+    let server_stage = server_stage_dir.join(format!("voxel-server-{ver}"));
+    let _ = std::fs::remove_dir_all(&server_stage);
+    std::fs::create_dir_all(&server_stage)?;
+
+    std::fs::copy(&server_bin, server_stage.join("voxel-server"))?;
+    set_executable_perms(&server_stage.join("voxel-server"))?;
+
+    let server_toml = root_dir.join("packaging/server.toml");
+    if server_toml.exists() {
+        std::fs::copy(&server_toml, server_stage.join("server.toml"))?;
+    }
+
+    let server_run_script = "#!/bin/sh\nDIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexec \"$DIR/voxel-server\" \"$@\"\n";
+    std::fs::write(server_stage.join("run.sh"), server_run_script)?;
+    set_executable_perms(&server_stage.join("run.sh"))?;
+
+    let server_tar_name = format!("voxel-server-{ver}-linux-x86_64.tar.gz");
+    let server_tar_path = dist_dir.join(&server_tar_name);
+    let tar_server_status = Command::new("tar")
+        .args([
+            "-czf",
+            server_tar_path.to_str().unwrap(),
+            "-C",
+            server_stage_dir.to_str().unwrap(),
+            &format!("voxel-server-{ver}"),
+        ])
+        .status()
+        .context("Failed to run tar for server archive")?;
+    if !tar_server_status.success() {
+        bail!("Failed to create server tarball");
+    }
+    println!("   ✓ Created server tarball: {server_tar_name}");
+
+    // 3. Debian packages
+    if !portable_only && !no_deb {
+        println!("\n>> 3. Building Debian packages (.deb)...");
+        let deb_script = root_dir.join("packaging/linux/build-deb.sh");
+        if deb_script.exists() {
+            let status = Command::new("bash")
+                .arg(&deb_script)
+                .arg(&ver)
+                .env("DIST_DIR", &dist_dir)
+                .env("CLIENT_BIN", &client_bin)
+                .env("SERVER_BIN", &server_bin)
+                .status()
+                .context("Failed to run packaging/linux/build-deb.sh")?;
+            if !status.success() {
+                bail!("build-deb.sh exited with failure: {status}");
+            }
+        } else {
+            println!("   Skipping: packaging/linux/build-deb.sh not found");
+        }
+    }
+
+    // 4. AppImage package
+    if !portable_only && !no_appimage {
+        println!("\n>> 4. Building Linux AppImage (.AppImage)...");
+        let appimage_script = root_dir.join("packaging/linux/build-appimage.sh");
+        if appimage_script.exists() {
+            let status = Command::new("bash")
+                .arg(&appimage_script)
+                .arg(&ver)
+                .env("DIST_DIR", &dist_dir)
+                .env("CLIENT_BIN", &client_bin)
+                .status()
+                .context("Failed to run packaging/linux/build-appimage.sh")?;
+            if !status.success() {
+                bail!("build-appimage.sh exited with failure: {status}");
+            }
+        } else {
+            println!("   Skipping: packaging/linux/build-appimage.sh not found");
+        }
+    }
+
+    // 5. Generate SHA256SUMS and print table
+    let mut entries: Vec<_> = std::fs::read_dir(&dist_dir)?
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.path().is_file() && e.file_name() != "SHA256SUMS")
+        .collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    let mut checksum_lines = Vec::new();
+    for entry in &entries {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let hash = compute_sha256(&path);
+        checksum_lines.push(format!("{hash}  {}", file_name.to_string_lossy()));
+    }
+    if !checksum_lines.is_empty() {
+        std::fs::write(
+            dist_dir.join("SHA256SUMS"),
+            checksum_lines.join("\n") + "\n",
+        )?;
+    }
+
+    println!(
+        "\n=================================================================================================="
+    );
+    println!(
+        "                        DISTRIBUTION PACKAGES GENERATED                                           "
+    );
+    println!(
+        "=================================================================================================="
+    );
+    println!("{:<45} {:>10}  SHA256 Checksum", "Filename", "Size");
+    println!("{:-<45} {:-<10}  {:-<64}", "", "", "");
+
+    let mut all_entries: Vec<_> = std::fs::read_dir(&dist_dir)?
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.path().is_file())
+        .collect();
+    all_entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in all_entries {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let size = path.metadata().map_or(0, |m| m.len());
+        let hash = compute_sha256(&path);
+        println!(
+            "{:<45} {:>10}  {}",
+            file_name.to_string_lossy(),
+            format_bytes(size),
+            hash
+        );
+    }
+    println!(
+        "=================================================================================================="
+    );
+    println!("✓ Packaging complete in {:.2?}", start.elapsed());
+    println!("Output directory: {}", dist_dir.display());
+
+    Ok(())
+}
+
+fn extract_workspace_version() -> Result<String> {
+    let content = std::fs::read_to_string("Cargo.toml").context("Failed to read Cargo.toml")?;
+    let mut in_workspace_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[workspace.package]" {
+            in_workspace_package = true;
+            continue;
+        } else if trimmed.starts_with('[') {
+            in_workspace_package = false;
+        }
+
+        if in_workspace_package && trimmed.starts_with("version") {
+            let (_, val) = trimmed
+                .split_once('=')
+                .context("Malformed version line in Cargo.toml")?;
+            let v = val.trim().trim_matches('"').trim_matches('\'');
+            return Ok(v.to_string());
+        }
+    }
+    bail!("Could not find version under [workspace.package] in Cargo.toml")
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_executable_perms(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable_perms(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn compute_sha256(path: &Path) -> String {
+    match Command::new("sha256sum").arg(path).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .split_whitespace()
+                .next()
+                .unwrap_or("N/A")
+                .to_string()
+        }
+        _ => "N/A".to_string(),
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
