@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::font::BitmapFont;
 use crate::menu::widgets::{MenuButton, MenuTextInput};
 use crate::quad::UiQuad;
+use telos_core::i18n::{LanguageCatalog, TextArg};
 
 /// Action triggered by interaction in the world creator wizard.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +40,12 @@ pub struct WorldCreateWizard {
     pub generator_index: usize,
     /// Action buttons.
     pub buttons: Vec<MenuButton>,
+    /// Header title text.
+    pub title: String,
+    /// World name input label.
+    pub name_label: String,
+    /// World seed input label.
+    pub seed_label: String,
 }
 
 impl Default for WorldCreateWizard {
@@ -63,11 +70,23 @@ impl WorldCreateWizard {
             seed_input,
             generator_index: 0,
             buttons: Vec::new(),
+            title: "Create New World".to_string(),
+            name_label: "World Name:".to_string(),
+            seed_label: "Seed for World Generator:".to_string(),
         }
     }
 
-    /// Updates widget layout for GUI viewport dimensions.
-    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+    /// Updates widget layout for GUI viewport dimensions with localized labels.
+    pub fn update_layout_i18n(
+        &mut self,
+        width_gui: f32,
+        height_gui: f32,
+        catalog: &LanguageCatalog,
+    ) {
+        self.title = catalog.translate("selectWorld.create").to_string();
+        self.name_label = format!("{}:", catalog.translate("selectWorld.enterName"));
+        self.seed_label = format!("{}:", catalog.translate("selectWorld.enterSeed"));
+
         let center_x = width_gui * 0.5;
         let box_w = 240.0;
         let box_x = center_x - box_w * 0.5;
@@ -82,21 +101,31 @@ impl WorldCreateWizard {
 
         let btn_w = 240.0;
         let gen_y = height_gui * 0.56;
-        let gen_btn = MenuButton::new(
-            1,
-            box_x,
-            gen_y,
-            btn_w,
-            24.0,
-            format!("Generator: {}", Self::GENERATORS[self.generator_index]),
-        );
+
+        let gen_key = match self.generator_index {
+            1 => "generator.flat",
+            2 => "generator.void",
+            _ => "generator.standard",
+        };
+        let gen_name = catalog.translate(gen_key);
+        let gen_label = catalog.format("selectWorld.worldType", &[TextArg::from(gen_name)]);
+
+        let gen_btn = MenuButton::new(1, box_x, gen_y, btn_w, 24.0, gen_label);
 
         let bottom_y = height_gui - 36.0;
-        let create_btn =
-            MenuButton::new(2, center_x - 125.0, bottom_y, 120.0, 24.0, "Create World");
-        let cancel_btn = MenuButton::new(3, center_x + 5.0, bottom_y, 120.0, 24.0, "Cancel");
+        let create_label = catalog.translate("selectWorld.create");
+        let cancel_label = catalog.translate("gui.cancel");
+
+        let create_btn = MenuButton::new(2, center_x - 125.0, bottom_y, 120.0, 24.0, create_label);
+        let cancel_btn = MenuButton::new(3, center_x + 5.0, bottom_y, 120.0, 24.0, cancel_label);
 
         self.buttons = vec![gen_btn, create_btn, cancel_btn];
+    }
+
+    /// Updates widget layout for GUI viewport dimensions using embedded default catalog.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.update_layout_i18n(width_gui, height_gui, &catalog);
     }
 
     /// Handles mouse motion in GUI units.
@@ -229,7 +258,7 @@ impl WorldCreateWizard {
         ));
 
         // Header Title
-        let header = "Create New World";
+        let header = self.title.as_str();
         let (hw, _) = font.measure_text(header);
         font.layout_text(
             header,
@@ -243,7 +272,7 @@ impl WorldCreateWizard {
 
         // Name label
         font.layout_text(
-            "World Name:",
+            self.name_label.as_str(),
             self.name_input.x,
             self.name_input.y - 12.0,
             UiQuad::rgba(180, 180, 180, 255),
@@ -255,7 +284,7 @@ impl WorldCreateWizard {
 
         // Seed label
         font.layout_text(
-            "Seed for World Generator:",
+            self.seed_label.as_str(),
             self.seed_input.x,
             self.seed_input.y - 12.0,
             UiQuad::rgba(180, 180, 180, 255),

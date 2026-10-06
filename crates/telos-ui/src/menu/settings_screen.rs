@@ -4,6 +4,7 @@ use crate::font::BitmapFont;
 use crate::menu::widgets::{MenuButton, MenuSlider};
 use crate::quad::UiQuad;
 use crate::settings::GameSettings;
+use telos_core::i18n::LanguageCatalog;
 
 /// Active tab within the options screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -15,6 +16,8 @@ pub enum SettingsTab {
     Audio,
     /// Mouse and keyboard controls.
     Controls,
+    /// Language selection.
+    Language,
 }
 
 /// Settings and options screen state.
@@ -34,6 +37,8 @@ pub struct SettingsScreen {
     pub done_button: MenuButton,
     /// Dragging slider index.
     pub active_drag_slider: Option<usize>,
+    /// Screen title text.
+    pub title: String,
 }
 
 impl SettingsScreen {
@@ -48,21 +53,64 @@ impl SettingsScreen {
             toggle_buttons: Vec::new(),
             done_button: MenuButton::new(99, 0.0, 0.0, 140.0, 24.0, "Done"),
             active_drag_slider: None,
+            title: "Settings & Options".to_string(),
         }
     }
 
-    /// Rebuilds tab and widget layouts for the given viewport.
+    /// Rebuilds tab and widget layouts for the given viewport using the specified language catalog.
     #[allow(clippy::too_many_lines)]
-    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+    pub fn update_layout_i18n(
+        &mut self,
+        width_gui: f32,
+        height_gui: f32,
+        catalog: &LanguageCatalog,
+    ) {
+        self.title = catalog
+            .translate("menu.options")
+            .trim_end_matches('.')
+            .to_string();
+
         let center_x = width_gui * 0.5;
-        let tab_w = 90.0;
+        let tab_w = 72.0;
         let tab_h = 22.0;
+        let tab_gap = 6.0;
+        let total_tabs_w = 4.0 * tab_w + 3.0 * tab_gap;
+        let start_tab_x = center_x - total_tabs_w * 0.5;
         let tab_y = 42.0;
 
         self.tab_buttons = vec![
-            MenuButton::new(101, center_x - 140.0, tab_y, tab_w, tab_h, "Video"),
-            MenuButton::new(102, center_x - 45.0, tab_y, tab_w, tab_h, "Audio"),
-            MenuButton::new(103, center_x + 50.0, tab_y, tab_w, tab_h, "Controls"),
+            MenuButton::new(
+                101,
+                start_tab_x,
+                tab_y,
+                tab_w,
+                tab_h,
+                catalog.translate("options.tab.video"),
+            ),
+            MenuButton::new(
+                102,
+                start_tab_x + tab_w + tab_gap,
+                tab_y,
+                tab_w,
+                tab_h,
+                catalog.translate("options.tab.audio"),
+            ),
+            MenuButton::new(
+                103,
+                start_tab_x + (tab_w + tab_gap) * 2.0,
+                tab_y,
+                tab_w,
+                tab_h,
+                catalog.translate("options.tab.controls"),
+            ),
+            MenuButton::new(
+                104,
+                start_tab_x + (tab_w + tab_gap) * 3.0,
+                tab_y,
+                tab_w,
+                tab_h,
+                catalog.translate("options.tab.language"),
+            ),
         ];
 
         let col_w = 145.0;
@@ -129,11 +177,15 @@ impl SettingsScreen {
                     true,
                 ));
 
-                let vsync_str = if self.settings.video.vsync {
-                    "VSync: ON"
+                let on_str = catalog.translate("options.on");
+                let off_str = catalog.translate("options.off");
+
+                let vsync_val = if self.settings.video.vsync {
+                    on_str
                 } else {
-                    "VSync: OFF"
+                    off_str
                 };
+                let vsync_str = format!("VSync: {vsync_val}");
                 self.toggle_buttons.push(MenuButton::new(
                     201,
                     col1_x,
@@ -143,11 +195,12 @@ impl SettingsScreen {
                     vsync_str,
                 ));
 
-                let cull_str = if self.settings.video.no_cull {
-                    "Hi-Z Culling: OFF"
+                let cull_val = if self.settings.video.no_cull {
+                    off_str
                 } else {
-                    "Hi-Z Culling: ON"
+                    on_str
                 };
+                let cull_str = format!("Hi-Z Culling: {cull_val}");
                 self.toggle_buttons.push(MenuButton::new(
                     202,
                     col2_x,
@@ -158,7 +211,7 @@ impl SettingsScreen {
                 ));
 
                 let gui_str = if self.settings.video.gui_scale == 0 {
-                    "GUI Scale: Auto".to_string()
+                    catalog.translate("options.guiScale.auto").to_string()
                 } else {
                     format!("GUI Scale: {}", self.settings.video.gui_scale)
                 };
@@ -253,13 +306,45 @@ impl SettingsScreen {
                     false,
                 ));
 
-                let inv_str = if self.settings.controls.invert_mouse_y {
-                    "Invert Y: ON"
+                let on_str = catalog.translate("options.on");
+                let off_str = catalog.translate("options.off");
+                let inv_val = if self.settings.controls.invert_mouse_y {
+                    on_str
                 } else {
-                    "Invert Y: OFF"
+                    off_str
                 };
+                let inv_str = format!("Invert Y: {inv_val}");
                 self.toggle_buttons
                     .push(MenuButton::new(204, col2_x, start_y, col_w, 22.0, inv_str));
+            }
+            SettingsTab::Language => {
+                let langs: [(&str, &str); 5] = [
+                    ("en_us", "English (US)"),
+                    ("es_es", "Español (España)"),
+                    ("de_de", "Deutsch (Deutschland)"),
+                    ("fr_fr", "Français (France)"),
+                    ("tr_tr", "Türkçe (Türkiye)"),
+                ];
+                let lang_btn_w = 230.0;
+                let lang_btn_h = 24.0;
+                let lang_gap = 6.0;
+                for (i, (code, display)) in langs.iter().enumerate() {
+                    let is_active = self.settings.gameplay.language == *code;
+                    let label = if is_active {
+                        format!("> {display} <")
+                    } else {
+                        (*display).to_string()
+                    };
+                    let btn_y = start_y + (lang_btn_h + lang_gap) * i as f32;
+                    self.toggle_buttons.push(MenuButton::new(
+                        301 + i as u32,
+                        center_x - lang_btn_w * 0.5,
+                        btn_y,
+                        lang_btn_w,
+                        lang_btn_h,
+                        label,
+                    ));
+                }
             }
         }
 
@@ -270,8 +355,14 @@ impl SettingsScreen {
             height_gui - 34.0,
             done_w,
             24.0,
-            "Done",
+            catalog.translate("gui.done"),
         );
+    }
+
+    /// Rebuilds tab and widget layouts using embedded default catalog.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.update_layout_i18n(width_gui, height_gui, &catalog);
     }
 
     /// Handles mouse motion in GUI pixels.
@@ -296,13 +387,14 @@ impl SettingsScreen {
         self.done_button.hovered = self.done_button.contains(mouse_x, mouse_y);
     }
 
-    /// Handles mouse button press. Returns true if "Done" was clicked.
-    pub fn handle_mouse_click(
+    /// Handles mouse button press with localized catalog. Returns true if "Done" was clicked.
+    pub fn handle_mouse_click_i18n(
         &mut self,
         mouse_x: f32,
         mouse_y: f32,
         width_gui: f32,
         height_gui: f32,
+        catalog: &LanguageCatalog,
     ) -> bool {
         if self.done_button.contains(mouse_x, mouse_y) {
             return true;
@@ -315,9 +407,10 @@ impl SettingsScreen {
                     101 => self.active_tab = SettingsTab::Video,
                     102 => self.active_tab = SettingsTab::Audio,
                     103 => self.active_tab = SettingsTab::Controls,
+                    104 => self.active_tab = SettingsTab::Language,
                     _ => {}
                 }
-                self.update_layout(width_gui, height_gui);
+                self.update_layout_i18n(width_gui, height_gui, catalog);
                 return false;
             }
         }
@@ -333,7 +426,7 @@ impl SettingsScreen {
             }
         }
 
-        // Toggles
+        // Toggles & language selectors
         for btn in &mut self.toggle_buttons {
             if btn.contains(mouse_x, mouse_y) {
                 match btn.id {
@@ -350,14 +443,42 @@ impl SettingsScreen {
                         self.settings.controls.invert_mouse_y =
                             !self.settings.controls.invert_mouse_y;
                     }
+                    301 => self.settings.gameplay.language = "en_us".to_string(),
+                    302 => self.settings.gameplay.language = "es_es".to_string(),
+                    303 => self.settings.gameplay.language = "de_de".to_string(),
+                    304 => self.settings.gameplay.language = "fr_fr".to_string(),
+                    305 => self.settings.gameplay.language = "tr_tr".to_string(),
                     _ => {}
                 }
-                self.update_layout(width_gui, height_gui);
+
+                // If language was changed, adapt the active locale for this layout update
+                let mut local_catalog;
+                let active_cat = if self.settings.gameplay.language == catalog.active_locale() {
+                    catalog
+                } else {
+                    local_catalog = catalog.clone();
+                    local_catalog.set_active_locale(&self.settings.gameplay.language);
+                    &local_catalog
+                };
+
+                self.update_layout_i18n(width_gui, height_gui, active_cat);
                 return false;
             }
         }
 
         false
+    }
+
+    /// Handles mouse button press. Returns true if "Done" was clicked.
+    pub fn handle_mouse_click(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        width_gui: f32,
+        height_gui: f32,
+    ) -> bool {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.handle_mouse_click_i18n(mouse_x, mouse_y, width_gui, height_gui, &catalog)
     }
 
     /// Handles mouse release.
@@ -406,7 +527,7 @@ impl SettingsScreen {
         ));
 
         // Title
-        let header = "Settings & Options";
+        let header = self.title.as_str();
         let (hw, _) = font.measure_text(header);
         font.layout_text(
             header,
@@ -427,7 +548,10 @@ impl SettingsScreen {
         for (i, btn) in self.tab_buttons.iter().enumerate() {
             let is_cur = matches!(
                 (i, self.active_tab),
-                (0, SettingsTab::Video) | (1, SettingsTab::Audio) | (2, SettingsTab::Controls)
+                (0, SettingsTab::Video)
+                    | (1, SettingsTab::Audio)
+                    | (2, SettingsTab::Controls)
+                    | (3, SettingsTab::Language)
             );
             if is_cur {
                 let px_x = (btn.x * scale as f32).round() as i32;

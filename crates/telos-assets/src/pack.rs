@@ -99,4 +99,25 @@ impl ResourcePackStack {
 
         RgbaImage::from_file_exact(&path)
     }
+
+    /// Scans all mounted resource packs for `lang/*.json` files and merges them into `catalog`.
+    ///
+    /// Packs earlier in the stack take precedence over packs later in the stack.
+    pub fn populate_language_catalog(&self, catalog: &mut telos_core::i18n::LanguageCatalog) {
+        // Iterate in reverse so higher priority packs override lower priority packs
+        for root in self.roots.iter().rev() {
+            // Direct lang/ directory
+            let direct_lang = root.join("lang");
+            let _ = catalog.load_from_dir(&direct_lang);
+
+            // assets/<namespace>/lang/ directories
+            let assets_dir = root.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let ns_lang = entry.path().join("lang");
+                    let _ = catalog.load_from_dir(&ns_lang);
+                }
+            }
+        }
+    }
 }

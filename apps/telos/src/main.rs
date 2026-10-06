@@ -20,8 +20,8 @@ use mimalloc::MiMalloc;
 use telos_assets::{AnimatedTextureInfo, ResourcePackStack, TextureArrayBuilder};
 use telos_content::FrozenRegistries;
 use telos_core::{
-    AppDirs, BlockPos, FixedTimestep, RaycastHit, TelemetryConfig, coords::ChunkPos,
-    init_telemetry, raycast_voxels,
+    AppDirs, BlockPos, FixedTimestep, LanguageCatalog, RaycastHit, TelemetryConfig,
+    coords::ChunkPos, detect_system_locale, init_telemetry, raycast_voxels,
 };
 use telos_gpu::{
     ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
@@ -1269,6 +1269,9 @@ struct App {
     worlds_dir: PathBuf,
     physics: PlayerPhysicsController,
     last_frame_start: Instant,
+
+    // Internationalization Engine (Phase 34)
+    catalog: LanguageCatalog,
 }
 
 impl App {
@@ -1332,7 +1335,7 @@ impl App {
         };
 
         let settings_path = app_dirs.config_dir().join("settings.toml");
-        let game_settings = GameSettings::load_or_create(&settings_path);
+        let mut game_settings = GameSettings::load_or_create(&settings_path);
 
         let worlds_dir = if std::path::Path::new("worlds").is_dir() {
             PathBuf::from("worlds")
@@ -1425,6 +1428,21 @@ impl App {
         };
         let mut physics = PlayerPhysicsController::new(d_spawn, initial_mode);
         physics.set_pos_from_eye(camera.position);
+
+        let mut pack_stack = ResourcePackStack::new();
+        mount_asset_roots(&mut pack_stack);
+        let mut catalog = LanguageCatalog::with_default_embedded();
+        pack_stack.populate_language_catalog(&mut catalog);
+
+        if game_settings.gameplay.language.is_empty() {
+            let sys = detect_system_locale();
+            if catalog.has_locale(&sys) {
+                game_settings.gameplay.language = sys;
+            } else {
+                game_settings.gameplay.language = "en_us".to_string();
+            }
+        }
+        catalog.set_active_locale(&game_settings.gameplay.language);
 
         let main_menu = MainMenuScreen::new();
         let mut world_select = WorldSelectScreen::new();
@@ -1611,6 +1629,7 @@ impl App {
             worlds_dir,
             physics,
             last_frame_start: Instant::now(),
+            catalog,
         }
     }
 
@@ -2874,7 +2893,11 @@ impl App {
                     },
                 );
                 self.camera.position = self.physics.eye_pos();
-                self.hud_state.game_mode = self.physics.game_mode.name().to_string();
+                let mode_key = match self.physics.game_mode {
+                    GameMode::Survival => "gameMode.survival",
+                    GameMode::Creative => "gameMode.creative",
+                };
+                self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
                 self.hud_state.is_flying = self.physics.flying;
 
                 self.sim_time_acc += dt;
@@ -4508,7 +4531,8 @@ impl App {
 
                 match &mut self.current_screen {
                     AppScreen::MainMenu => {
-                        self.main_menu.update_layout(width_gui, height_gui);
+                        self.main_menu
+                            .update_layout_i18n(width_gui, height_gui, &self.catalog);
                         self.main_menu.render(
                             font,
                             width_gui,
@@ -4519,7 +4543,8 @@ impl App {
                         );
                     }
                     AppScreen::WorldSelect => {
-                        self.world_select.update_layout(width_gui, height_gui);
+                        self.world_select
+                            .update_layout_i18n(width_gui, height_gui, &self.catalog);
                         self.world_select.render(
                             font,
                             width_gui,
@@ -4529,7 +4554,8 @@ impl App {
                         );
                     }
                     AppScreen::WorldCreate => {
-                        self.world_create.update_layout(width_gui, height_gui);
+                        self.world_create
+                            .update_layout_i18n(width_gui, height_gui, &self.catalog);
                         self.world_create.render(
                             font,
                             width_gui,
@@ -4540,7 +4566,11 @@ impl App {
                         );
                     }
                     AppScreen::Settings { .. } => {
-                        self.settings_screen.update_layout(width_gui, height_gui);
+                        self.settings_screen.update_layout_i18n(
+                            width_gui,
+                            height_gui,
+                            &self.catalog,
+                        );
                         self.settings_screen.render(
                             font,
                             width_gui,
@@ -4551,7 +4581,11 @@ impl App {
                     }
                     AppScreen::InGame => {
                         if self.is_paused {
-                            self.pause_menu.update_layout(width_gui, height_gui);
+                            self.pause_menu.update_layout_i18n(
+                                width_gui,
+                                height_gui,
+                                &self.catalog,
+                            );
                             self.pause_menu.render(
                                 font,
                                 width_gui,
@@ -6155,7 +6189,11 @@ impl ApplicationHandler for App {
                                 MainMenuAction::Options => {
                                     self.settings_screen =
                                         SettingsScreen::new(self.game_settings.clone());
-                                    self.settings_screen.update_layout(width_gui, height_gui);
+                                    self.settings_screen.update_layout_i18n(
+                                        width_gui,
+                                        height_gui,
+                                        &self.catalog,
+                                    );
                                     self.current_screen = AppScreen::Settings {
                                         return_to_pause: false,
                                     };
@@ -6230,18 +6268,34 @@ impl ApplicationHandler for App {
                     }
                     AppScreen::Settings { return_to_pause } => {
                         let to_pause = *return_to_pause;
-                        if button == MouseButton::Left
-                            && self
-                                .settings_screen
-                                .handle_mouse_click(mx, my, width_gui, height_gui)
-                        {
-                            self.game_settings = self.settings_screen.settings.clone();
-                            let _ = self.game_settings.save(&self.settings_path);
-                            if to_pause {
-                                self.current_screen = AppScreen::InGame;
-                                self.is_paused = true;
-                            } else {
-                                self.current_screen = AppScreen::MainMenu;
+                        if button == MouseButton::Left {
+                            let old_lang = self.settings_screen.settings.gameplay.language.clone();
+                            let done = self.settings_screen.handle_mouse_click_i18n(
+                                mx,
+                                my,
+                                width_gui,
+                                height_gui,
+                                &self.catalog,
+                            );
+                            if self.settings_screen.settings.gameplay.language != old_lang {
+                                self.catalog.set_active_locale(
+                                    &self.settings_screen.settings.gameplay.language,
+                                );
+                                self.game_settings.gameplay.language =
+                                    self.settings_screen.settings.gameplay.language.clone();
+                                let _ = self.game_settings.save(&self.settings_path);
+                            }
+                            if done {
+                                self.game_settings = self.settings_screen.settings.clone();
+                                self.catalog
+                                    .set_active_locale(&self.game_settings.gameplay.language);
+                                let _ = self.game_settings.save(&self.settings_path);
+                                if to_pause {
+                                    self.current_screen = AppScreen::InGame;
+                                    self.is_paused = true;
+                                } else {
+                                    self.current_screen = AppScreen::MainMenu;
+                                }
                             }
                         }
                         return;
@@ -6260,7 +6314,11 @@ impl ApplicationHandler for App {
                                     PauseMenuAction::Options => {
                                         self.settings_screen =
                                             SettingsScreen::new(self.game_settings.clone());
-                                        self.settings_screen.update_layout(width_gui, height_gui);
+                                        self.settings_screen.update_layout_i18n(
+                                            width_gui,
+                                            height_gui,
+                                            &self.catalog,
+                                        );
                                         self.current_screen = AppScreen::Settings {
                                             return_to_pause: true,
                                         };
@@ -6464,6 +6522,8 @@ impl ApplicationHandler for App {
                         let to_pause = *return_to_pause;
                         if pressed && code == KeyCode::Escape {
                             self.game_settings = self.settings_screen.settings.clone();
+                            self.catalog
+                                .set_active_locale(&self.game_settings.gameplay.language);
                             let _ = self.game_settings.save(&self.settings_path);
                             if to_pause {
                                 self.current_screen = AppScreen::InGame;
@@ -6677,7 +6737,11 @@ impl ApplicationHandler for App {
                             GameMode::Survival => 0u8,
                             GameMode::Creative => 1u8,
                         };
-                        self.hud_state.game_mode = next_mode.name().to_string();
+                        let mode_key = match next_mode {
+                            GameMode::Survival => "gameMode.survival",
+                            GameMode::Creative => "gameMode.creative",
+                        };
+                        self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
                         self.hud_state.is_flying = self.physics.flying;
                         let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
                             command: PlayerCommandKind::SetGameMode(mode_u8),

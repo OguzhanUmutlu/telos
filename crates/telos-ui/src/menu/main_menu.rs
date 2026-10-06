@@ -3,6 +3,7 @@
 use crate::font::BitmapFont;
 use crate::menu::widgets::MenuButton;
 use crate::quad::UiQuad;
+use telos_core::i18n::LanguageCatalog;
 
 /// Action triggered by user clicking a button on the main menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +53,13 @@ impl MainMenuScreen {
         }
     }
 
-    /// Updates button layouts based on current viewport size.
-    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+    /// Updates button layouts and localized labels based on current viewport size and language catalog.
+    pub fn update_layout_i18n(
+        &mut self,
+        width_gui: f32,
+        height_gui: f32,
+        catalog: &LanguageCatalog,
+    ) {
         let center_x = width_gui * 0.5;
         let btn_w = 200.0;
         let btn_h = 24.0;
@@ -61,11 +67,45 @@ impl MainMenuScreen {
         let start_y = height_gui * 0.42;
 
         self.buttons = vec![
-            MenuButton::new(1, btn_x, start_y, btn_w, btn_h, "Singleplayer"),
-            MenuButton::new(2, btn_x, start_y + 30.0, btn_w, btn_h, "Multiplayer"),
-            MenuButton::new(3, btn_x, start_y + 60.0, btn_w, btn_h, "Options..."),
-            MenuButton::new(4, btn_x, start_y + 90.0, btn_w, btn_h, "Quit Game"),
+            MenuButton::new(
+                1,
+                btn_x,
+                start_y,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.singleplayer"),
+            ),
+            MenuButton::new(
+                2,
+                btn_x,
+                start_y + 30.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.multiplayer"),
+            ),
+            MenuButton::new(
+                3,
+                btn_x,
+                start_y + 60.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.options"),
+            ),
+            MenuButton::new(
+                4,
+                btn_x,
+                start_y + 90.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.quit"),
+            ),
         ];
+    }
+
+    /// Updates button layouts based on current viewport size using default embedded translations.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.update_layout_i18n(width_gui, height_gui, &catalog);
     }
 
     /// Handles mouse motion in GUI units and updates hover states.

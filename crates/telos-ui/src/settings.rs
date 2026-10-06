@@ -97,13 +97,15 @@ impl Default for ControlSettings {
     }
 }
 
-/// Gameplay preferences.
+/// Gameplay preferences and locale.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GameplaySettings {
     /// Player display name.
     pub player_name: String,
     /// Default game mode: "Survival" or "Creative".
     pub game_mode: String,
+    /// Active UI language code (e.g. `"en_us"`, `"es_es"`, `"de_de"`, `"fr_fr"`, `"tr_tr"`).
+    pub language: String,
 }
 
 impl Default for GameplaySettings {
@@ -111,6 +113,7 @@ impl Default for GameplaySettings {
         Self {
             player_name: "Player".to_string(),
             game_mode: "Survival".to_string(),
+            language: "en_us".to_string(),
         }
     }
 }
@@ -159,6 +162,10 @@ impl GameSettings {
         self.audio.entities_volume = self.audio.entities_volume.clamp(0.0, 1.0);
 
         self.controls.mouse_sensitivity = self.controls.mouse_sensitivity.clamp(0.1, 3.0);
+
+        if self.gameplay.language.trim().is_empty() {
+            self.gameplay.language = "en_us".to_string();
+        }
     }
 }
 

@@ -4,10 +4,16 @@
 
 pub mod coords;
 pub mod dirs;
+pub mod i18n;
 pub mod ident;
 pub mod raycast;
 pub mod telemetry;
 pub mod time;
+
+pub use i18n::{
+    I18nError, LanguageCatalog, Text, TextArg, detect_system_locale, format_pattern,
+    language_display_name, parse_posix_locale,
+};
 
 pub use coords::{
     BlockPos, CHUNK_EDGE, CHUNK_MASK, CHUNK_SHIFT, CHUNK_VOLUME, ChunkPos, Face, LocalPos,

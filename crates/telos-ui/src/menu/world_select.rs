@@ -7,6 +7,7 @@ use crate::font::BitmapFont;
 use crate::menu::widgets::MenuButton;
 use crate::quad::UiQuad;
 use crate::scale::snap_to_physical;
+use telos_core::i18n::LanguageCatalog;
 
 /// Information for a single discovered world save directory.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +48,8 @@ pub struct WorldSelectScreen {
     pub buttons: Vec<MenuButton>,
     /// Vertical scroll offset.
     pub scroll_offset: f32,
+    /// Header title text.
+    pub title: String,
 }
 
 impl Default for WorldSelectScreen {
@@ -64,6 +67,7 @@ impl WorldSelectScreen {
             selected_index: None,
             buttons: Vec::new(),
             scroll_offset: 0.0,
+            title: "Select World".to_string(),
         }
     }
 
@@ -119,13 +123,19 @@ impl WorldSelectScreen {
         }
     }
 
-    /// Updates widget layout for the given GUI dimensions.
-    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+    /// Updates widget layout and localized text for the given GUI dimensions and catalog.
+    pub fn update_layout_i18n(
+        &mut self,
+        width_gui: f32,
+        height_gui: f32,
+        catalog: &LanguageCatalog,
+    ) {
         let center_x = width_gui * 0.5;
         let btn_w = 140.0;
         let btn_h = 24.0;
         let bottom_y = height_gui - 36.0;
 
+        self.title = catalog.translate("selectWorld.title").to_string();
         let has_sel = self.selected_index.is_some() && !self.worlds.is_empty();
 
         let mut b1 = MenuButton::new(
@@ -134,18 +144,45 @@ impl WorldSelectScreen {
             bottom_y,
             btn_w,
             btn_h,
-            "Play World",
+            catalog.translate("selectWorld.select"),
         );
         b1.enabled = has_sel;
 
-        let b2 = MenuButton::new(2, center_x - 70.0, bottom_y, btn_w, btn_h, "Create New");
+        let b2 = MenuButton::new(
+            2,
+            center_x - 70.0,
+            bottom_y,
+            btn_w,
+            btn_h,
+            catalog.translate("selectWorld.create"),
+        );
 
-        let mut b3 = MenuButton::new(3, center_x + 75.0, bottom_y, btn_w, btn_h, "Delete World");
+        let mut b3 = MenuButton::new(
+            3,
+            center_x + 75.0,
+            bottom_y,
+            btn_w,
+            btn_h,
+            catalog.translate("selectWorld.delete"),
+        );
         b3.enabled = has_sel;
 
-        let b4 = MenuButton::new(4, center_x + btn_w + 80.0, bottom_y, 70.0, btn_h, "Cancel");
+        let b4 = MenuButton::new(
+            4,
+            center_x + btn_w + 80.0,
+            bottom_y,
+            70.0,
+            btn_h,
+            catalog.translate("gui.cancel"),
+        );
 
         self.buttons = vec![b1, b2, b3, b4];
+    }
+
+    /// Updates widget layout for the given GUI dimensions using default embedded translations.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.update_layout_i18n(width_gui, height_gui, &catalog);
     }
 
     /// Handles mouse motion in GUI units.
@@ -220,7 +257,7 @@ impl WorldSelectScreen {
         ));
 
         // Header Title
-        let header = "Select World";
+        let header = self.title.as_str();
         let (hw, _) = font.measure_text(header);
         font.layout_text(
             header,

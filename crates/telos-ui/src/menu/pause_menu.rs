@@ -3,6 +3,7 @@
 use crate::font::BitmapFont;
 use crate::menu::widgets::MenuButton;
 use crate::quad::UiQuad;
+use telos_core::i18n::LanguageCatalog;
 
 /// Action triggered by the pause menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,8 @@ pub enum PauseMenuAction {
 pub struct PauseMenuScreen {
     /// Action buttons.
     pub buttons: Vec<MenuButton>,
+    /// Screen title text.
+    pub title: String,
 }
 
 impl Default for PauseMenuScreen {
@@ -34,29 +37,57 @@ impl PauseMenuScreen {
     pub fn new() -> Self {
         Self {
             buttons: Vec::new(),
+            title: "Game Paused".to_string(),
         }
     }
 
-    /// Updates button layout.
-    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+    /// Updates button layout and localized labels based on current viewport size and language catalog.
+    pub fn update_layout_i18n(
+        &mut self,
+        width_gui: f32,
+        height_gui: f32,
+        catalog: &LanguageCatalog,
+    ) {
         let center_x = width_gui * 0.5;
         let btn_w = 180.0;
         let btn_h = 24.0;
         let btn_x = center_x - btn_w * 0.5;
         let start_y = height_gui * 0.35;
 
+        self.title = catalog.translate("menu.game").to_string();
+
         self.buttons = vec![
-            MenuButton::new(1, btn_x, start_y, btn_w, btn_h, "Back to Game"),
-            MenuButton::new(2, btn_x, start_y + 32.0, btn_w, btn_h, "Options..."),
+            MenuButton::new(
+                1,
+                btn_x,
+                start_y,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.returnToGame"),
+            ),
+            MenuButton::new(
+                2,
+                btn_x,
+                start_y + 32.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.options"),
+            ),
             MenuButton::new(
                 3,
                 btn_x,
                 start_y + 64.0,
                 btn_w,
                 btn_h,
-                "Save & Quit to Title",
+                catalog.translate("menu.returnToMenu"),
             ),
         ];
+    }
+
+    /// Updates button layout using default embedded translations.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let catalog = LanguageCatalog::with_default_embedded();
+        self.update_layout_i18n(width_gui, height_gui, &catalog);
     }
 
     /// Handles mouse motion in GUI pixels.
@@ -101,7 +132,7 @@ impl PauseMenuScreen {
         ));
 
         // Title
-        let title = "Game Paused";
+        let title = self.title.as_str();
         let (tw, _) = font.measure_text(title);
         font.layout_text(
             title,
