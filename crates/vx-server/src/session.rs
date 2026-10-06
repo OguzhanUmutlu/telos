@@ -85,6 +85,8 @@ pub struct PlayerSession {
     pub awaiting_teleport: Option<u32>,
     /// Active movement simulation mode.
     pub move_mode: MoveMode,
+    /// Name of the world/dimension this session currently resides in.
+    pub world_name: String,
 }
 
 impl PlayerSession {
@@ -143,6 +145,7 @@ impl PlayerSession {
             teleport_id_counter: 0,
             awaiting_teleport: None,
             move_mode: MoveMode::NoClipFly,
+            world_name: "overworld".to_string(),
         }
     }
 
@@ -350,5 +353,17 @@ impl PlayerSession {
     /// Marks an LOD node as delivered and active on the client.
     pub fn mark_lod_node_sent(&mut self, key: LodNodeKey) {
         self.sent_lod_nodes.insert(key);
+    }
+
+    /// Clears active chunk and LOD subscriptions (e.g. during world transfer), returning unloads.
+    pub fn clear_subscriptions(&mut self) -> (Vec<ChunkPos>, Vec<LodNodeKey>) {
+        let unloads: Vec<ChunkPos> = self.sent_chunks.drain().collect();
+        let lod_unloads: Vec<LodNodeKey> = self.sent_lod_nodes.drain().collect();
+        self.queued_chunks.clear();
+        self.queued_set.clear();
+        self.queued_lod_nodes.clear();
+        self.queued_lod_set.clear();
+        self.last_subscription_chunk = ChunkPos::new(i32::MAX, i32::MAX, i32::MAX);
+        (unloads, lod_unloads)
     }
 }

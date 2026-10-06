@@ -26,7 +26,12 @@ impl WireCodec<C2sMessage, S2cMessage> for ClientCodec {
     }
 
     fn decode(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessage> {
-        decode_s2c(phase, cursor).map_err(NetError::Protocol)
+        let actual_phase = if cursor.len() >= 8 {
+            ConnectionPhase::from_wire(cursor[7]).unwrap_or(phase)
+        } else {
+            phase
+        };
+        decode_s2c(actual_phase, cursor).map_err(NetError::Protocol)
     }
 }
 
@@ -39,7 +44,12 @@ impl WireCodec<S2cMessage, C2sMessage> for ServerCodec {
     }
 
     fn decode(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessage> {
-        decode_c2s(phase, cursor).map_err(NetError::Protocol)
+        let actual_phase = if cursor.len() >= 8 {
+            ConnectionPhase::from_wire(cursor[7]).unwrap_or(phase)
+        } else {
+            phase
+        };
+        decode_c2s(actual_phase, cursor).map_err(NetError::Protocol)
     }
 }
 

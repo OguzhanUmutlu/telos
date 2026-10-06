@@ -18,8 +18,9 @@ use vx_voxel::{
     registry::BlockRegistry,
     state::{BlockStateId, StateFlags},
 };
-use vx_worldgen::WorldGenerator;
+use vx_worldgen::{GeneratorKind, WorldGenerator};
 
+use crate::multi_world::WorldConfig;
 use crate::storage::WorldStorage;
 
 /// Actively tracked chunk containing mutable block storage and its latest published immutable snapshot.
@@ -32,6 +33,7 @@ pub struct ServerChunk {
 
 /// Server-side world storage, procedural generator, lighting cache, and LOD pyramid.
 pub struct ServerWorld {
+    name: String,
     generator: WorldGenerator,
     registry: BlockRegistry,
     chunks: HashMap<ChunkPos, ServerChunk>,
@@ -48,8 +50,20 @@ impl ServerWorld {
     /// Creates a new in-memory `ServerWorld` with the given seed and block registry.
     #[must_use]
     pub fn new(seed: u64, registry: BlockRegistry) -> Self {
-        let generator = WorldGenerator::new(seed, &registry);
+        Self::with_generator("overworld", seed, registry, GeneratorKind::Standard)
+    }
+
+    /// Creates a world with a specific name, seed, registry, and generator kind.
+    #[must_use]
+    pub fn with_generator(
+        name: impl Into<String>,
+        seed: u64,
+        registry: BlockRegistry,
+        kind: GeneratorKind,
+    ) -> Self {
+        let generator = WorldGenerator::with_kind(seed, &registry, kind);
         Self {
+            name: name.into(),
             generator,
             registry,
             chunks: HashMap::new(),
@@ -72,6 +86,7 @@ impl ServerWorld {
         let storage = WorldStorage::new(save_dir)?;
         let generator = WorldGenerator::new(seed, &registry);
         Ok(Self {
+            name: "overworld".to_string(),
             generator,
             registry,
             chunks: HashMap::new(),
@@ -95,6 +110,7 @@ impl ServerWorld {
         let registry = registries.block_registry().clone();
         let generator = WorldGenerator::new(seed, &registry);
         Ok(Self {
+            name: "overworld".to_string(),
             generator,
             registry,
             chunks: HashMap::new(),
@@ -106,6 +122,46 @@ impl ServerWorld {
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
         })
+    }
+
+    /// Creates a `ServerWorld` configured from a `WorldConfig`.
+    pub fn with_config(
+        config: &WorldConfig,
+        registries: &vx_content::FrozenRegistries,
+    ) -> std::io::Result<Self> {
+        let registry = registries.block_registry().clone();
+        let generator = WorldGenerator::with_kind(config.seed, &registry, config.generator);
+        let storage = if let Some(ref dir) = config.save_directory {
+            Some(WorldStorage::open_or_create(dir, registries)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            name: config.name.clone(),
+            generator,
+            registry,
+            chunks: HashMap::new(),
+            columns: HashMap::new(),
+            light_bfs: LightBfs::new(),
+            pyramid: LodPyramid::new(),
+            lod_color_table: LodColorTable::standard(),
+            lod_meshes: HashMap::new(),
+            storage,
+            dirty_chunks: HashSet::new(),
+        })
+    }
+
+    /// Returns the world name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the active generator algorithm kind.
+    #[must_use]
+    pub const fn generator_kind(&self) -> GeneratorKind {
+        self.generator.kind()
     }
 
     /// Returns the world generation seed.

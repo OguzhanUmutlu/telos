@@ -114,7 +114,7 @@ blake3 = "1.6"
 wasmtime = { version = "30", default-features = false, features = ["runtime", "cranelift", "component-model", "wat", "std"] }
 
 # Networking & Async
-tokio = { version = "1.43", default-features = false, features = ["sync", "rt", "net", "time", "macros"] }
+tokio = { version = "1.43", default-features = false, features = ["sync", "rt", "rt-multi-thread", "net", "time", "macros", "io-util"] }
 bytes = "1.10"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

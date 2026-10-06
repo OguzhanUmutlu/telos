@@ -13,6 +13,7 @@ pub mod error;
 pub mod lan;
 pub mod loopback;
 pub mod memory;
+/// QUIC transport and endpoint runtime over Quinn and TLS 1.3.
 pub mod quic;
 pub mod transport;
 
@@ -24,7 +25,7 @@ pub use loopback::{
 };
 pub use memory::{DEFAULT_RELIABLE_CAPACITY, DEFAULT_UNRELIABLE_CAPACITY, MemoryConnection};
 pub use quic::{
-    QuicClientEndpoint, QuicServerEndpoint, create_client_config, create_server_config,
-    generate_self_signed_cert,
+    QuicClientEndpoint, QuicConnection, QuicListener, QuicServerEndpoint, create_client_config,
+    create_server_config, generate_self_signed_cert,
 };
 pub use transport::{ConnStats, Connection, Incoming, Lane, Payload};

@@ -62,3 +62,92 @@ async fn test_quic_client_server_handshake_and_stream() {
 
     server_task.await.expect("server task panicked");
 }
+
+#[tokio::test]
+async fn test_quic_listener_and_connection_trait() {
+    use std::time::{Duration, Instant};
+    use vx_net::{Lane, Payload, QuicListener};
+    use vx_protocol::bounded::BoundedString;
+    use vx_protocol::messages::{
+        C2sHello, C2sMessage, DisconnectReason, S2cHelloReply, S2cMessage,
+    };
+
+    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap()).expect("bind listener");
+    let addr = listener.local_addr();
+
+    let client_ep =
+        QuicClientEndpoint::bind("127.0.0.1:0".parse().unwrap()).expect("bind client ep");
+    let client_conn = client_ep
+        .connect_to(addr, "localhost")
+        .await
+        .expect("connect to server");
+
+    // Client sends Hello right away over the bidirectional stream
+    let hello = C2sMessage::Hello(C2sHello {
+        protocol: 1,
+        build: BoundedString::new("test").unwrap(),
+        features: 0x42,
+    });
+    client_conn
+        .send(Lane::Control, Payload::Msg(hello))
+        .expect("client send hello");
+
+    // Wait for server to accept
+    let start = Instant::now();
+    let mut server_conn = None;
+    while start.elapsed() < Duration::from_secs(3) {
+        if let Some(conn) = listener.try_accept() {
+            server_conn = Some(conn);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let server_conn = server_conn.expect("server should accept incoming connection");
+
+    // Server receives Hello
+    let start = Instant::now();
+    let mut received_hello = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        if let Ok(Some(incoming)) = server_conn.try_recv()
+            && let Some(C2sMessage::Hello(h)) = incoming.into_msg()
+        {
+            assert_eq!(h.protocol, 1);
+            assert_eq!(h.features, 0x42);
+            received_hello = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(received_hello, "server must receive Hello message");
+
+    // Server sends HelloReply
+    let reply = S2cMessage::HelloReply(S2cHelloReply {
+        protocol: 1,
+        features: 0x42,
+        server_id: [7u8; 16],
+    });
+    server_conn
+        .send(Lane::Control, Payload::Msg(reply))
+        .expect("server send reply");
+
+    // Client receives HelloReply
+    let start = Instant::now();
+    let mut received_reply = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        if let Ok(Some(incoming)) = client_conn.try_recv()
+            && let Some(S2cMessage::HelloReply(r)) = incoming.into_msg()
+        {
+            assert_eq!(r.protocol, 1);
+            assert_eq!(r.features, 0x42);
+            assert_eq!(r.server_id, [7u8; 16]);
+            received_reply = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(received_reply, "client must receive HelloReply message");
+
+    client_conn.close(DisconnectReason::Normal);
+    server_conn.close(DisconnectReason::Normal);
+    listener.close();
+}

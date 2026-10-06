@@ -17,4 +17,4 @@ pub mod surface;
 pub use biome::BiomeId;
 pub use climate::ClimatePoint;
 pub use error::WorldGenError;
-pub use generator::WorldGenerator;
+pub use generator::{GeneratorKind, WorldGenerator};

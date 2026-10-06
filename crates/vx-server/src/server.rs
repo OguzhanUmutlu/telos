@@ -2,7 +2,10 @@
 
 use glam::DVec3;
 use hashbrown::HashMap;
+use std::fmt::Write as _;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info};
 use vx_content::{FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order};
 use vx_core::coords::{BlockPos, Face};
@@ -18,7 +21,9 @@ use vx_protocol::messages::{
     S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cPlayerMovementAck, S2cRegistryData,
     S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
-use vx_sim::command::{CommandContext, CommandDispatcher, register_builtins};
+use vx_sim::command::{
+    ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
+};
 use vx_sim::event::{EventQueue, GameEvent};
 use vx_sim::{
     CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
@@ -28,14 +33,47 @@ use vx_sim::{
 use vx_voxel::state::BlockStateId;
 use vx_voxel::storage::Blocks;
 
+use crate::builder::ServerBuilder;
 use crate::config::ServerConfig;
+use crate::error::ServerError;
+use crate::multi_world::{MultiWorldManager, WorldError};
 use crate::session::PlayerSession;
 use crate::world::ServerWorld;
+
+fn register_world_command(dispatcher: &mut CommandDispatcher) {
+    let world_node = CommandNode::literal("world")
+        .with_tooltip("Manage worlds and transfer players")
+        .executes(|_| {
+            CommandOutput::success("Usage: /world list or /world tp <world_name> [x y z]")
+        })
+        .then(
+            CommandNode::literal("list")
+                .with_tooltip("List all active worlds")
+                .executes(|_| CommandOutput::success("Listing worlds...")),
+        )
+        .then(
+            CommandNode::literal("tp")
+                .with_tooltip("Teleport to another world")
+                .then(
+                    CommandNode::argument("name", ArgumentType::Word)
+                        .with_tooltip("Destination world name")
+                        .executes(|_| CommandOutput::success("Teleporting to world..."))
+                        .then(
+                            CommandNode::argument("pos", ArgumentType::Vec3)
+                                .with_tooltip("Optional coordinates in destination world")
+                                .executes(|_| {
+                                    CommandOutput::success("Teleporting to world coordinates...")
+                                }),
+                        ),
+                ),
+        );
+    dispatcher.register(world_node);
+}
 
 /// Top-level authoritative server orchestrating worlds, simulation, and client streaming.
 pub struct Server {
     config: ServerConfig,
-    world: ServerWorld,
+    worlds: MultiWorldManager,
     /// Active frozen registries.
     pub registries: Arc<FrozenRegistries>,
     sessions: HashMap<u64, PlayerSession>,
@@ -61,6 +99,12 @@ pub struct Server {
     pub mod_manager: ModManager,
     /// Bounded event queue buffering simulation events during the tick.
     pub event_queue: EventQueue,
+    /// Remote QUIC network listener accepting external client connections.
+    pub listener: Option<vx_net::QuicListener>,
+    /// LAN discovery beacon emitter broadcasting over UDP.
+    pub lan_emitter: Option<vx_net::LanBeaconEmitter>,
+    /// Thread-safe signal to request server shutdown.
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -95,18 +139,71 @@ impl Server {
         config: ServerConfig,
         registries: Arc<FrozenRegistries>,
     ) -> Self {
-        let world = if let Some(dir) = &config.save_directory {
-            match ServerWorld::with_content_storage(seed, &registries, dir) {
-                Ok(w) => w,
-                Err(err) => {
-                    tracing::error!(
-                        "Failed to initialize storage at {dir:?}: {err}; falling back to memory"
-                    );
-                    ServerWorld::new(seed, registries.block_registry().clone())
+        let mut worlds_vec = Vec::new();
+        if config.worlds.is_empty() {
+            let default_world = if let Some(dir) = &config.save_directory {
+                match ServerWorld::with_content_storage(seed, &registries, dir) {
+                    Ok(w) => w,
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to initialize storage at {dir:?}: {err}; falling back to memory"
+                        );
+                        ServerWorld::new(seed, registries.block_registry().clone())
+                    }
                 }
-            }
+            } else {
+                ServerWorld::new(seed, registries.block_registry().clone())
+            };
+            worlds_vec.push(("overworld".to_string(), default_world));
         } else {
-            ServerWorld::new(seed, registries.block_registry().clone())
+            for (idx, w_cfg) in config.worlds.iter().enumerate() {
+                let mut resolved_w_cfg = w_cfg.clone();
+                if let (None, Some(base_dir)) =
+                    (&resolved_w_cfg.save_directory, &config.save_directory)
+                {
+                    if idx == 0 {
+                        resolved_w_cfg.save_directory = Some(base_dir.clone());
+                    } else {
+                        resolved_w_cfg.save_directory =
+                            Some(base_dir.join("dimensions").join(&w_cfg.name));
+                    }
+                }
+                let world = match ServerWorld::with_config(&resolved_w_cfg, &registries) {
+                    Ok(w) => w,
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to initialize world '{}' storage: {err}; falling back to memory",
+                            w_cfg.name
+                        );
+                        ServerWorld::with_generator(
+                            w_cfg.name.clone(),
+                            w_cfg.seed,
+                            registries.block_registry().clone(),
+                            w_cfg.generator,
+                        )
+                    }
+                };
+                worlds_vec.push((w_cfg.name.clone(), world));
+            }
+        }
+
+        let (first_name, first_world) = worlds_vec.remove(0);
+        let mut worlds = MultiWorldManager::new(first_name, first_world);
+        for (name, world) in worlds_vec {
+            let _ = worlds.add_world(name, world);
+        }
+
+        let lan_emitter = if config.lan_broadcast {
+            let port = config
+                .bind_address
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(25565);
+            let beacon = vx_net::LanBeacon::new(port, &config.motd);
+            vx_net::LanBeaconEmitter::spawn(beacon, port).ok()
+        } else {
+            None
         };
 
         let mut ecs_world = bevy_ecs::world::World::new();
@@ -115,6 +212,7 @@ impl Server {
 
         let mut dispatcher = CommandDispatcher::new();
         register_builtins(&mut dispatcher);
+        register_world_command(&mut dispatcher);
         let command_dispatcher = Arc::new(dispatcher);
 
         let mod_manager = ModManager::new().expect("ModManager engine initialization");
@@ -122,7 +220,7 @@ impl Server {
 
         Self {
             config,
-            world,
+            worlds,
             registries,
             sessions: HashMap::new(),
             next_session_id: 1,
@@ -139,6 +237,9 @@ impl Server {
             command_dispatcher,
             mod_manager,
             event_queue,
+            listener: None,
+            lan_emitter,
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -177,7 +278,11 @@ impl Server {
         let net_id = self.next_entity_id;
         self.next_entity_id += 1;
 
-        let seed = self.world.seed().wrapping_add(u64::from(net_id));
+        let seed = self
+            .worlds
+            .default_world()
+            .seed()
+            .wrapping_add(u64::from(net_id));
         let bundle = match entity_type {
             EntityType::Pig => MobBundle::new_pig(net_id, pos, seed),
             EntityType::Cow => MobBundle::new_cow(net_id, pos, seed),
@@ -286,13 +391,16 @@ impl Server {
             let spawn_x = (player_pos.x + angle.cos() * dist).floor() as i32;
             let spawn_z = (player_pos.z + angle.sin() * dist).floor() as i32;
 
-            let surface_y = self.world.get_surface_y(spawn_x, spawn_z);
+            let surface_y = self
+                .worlds
+                .default_world_mut()
+                .get_surface_y(spawn_x, spawn_z);
             if !(-500..=1000).contains(&surface_y) {
                 continue;
             }
 
             let check_pos = BlockPos::new(spawn_x, surface_y + 1, spawn_z);
-            let (sky_light, block_light) = self.world.get_light(check_pos);
+            let (sky_light, block_light) = self.worlds.default_world().get_light(check_pos);
 
             let spawn_pos = DVec3::new(
                 f64::from(spawn_x) + 0.5,
@@ -333,15 +441,185 @@ impl Server {
         &self.config
     }
 
-    /// Accesses the server's world container immutably.
+    /// Accesses the server's primary default world container immutably.
     #[must_use]
     pub fn world(&self) -> &ServerWorld {
-        &self.world
+        self.worlds.default_world()
     }
 
-    /// Accesses the server's world container mutably.
+    /// Accesses the server's primary default world container mutably.
     pub fn world_mut(&mut self) -> &mut ServerWorld {
-        &mut self.world
+        self.worlds.default_world_mut()
+    }
+
+    /// Accesses a specific world by name immutably.
+    #[must_use]
+    pub fn world_named(&self, name: &str) -> Option<&ServerWorld> {
+        self.worlds.get(name)
+    }
+
+    /// Accesses a specific world by name mutably.
+    pub fn world_named_mut(&mut self, name: &str) -> Option<&mut ServerWorld> {
+        self.worlds.get_mut(name)
+    }
+
+    /// Accesses the multi-world manager immutably.
+    #[must_use]
+    pub fn worlds(&self) -> &MultiWorldManager {
+        &self.worlds
+    }
+
+    /// Accesses the multi-world manager mutably.
+    pub fn worlds_mut(&mut self) -> &mut MultiWorldManager {
+        &mut self.worlds
+    }
+
+    /// Registers an additional dimension / world with the server.
+    pub fn add_world(
+        &mut self,
+        name: impl Into<String>,
+        world: ServerWorld,
+    ) -> Result<(), WorldError> {
+        self.worlds.add_world(name, world)
+    }
+
+    /// Unregisters an additional world by name.
+    pub fn remove_world(&mut self, name: &str) -> Result<ServerWorld, WorldError> {
+        self.worlds.remove_world(name)
+    }
+
+    /// Creates a fluent `ServerBuilder` for customizing and launching a server.
+    #[must_use]
+    pub fn builder() -> ServerBuilder {
+        ServerBuilder::new()
+    }
+
+    /// Binds the remote QUIC listener to the specified port on `0.0.0.0:<port>`.
+    pub fn listen(&mut self, port: u16) -> Result<(), ServerError> {
+        let addr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
+        self.listen_addr(addr)
+    }
+
+    /// Binds the remote QUIC listener to the specified socket address.
+    pub fn listen_addr(&mut self, addr: SocketAddr) -> Result<(), ServerError> {
+        let listener = vx_net::QuicListener::bind(addr)?;
+        tracing::info!(%addr, "Server QUIC listener bound successfully");
+        if self.config.lan_broadcast {
+            let beacon = vx_net::LanBeacon::new(addr.port(), &self.config.motd);
+            self.lan_emitter = vx_net::LanBeaconEmitter::spawn(beacon, addr.port()).ok();
+        }
+
+        self.listener = Some(listener);
+        Ok(())
+    }
+
+    /// Runs the authoritative server tick loop blocking the current thread until shutdown is requested.
+    pub fn run_blocking(&mut self) -> Result<(), ServerError> {
+        let tick_duration =
+            std::time::Duration::from_secs_f64(1.0 / f64::from(self.config.tps.max(1)));
+
+        let cancel = self.shutdown_requested.clone();
+        let _ = ctrlc::set_handler(move || {
+            tracing::info!("Received interrupt signal (Ctrl+C), requesting server shutdown...");
+            cancel.store(true, Ordering::SeqCst);
+        });
+
+        tracing::info!(
+            tps = self.config.tps,
+            worlds = self.worlds.len(),
+            "Server main loop started"
+        );
+
+        while !self.is_shutdown_requested() {
+            let start = std::time::Instant::now();
+            self.tick();
+            let elapsed = start.elapsed();
+            if let Some(remaining) = tick_duration.checked_sub(elapsed) {
+                std::thread::sleep(remaining);
+            }
+        }
+
+        tracing::info!("Server main loop stopped; flushing all worlds...");
+        let _ = self.save_and_flush();
+        Ok(())
+    }
+
+    /// Requests graceful shutdown of the server.
+    pub fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns `true` if a graceful shutdown has been requested.
+    #[must_use]
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::SeqCst)
+    }
+
+    /// Transfers a connected player to a different dimension / world.
+    pub fn transfer_player_world(
+        &mut self,
+        session_id: u64,
+        target_world: &str,
+        target_pos: Option<DVec3>,
+    ) -> Result<(), WorldError> {
+        if !self.worlds.contains(target_world) {
+            return Err(WorldError::NotFound(target_world.to_string()));
+        }
+
+        let session = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| WorldError::NotFound(format!("Session {session_id}")))?;
+
+        // 1. Clear old subscriptions and send unload packets
+        let (unloads, lod_unloads) = session.clear_subscriptions();
+        for pos in unloads {
+            let unload_msg = S2cMessage::ChunkUnload(S2cChunkUnload {
+                chunk_x: pos.x(),
+                chunk_y: pos.y(),
+                chunk_z: pos.z(),
+            });
+            let _ = session
+                .connection
+                .send(Lane::Chunk { priority: 0 }, Payload::Msg(unload_msg));
+        }
+        for key in lod_unloads {
+            let lod_unload = S2cMessage::LodNodeUnload(S2cLodNodeUnload {
+                level: key.level,
+                node_x: key.x,
+                node_y: key.y,
+                node_z: key.z,
+            });
+            let _ = session
+                .connection
+                .send(Lane::Chunk { priority: 1 }, Payload::Msg(lod_unload));
+        }
+
+        // 2. Set new world name
+        session.world_name = target_world.to_string();
+
+        // 3. Determine spawn position in target world
+        let dest_pos = if let Some(pos) = target_pos {
+            pos
+        } else {
+            let world = self.worlds.get_mut(target_world).unwrap();
+            let surface_y = f64::from(world.get_surface_y(128, 160));
+            DVec3::new(128.0, surface_y + 1.0, 160.0)
+        };
+
+        // 4. Teleport player
+        session.teleport(dest_pos);
+
+        // 5. Trigger immediate subscription recomputation
+        let _ = session.recompute_subscriptions();
+
+        tracing::info!(
+            session_id,
+            target_world,
+            ?dest_pos,
+            "Transferred player to world"
+        );
+        Ok(())
     }
 
     /// Number of active player sessions.
@@ -381,7 +659,20 @@ impl Server {
     pub fn tick(&mut self) {
         self.tick_count += 1;
 
+        // 0. Accept incoming QUIC network connections from listener
+        let mut incoming_conns = Vec::new();
+        if let Some(listener) = &mut self.listener {
+            while let Some(conn) = listener.try_accept() {
+                incoming_conns.push(conn);
+            }
+        }
+        for conn in incoming_conns {
+            let session_id = self.add_connection(conn);
+            info!(session_id, "Accepted incoming QUIC connection");
+        }
+
         // 1. Process inbound network packets across all sessions
+
         let mut disconnected = Vec::new();
         let mut player_joined = Vec::new();
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
@@ -1002,6 +1293,64 @@ impl Server {
                             );
                             s.teleport(target_dvec);
                         }
+                    } else if text.starts_with("/world") {
+                        let sub = text.trim_start_matches("/world").trim();
+                        if sub.is_empty() || sub == "list" {
+                            let names = self.worlds.world_names();
+                            let mut msg = format!("Loaded worlds ({}): ", names.len());
+                            for (i, name) in names.iter().enumerate() {
+                                let count = self
+                                    .sessions
+                                    .values()
+                                    .filter(|s| s.world_name == *name)
+                                    .count();
+                                if i > 0 {
+                                    msg.push_str(", ");
+                                }
+                                let _ = write!(msg, "{name} ({count} players)");
+                            }
+                            output.success = true;
+                            output.message = msg;
+                        } else if let Some(rest) = sub.strip_prefix("tp ") {
+                            let parts: Vec<&str> = rest.split_whitespace().collect();
+                            if let Some(target_world) = parts.first() {
+                                if self.worlds.contains(target_world) {
+                                    let target_pos = if parts.len() >= 4 {
+                                        if let (Ok(x), Ok(y), Ok(z)) = (
+                                            parts[1].parse::<f64>(),
+                                            parts[2].parse::<f64>(),
+                                            parts[3].parse::<f64>(),
+                                        ) {
+                                            Some(DVec3::new(x, y, z))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if let Err(err) = self.transfer_player_world(
+                                        session_id,
+                                        target_world,
+                                        target_pos,
+                                    ) {
+                                        output.success = false;
+                                        output.message = format!("Transfer failed: {err}");
+                                    } else {
+                                        output.success = true;
+                                        output.message =
+                                            format!("Transferred to world '{target_world}'");
+                                    }
+                                } else {
+                                    output.success = false;
+                                    output.message =
+                                        format!("World '{target_world}' does not exist");
+                                }
+                            }
+                        } else {
+                            output.success = false;
+                            output.message =
+                                "Usage: /world list or /world tp <world_name> [x y z]".to_string();
+                        }
                     }
                 }
 
@@ -1137,9 +1486,12 @@ impl Server {
             let is_in_reach = dist_sq <= max_reach * max_reach;
             let is_in_bounds = target_pos.y() >= -1024 && target_pos.y() < 2048;
 
-            let old_state = self.world.get_block(target_pos);
+            let session_world_name = session.world_name.clone();
+            let world = self.worlds.get_or_default_mut(&session_world_name);
+            let old_state = world.get_block(target_pos);
+
             if is_in_reach && is_in_bounds {
-                if let Some((_snapshot, version)) = self.world.set_block(target_pos, new_state) {
+                if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
                     match action.action {
                         BlockActionKind::Break => {
                             self.event_queue.push(GameEvent::BlockBroken {
@@ -1165,9 +1517,9 @@ impl Server {
                         version,
                     });
 
-                    // Broadcast block update to all players in Play phase
+                    // Broadcast block update to players in the same world in Play phase
                     for s in self.sessions.values_mut() {
-                        if s.phase == ConnectionPhase::Play {
+                        if s.phase == ConnectionPhase::Play && s.world_name == session_world_name {
                             let _ = s
                                 .connection
                                 .send(Lane::Control, Payload::Msg(update_msg.clone()));
@@ -1176,7 +1528,7 @@ impl Server {
                 }
             } else {
                 // Out of reach or invalid: send true block state to revert client prediction
-                let real_state = self.world.get_block(target_pos);
+                let real_state = world.get_block(target_pos);
                 let rollback_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
                     x: target_pos.x(),
                     y: target_pos.y(),
@@ -1290,9 +1642,11 @@ impl Server {
         for (net, mut pos, mut vel) in mob_query.iter_mut(&mut self.ecs_world) {
             #[allow(clippy::cast_possible_truncation)]
             let surface_y = self
-                .world
+                .worlds
+                .default_world_mut()
                 .get_surface_y(pos.0.x.floor() as i32, pos.0.z.floor() as i32);
             let floor_y = f64::from(surface_y) + 1.0;
+
             if pos.0.y < floor_y {
                 pos.0.y = floor_y;
                 vel.0.y = 0.0;
@@ -1312,7 +1666,11 @@ impl Server {
         let events = self.event_queue.drain();
         let mod_edits = self.mod_manager.dispatch_events(&events);
         for edit in mod_edits {
-            if let Some((_snapshot, version)) = self.world.set_block(edit.pos, edit.state) {
+            if let Some((_snapshot, version)) = self
+                .worlds
+                .default_world_mut()
+                .set_block(edit.pos, edit.state)
+            {
                 let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
                     x: edit.pos.x(),
                     y: edit.pos.y(),
@@ -1415,7 +1773,8 @@ impl Server {
                     break;
                 };
 
-                let snap = self.world.get_or_generate_chunk(pos);
+                let world = self.worlds.get_or_default_mut(&session.world_name);
+                let snap = world.get_or_generate_chunk(pos);
                 session.mark_chunk_sent(pos);
 
                 if let Blocks::Uniform(state) = snap.blocks() {
@@ -1457,7 +1816,8 @@ impl Server {
                     break;
                 };
 
-                let mesh = self.world.get_or_mesh_lod_node(key);
+                let world = self.worlds.get_or_default_mut(&session.world_name);
+                let mesh = world.get_or_mesh_lod_node(key);
                 session.mark_lod_node_sent(key);
 
                 let mut words = Vec::new();
@@ -1549,12 +1909,12 @@ impl Server {
             }
         }
 
-        // 10. Periodic autosave
+        // 10. Periodic autosave across all worlds
         if self.config.autosave_interval_ticks > 0
             && self
                 .tick_count
                 .is_multiple_of(u64::from(self.config.autosave_interval_ticks))
-            && let Err(err) = self.world.save_dirty_chunks()
+            && let Err(err) = self.worlds.save_all()
         {
             tracing::error!("Autosave failed: {err}");
         }
@@ -1593,17 +1953,14 @@ impl Server {
         }
     }
 
-    /// Saves all dirty chunks to `.vxr` region files and syncs data to disk.
+    /// Saves all dirty chunks to `.vxr` region files and syncs data to disk across all worlds.
     pub fn save_and_flush(&mut self) -> Result<usize, vx_storage::StorageError> {
-        let saved = self.world.save_dirty_chunks()?;
-        self.world.flush_storage()?;
-        Ok(saved)
+        self.worlds.save_all()
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.world.save_dirty_chunks();
-        let _ = self.world.flush_storage();
+        let _ = self.worlds.save_all();
     }
 }

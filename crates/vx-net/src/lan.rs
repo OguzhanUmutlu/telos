@@ -65,6 +65,21 @@ pub struct LanBeacon {
 }
 
 impl LanBeacon {
+    /// Creates a new `LanBeacon` with default settings and specified port and MOTD.
+    #[must_use]
+    pub fn new(quic_port: u16, motd: impl Into<String>) -> Self {
+        Self {
+            flags: 0,
+            protocol: 1,
+            quic_port,
+            cert_spki_sha256: [0u8; 32],
+            current_players: 0,
+            max_players: 64,
+            game_mode: 0,
+            motd: motd.into(),
+        }
+    }
+
     /// Encodes the beacon into a compact binary buffer (≤ 115 bytes).
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {

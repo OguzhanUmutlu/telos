@@ -24,6 +24,9 @@ tracing = { workspace = true }
 hashbrown = { workspace = true }
 glam = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+ctrlc = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
