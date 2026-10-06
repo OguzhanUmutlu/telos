@@ -1,0 +1,220 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name (e.g. 0.1.0 or v0.1.0)'
+        required: false
+        default: '0.1.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux Packages (Deb, AppImage, Tarball)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: version
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          echo "tag=${RAW_TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libvulkan-dev \
+            glslc \
+            spirv-tools \
+            desktop-file-utils
+
+      - name: Build release binaries
+        run: cargo build --release --bin voxel --bin voxel-server
+
+      - name: Build Debian packages (.deb)
+        run: bash packaging/linux/build-deb.sh "${{ steps.version.outputs.version }}"
+
+      - name: Build AppImage (.AppImage)
+        run: bash packaging/linux/build-appimage.sh "${{ steps.version.outputs.version }}"
+
+      - name: Build Portable Tarballs (.tar.gz)
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DIST_DIR="target/dist"
+          mkdir -p "${DIST_DIR}"
+
+          # Client tarball
+          CLIENT_STAGE="target/tar-client/voxel-${VERSION}"
+          mkdir -p "${CLIENT_STAGE}"
+          cp target/release/voxel "${CLIENT_STAGE}/"
+          cp packaging/linux/voxel.desktop "${CLIENT_STAGE}/"
+          cp packaging/linux/voxel.png "${CLIENT_STAGE}/"
+          if [ -d "assets/voxel" ]; then
+            mkdir -p "${CLIENT_STAGE}/assets"
+            cp -r assets/voxel "${CLIENT_STAGE}/assets/" 2>/dev/null || true
+          fi
+          cat > "${CLIENT_STAGE}/run.sh" << 'EOF'
+          #!/bin/sh
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/voxel" "$@"
+          EOF
+          chmod +x "${CLIENT_STAGE}/run.sh"
+          tar -czvf "${DIST_DIR}/voxel-${VERSION}-linux-x86_64.tar.gz" -C target/tar-client "voxel-${VERSION}"
+
+          # Server tarball
+          SERVER_STAGE="target/tar-server/voxel-server-${VERSION}"
+          mkdir -p "${SERVER_STAGE}"
+          cp target/release/voxel-server "${SERVER_STAGE}/"
+          cp packaging/server.toml "${SERVER_STAGE}/"
+          cat > "${SERVER_STAGE}/run.sh" << 'EOF'
+          #!/bin/sh
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/voxel-server" "$@"
+          EOF
+          chmod +x "${SERVER_STAGE}/run.sh"
+          tar -czvf "${DIST_DIR}/voxel-server-${VERSION}-linux-x86_64.tar.gz" -C target/tar-server "voxel-server-${VERSION}"
+
+      - name: Upload Linux Dist Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: target/dist/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows Packages (Setup Wizard, Zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: version
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          echo "tag=${RAW_TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Vulkan SDK (glslc)
+        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: 1.3.268.0
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, glslc
+          vulkan-use-cache: true
+
+      - name: Build release binaries
+        run: cargo build --release --bin voxel --bin voxel-server
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile Windows Setup Wizards (.exe)
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p target/dist
+          iscc "/DMyAppVersion=${VERSION}" packaging/windows/voxel-setup.iss
+          iscc "/DMyAppVersion=${VERSION}" packaging/windows/voxel-server-setup.iss
+
+      - name: Package Windows Portable Zips (.zip)
+        shell: pwsh
+        run: |
+          $Version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path target\dist | Out-Null
+
+          # Client zip
+          $ClientZipDir = "target\zip-client\voxel-$Version"
+          New-Item -ItemType Directory -Force -Path $ClientZipDir | Out-Null
+          Copy-Item target\release\voxel.exe -Destination $ClientZipDir
+          Copy-Item packaging\windows\voxel.ico -Destination $ClientZipDir
+          if (Test-Path assets\voxel) {
+              Copy-Item -Recurse assets\voxel -Destination "$ClientZipDir\assets\voxel"
+          }
+          Compress-Archive -Path "$ClientZipDir\*" -DestinationPath "target\dist\voxel-$Version-windows-x86_64.zip" -Force
+
+          # Server zip
+          $ServerZipDir = "target\zip-server\voxel-server-$Version"
+          New-Item -ItemType Directory -Force -Path $ServerZipDir | Out-Null
+          Copy-Item target\release\voxel-server.exe -Destination $ServerZipDir
+          Copy-Item packaging\server.toml -Destination $ServerZipDir
+          Compress-Archive -Path "$ServerZipDir\*" -DestinationPath "target\dist\voxel-server-$Version-windows-x86_64.zip" -Force
+
+      - name: Upload Windows Dist Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: target/dist/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Tag Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List Release Files
+        run: |
+          echo "==> Packaging files ready for release:"
+          ls -lh release-artifacts/
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: Voxel Release ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: release-artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

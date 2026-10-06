@@ -1,0 +1,24 @@
+[Unit]
+Description=Voxel Dedicated Headless Server
+Documentation=https://github.com/larvance/voxel
+After=network.target
+
+[Service]
+Type=simple
+User=voxel
+Group=voxel
+WorkingDirectory=/var/lib/voxel
+ExecStart=/usr/bin/voxel-server --world-dir /var/lib/voxel/world --config /etc/voxel/server.toml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/voxel
+ReadOnlyPaths=/etc/voxel
+
+[Install]
+WantedBy=multi-user.target

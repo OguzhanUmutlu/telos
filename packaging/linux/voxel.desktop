@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Voxel
+GenericName=Voxel Game
+Comment=High-performance voxel engine and game in Rust and Vulkan
+Exec=voxel
+Icon=voxel
+Terminal=false
+Type=Application
+Categories=Game;Simulation;
+Keywords=voxel;game;sandbox;3d;vulkan;
+StartupNotify=true
+StartupWMClass=voxel

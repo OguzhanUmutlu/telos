@@ -1,0 +1,40 @@
+# Voxel Dedicated Server Configuration
+# https://github.com/larvance/voxel
+
+[server]
+# Port to listen on (UDP for QUIC protocol)
+port = 25565
+
+# Bind IP address (0.0.0.0 listens on all interfaces)
+bind_address = "0.0.0.0"
+
+# Server Message Of The Day (shown in server list)
+motd = "A high-performance Voxel World"
+
+# Maximum concurrent connected players
+max_players = 64
+
+# View distance in chunks (radius)
+view_distance = 12
+
+# Simulation distance in chunks
+simulation_distance = 8
+
+# World seed (0 means randomized seed on initial generation)
+seed = 0
+
+# World generator type (e.g. "default", "flat", "mountains")
+generator = "default"
+
+# Path to the world storage directory
+world_dir = "world"
+
+# Tick rate target in TPS (Ticks Per Second)
+tick_rate = 20
+
+[security]
+# Enforce authentication
+online_mode = false
+
+# Rate limiting burst cap for client commands
+rate_limit_burst = 10
