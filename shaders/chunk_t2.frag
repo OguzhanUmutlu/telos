@@ -44,6 +44,12 @@ uint get_texture_layer(uint mat) {
         case 14u: // Torch (standard)
         case 15u: // Torch (core pack)
             return 11u;
+        case 18u: // Short grass (core pack)
+            return 12u;
+        case 19u: // Fern (core pack)
+            return 13u;
+        case 20u: // Dead bush (core pack)
+            return 14u;
         default:
             return 0u;
     }

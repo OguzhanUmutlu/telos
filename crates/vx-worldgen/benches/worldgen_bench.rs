@@ -38,6 +38,37 @@ fn bench_worldgen(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("surface_decoration_only", |b| {
+        use vx_core::coords::CHUNK_VOLUME;
+        use vx_worldgen::surface::ResolvedBlocks;
+        use vx_worldgen::{BiomeId, apply_surface_decorations};
+
+        let blocks = ResolvedBlocks::resolve(&registry);
+        #[allow(clippy::large_stack_arrays)]
+        let mut dense = [vx_voxel::state::BlockStateId::AIR; CHUNK_VOLUME];
+        for z in 0..32 {
+            for x in 0..32 {
+                for y in 0..=12 {
+                    dense[(y << 10) | (z << 5) | x] = blocks.grass;
+                }
+            }
+        }
+        let pos = ChunkPos::new(0, 0, 0);
+        let biomes = [BiomeId::Plains; 64];
+
+        b.iter(|| {
+            let mut test_dense = dense;
+            apply_surface_decorations(
+                black_box(0xABCD_1234),
+                black_box(pos),
+                black_box(&biomes),
+                black_box(&blocks),
+                black_box(&mut test_dense),
+            );
+            black_box(test_dense);
+        });
+    });
+
     group.finish();
 }
 

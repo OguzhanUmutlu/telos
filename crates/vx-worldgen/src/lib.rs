@@ -7,6 +7,7 @@
 
 pub mod biome;
 pub mod climate;
+pub mod decoration;
 pub mod density;
 pub mod error;
 pub mod generator;
@@ -16,5 +17,6 @@ pub mod surface;
 
 pub use biome::BiomeId;
 pub use climate::ClimatePoint;
+pub use decoration::apply_surface_decorations;
 pub use error::WorldGenError;
 pub use generator::{GeneratorKind, WorldGenerator};

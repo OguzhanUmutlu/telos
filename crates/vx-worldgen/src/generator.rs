@@ -1,5 +1,6 @@
 //! Central terrain generator coordinator producing standard 32³ cubic chunks.
 
+use crate::decoration::apply_surface_decorations;
 use crate::density::CoarseGrid;
 use crate::surface::{ResolvedBlocks, apply_surface_rules};
 use serde::{Deserialize, Serialize};
@@ -115,7 +116,10 @@ impl WorldGenerator {
                     &mut dense,
                 );
 
-                // 4. Construct compact paletted chunk representation with uniform elision
+                // 4. Apply procedural surface foliage and floral patch decoration
+                apply_surface_decorations(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
+
+                // 5. Construct compact paletted chunk representation with uniform elision
                 let packed_blocks = bulk::from_dense(&dense);
 
                 Chunk::from_blocks(pos, packed_blocks, move |state| {

@@ -279,6 +279,27 @@ impl BlockRegistry {
             crate::shape::BlockShape::fluid(1, false),
         );
 
+        let short_grass_id = Identifier::new("voxel", "short_grass").unwrap();
+        reg.register_with_shape(
+            short_grass_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let fern_id = Identifier::new("voxel", "fern").unwrap();
+        reg.register_with_shape(
+            fern_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let dead_bush_id = Identifier::new("voxel", "dead_bush").unwrap();
+        reg.register_with_shape(
+            dead_bush_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
         reg.freeze();
         reg
     }

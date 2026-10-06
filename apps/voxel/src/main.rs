@@ -6516,6 +6516,14 @@ fn load_and_upload_textures(
     builder.insert("poppy", stack.load_block_texture("poppy")?);
     builder.insert("dandelion", stack.load_block_texture("dandelion")?);
     builder.insert("torch", stack.load_block_texture("torch")?);
+    builder.insert(
+        "short_grass",
+        stack
+            .load_block_texture("short_grass")
+            .or_else(|_| stack.load_block_texture("tall_grass"))?,
+    );
+    builder.insert("fern", stack.load_block_texture("fern")?);
+    builder.insert("dead_bush", stack.load_block_texture("dead_bush")?);
 
     let water_frames = stack.load_animated_block_texture("water_still")?;
     let water_anim = builder.insert_animated("water_still", water_frames, 2);

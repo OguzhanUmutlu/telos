@@ -22,6 +22,16 @@ pub struct ResolvedBlocks {
     pub sand: BlockStateId,
     /// Water block state ID.
     pub water: BlockStateId,
+    /// Poppy flower block state ID.
+    pub poppy: BlockStateId,
+    /// Dandelion flower block state ID.
+    pub dandelion: BlockStateId,
+    /// Short grass foliage block state ID.
+    pub short_grass: BlockStateId,
+    /// Fern foliage block state ID.
+    pub fern: BlockStateId,
+    /// Dead bush arid block state ID.
+    pub dead_bush: BlockStateId,
 }
 
 impl ResolvedBlocks {
@@ -47,6 +57,21 @@ impl ResolvedBlocks {
         let water = registry
             .get(&vx_core::ident::Identifier::new("voxel", "water").unwrap())
             .map_or(BlockStateId::new(6), vx_voxel::Block::default_state);
+        let poppy = registry
+            .get(&vx_core::ident::Identifier::new("voxel", "poppy").unwrap())
+            .map_or(BlockStateId::new(12), vx_voxel::Block::default_state);
+        let dandelion = registry
+            .get(&vx_core::ident::Identifier::new("voxel", "dandelion").unwrap())
+            .map_or(BlockStateId::new(13), vx_voxel::Block::default_state);
+        let short_grass = registry
+            .get(&vx_core::ident::Identifier::new("voxel", "short_grass").unwrap())
+            .map_or(BlockStateId::new(16), vx_voxel::Block::default_state);
+        let fern = registry
+            .get(&vx_core::ident::Identifier::new("voxel", "fern").unwrap())
+            .map_or(BlockStateId::new(17), vx_voxel::Block::default_state);
+        let dead_bush = registry
+            .get(&vx_core::ident::Identifier::new("voxel", "dead_bush").unwrap())
+            .map_or(BlockStateId::new(18), vx_voxel::Block::default_state);
 
         Self {
             air,
@@ -56,6 +81,11 @@ impl ResolvedBlocks {
             bedrock,
             sand,
             water,
+            poppy,
+            dandelion,
+            short_grass,
+            fern,
+            dead_bush,
         }
     }
 }

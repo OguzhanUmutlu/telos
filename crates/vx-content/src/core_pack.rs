@@ -288,6 +288,54 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             },
         ),
         (
+            "short_grass",
+            "Short Grass",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("voxel:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(18),
+                ..Default::default()
+            },
+        ),
+        (
+            "fern",
+            "Fern",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("voxel:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(19),
+                ..Default::default()
+            },
+        ),
+        (
+            "dead_bush",
+            "Dead Bush",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("voxel:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(20),
+                ..Default::default()
+            },
+        ),
+        (
             "missing",
             "Missing Block",
             BlockDef {
