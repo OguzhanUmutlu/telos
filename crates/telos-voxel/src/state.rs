@@ -63,6 +63,10 @@ bitflags! {
         const TRANSLUCENT = 1 << 6;
         /// Alpha cutout material with sharp binary discard (e.g. leaves, glass, saplings).
         const CUTOUT = 1 << 7;
+        /// Interacts with the deterministic logic and signal propagation engine.
+        const LOGIC_COMPONENT = 1 << 8;
+        /// Currently in an active/powered state (emits signal or visual power).
+        const LOGIC_POWERED = 1 << 9;
     }
 }
 

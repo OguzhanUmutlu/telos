@@ -193,7 +193,7 @@ impl BlockRegistry {
     }
 
     /// Creates a standard registry populated with baseline voxel blocks (stone, dirt, grass, etc.).
-    #[allow(clippy::similar_names)]
+    #[allow(clippy::similar_names, clippy::too_many_lines)]
     #[must_use]
     pub fn standard() -> Self {
         let mut reg = Self::new();
@@ -300,8 +300,107 @@ impl BlockRegistry {
             crate::shape::BlockShape::cross(),
         );
 
+        // Logic & signal transmission components (Phase 36)
+        let logic_wire_id = Identifier::new("telos", "logic_wire").unwrap();
+        reg.register_with_shape(
+            logic_wire_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT | StateFlags::LOGIC_COMPONENT,
+            crate::shape::BlockShape::flat_plate(),
+        );
+
+        let logic_wire_powered_id = Identifier::new("telos", "logic_wire_powered").unwrap();
+        reg.register_with_shape(
+            logic_wire_powered_id,
+            StateFlags::NON_EMPTY
+                | StateFlags::CUTOUT
+                | StateFlags::LOGIC_COMPONENT
+                | StateFlags::LOGIC_POWERED,
+            crate::shape::BlockShape::flat_plate(),
+        );
+
+        let logic_power_block_id = Identifier::new("telos", "logic_power_block").unwrap();
+        reg.register(
+            logic_power_block_id,
+            StateFlags::OPAQUE_CUBE | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+        );
+
+        let logic_lever_id = Identifier::new("telos", "logic_lever").unwrap();
+        reg.register_with_shape(
+            logic_lever_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT,
+            crate::shape::BlockShape::lever(false),
+        );
+
+        let logic_lever_on_id = Identifier::new("telos", "logic_lever_on").unwrap();
+        reg.register_with_shape(
+            logic_lever_on_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+            crate::shape::BlockShape::lever(true),
+        );
+
+        let logic_lamp_id = Identifier::new("telos", "logic_lamp").unwrap();
+        reg.register(
+            logic_lamp_id,
+            StateFlags::OPAQUE_CUBE | StateFlags::LOGIC_COMPONENT,
+        );
+
+        let logic_lamp_lit_id = Identifier::new("telos", "logic_lamp_lit").unwrap();
+        reg.register(
+            logic_lamp_lit_id,
+            StateFlags::OPAQUE_CUBE | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+        );
+
+        let logic_repeater_id = Identifier::new("telos", "logic_repeater").unwrap();
+        reg.register_with_shape(
+            logic_repeater_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT,
+            crate::shape::BlockShape::flat_plate(),
+        );
+
+        let logic_repeater_powered_id = Identifier::new("telos", "logic_repeater_powered").unwrap();
+        reg.register_with_shape(
+            logic_repeater_powered_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+            crate::shape::BlockShape::flat_plate(),
+        );
+
+        let logic_inverter_id = Identifier::new("telos", "logic_inverter").unwrap();
+        reg.register_with_shape(
+            logic_inverter_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+            crate::shape::BlockShape::post(),
+        );
+
+        let logic_inverter_off_id = Identifier::new("telos", "logic_inverter_off").unwrap();
+        reg.register_with_shape(
+            logic_inverter_off_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT,
+            crate::shape::BlockShape::post(),
+        );
+
+        let logic_diode_id = Identifier::new("telos", "logic_diode").unwrap();
+        reg.register_with_shape(
+            logic_diode_id,
+            StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT,
+            crate::shape::BlockShape::flat_plate(),
+        );
+
         reg.freeze();
         reg
+    }
+
+    /// Returns `true` if the given block state is a logic component.
+    #[inline]
+    #[must_use]
+    pub fn is_logic_component(&self, id: BlockStateId) -> bool {
+        self.flags(id).contains(StateFlags::LOGIC_COMPONENT)
+    }
+
+    /// Returns `true` if the given block state is actively powered.
+    #[inline]
+    #[must_use]
+    pub fn is_logic_powered(&self, id: BlockStateId) -> bool {
+        self.flags(id).contains(StateFlags::LOGIC_POWERED)
     }
 }
 
@@ -319,16 +418,18 @@ mod tests {
     }
 
     #[test]
-    fn test_standard_registry() {
+    fn test_standard_registry_logic_blocks() {
         let reg = BlockRegistry::standard();
-        assert!(reg.is_frozen());
-        let stone = reg
-            .get(&Identifier::new("telos", "stone").unwrap())
+        assert!(reg.total_states() >= 31);
+        let wire = reg
+            .get(&Identifier::new("telos", "logic_wire").unwrap())
             .unwrap();
-        assert_eq!(stone.default_state(), BlockStateId::new(1));
-        assert!(
-            reg.flags(stone.default_state())
-                .contains(StateFlags::OPAQUE_FULL)
-        );
+        assert!(reg.is_logic_component(wire.default_state()));
+        assert!(!reg.is_logic_powered(wire.default_state()));
+        let wire_powered = reg
+            .get(&Identifier::new("telos", "logic_wire_powered").unwrap())
+            .unwrap();
+        assert!(reg.is_logic_component(wire_powered.default_state()));
+        assert!(reg.is_logic_powered(wire_powered.default_state()));
     }
 }

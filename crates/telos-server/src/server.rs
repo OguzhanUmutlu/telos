@@ -807,6 +807,13 @@ impl Server {
                                 inv.slots[2] = ItemStack::new(5, 64); // Oak Log
                                 inv.slots[3] = ItemStack::new(4, 64); // Cobblestone
                                 inv.slots[4] = ItemStack::new(7, 64); // Oak Planks
+                                inv.slots[5] = ItemStack::new(19, 64); // Wire (logic_wire)
+                                inv.slots[6] = ItemStack::new(21, 64); // Power Block (logic_power_block)
+                                inv.slots[7] = ItemStack::new(22, 64); // Lever (logic_lever)
+                                inv.slots[8] = ItemStack::new(24, 64); // Lamp (logic_lamp)
+                                inv.slots[9] = ItemStack::new(26, 64); // Repeater (logic_repeater)
+                                inv.slots[10] = ItemStack::new(28, 64); // Inverter (logic_inverter)
+                                inv.slots[11] = ItemStack::new(30, 64); // Diode (logic_diode)
                                 inv.update_crafting();
 
                                 let ecs_entity = self
@@ -1462,7 +1469,7 @@ impl Server {
             };
 
             let (target_pos, new_state) = match action.action {
-                BlockActionKind::Break => (
+                BlockActionKind::Break | BlockActionKind::Interact => (
                     BlockPos::new(action.x, action.y, action.z),
                     BlockStateId::AIR,
                 ),
@@ -1504,7 +1511,34 @@ impl Server {
             let old_state = world.get_block(target_pos);
 
             if is_in_reach && is_in_bounds {
-                if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
+                if matches!(action.action, BlockActionKind::Interact) {
+                    if let Some(_new_lever_state) = world.logic_engine.toggle_lever(target_pos) {
+                        let cur_block = world.get_block(target_pos);
+                        if let Some(comp) = world.logic_engine.get_component(target_pos)
+                            && let Some(target_state) =
+                                world.resolve_logic_block_state(cur_block, &comp)
+                            && let Some((_snapshot, version)) =
+                                world.set_block(target_pos, target_state)
+                        {
+                            let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                                x: target_pos.x(),
+                                y: target_pos.y(),
+                                z: target_pos.z(),
+                                state_id: target_state,
+                                version,
+                            });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play
+                                    && s.world_name == session_world_name
+                                {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                                }
+                            }
+                        }
+                    }
+                } else if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
                     match action.action {
                         BlockActionKind::Break => {
                             self.event_queue.push(GameEvent::BlockBroken {
@@ -1520,6 +1554,7 @@ impl Server {
                                 actor_net_id: Some(u64::from(session.entity_id)),
                             });
                         }
+                        BlockActionKind::Interact => {}
                     }
 
                     let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
@@ -1553,6 +1588,7 @@ impl Server {
                                 block_state_id: new_state.0,
                             }))
                         }
+                        BlockActionKind::Interact => None,
                     };
 
                     // Broadcast block update and particle effects to players in the same world in Play phase
@@ -1956,7 +1992,28 @@ impl Server {
             }
         }
 
-        // 10. Periodic autosave across all worlds
+        // 10. Tick deterministic logic simulation engine across all loaded worlds
+        for (world_name, world) in self.worlds.iter_mut() {
+            let logic_updates = world.tick_logic(self.tick_count);
+            for (pos, new_state) in logic_updates {
+                let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                    x: pos.x(),
+                    y: pos.y(),
+                    z: pos.z(),
+                    state_id: new_state,
+                    version: 0,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play && s.world_name == *world_name {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                    }
+                }
+            }
+        }
+
+        // 11. Periodic autosave across all worlds
         if self.config.autosave_interval_ticks > 0
             && self
                 .tick_count

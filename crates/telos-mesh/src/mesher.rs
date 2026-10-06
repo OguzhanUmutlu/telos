@@ -293,7 +293,7 @@ pub fn mesh_chunk_multilayers(
                                 &mut t2_cutout_quads,
                             );
                         }
-                        _ => {
+                        BlockShape::Cube => {
                             // T0 full-cube cutout (leaves, glass)
                             for dir in FaceDir::ALL {
                                 let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
@@ -318,6 +318,7 @@ pub fn mesh_chunk_multilayers(
                                     .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
                             }
                         }
+                        _ => {}
                     }
                 } else if flags.contains(StateFlags::TRANSLUCENT) {
                     let mat = state.0 as u16;
@@ -337,7 +338,7 @@ pub fn mesh_chunk_multilayers(
                                 &mut t2_trans_quads,
                             );
                         }
-                        _ => {
+                        BlockShape::Cube => {
                             // T0 full-cube translucent
                             for dir in FaceDir::ALL {
                                 let (nx, ny, nz) = neighbor_coords(bx, by, bz, dir);
@@ -359,6 +360,7 @@ pub fn mesh_chunk_multilayers(
                                     .push(T0Quad::new(bx, by, bz, 1, 1, dir, mat, pat_idx));
                             }
                         }
+                        _ => {}
                     }
                 }
             }

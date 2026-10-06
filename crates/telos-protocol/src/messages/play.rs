@@ -982,6 +982,8 @@ pub enum BlockActionKind {
         /// Face index against which the block was placed.
         hit_face: u8,
     },
+    /// Interact with or toggle the targeted block (e.g. switch / lever).
+    Interact,
 }
 
 impl BlockActionKind {
@@ -994,6 +996,7 @@ impl BlockActionKind {
                 encode_varint(state_id.as_u32(), buf);
                 buf.push(*hit_face);
             }
+            Self::Interact => buf.push(2),
         }
     }
 
@@ -1021,6 +1024,7 @@ impl BlockActionKind {
                 *cursor = &cursor[1..];
                 Ok(Self::Place { state_id, hit_face })
             }
+            2 => Ok(Self::Interact),
             other => Err(ProtocolError::Malformed(format!(
                 "Unknown block action kind {other}"
             ))),

@@ -3459,6 +3459,7 @@ dependencies = [
  "bevy_ecs",
  "bitflags 2.13.2",
  "bytemuck",
+ "criterion",
  "glam",
  "hashbrown 0.15.5",
  "proptest",

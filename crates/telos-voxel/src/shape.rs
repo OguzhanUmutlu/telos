@@ -256,6 +256,24 @@ impl BlockShape {
     pub const fn fluid(level: u8, falling: bool) -> Self {
         Self::Fluid { level, falling }
     }
+
+    /// Flat horizontal plate (e.g. logic wire, repeater, diode base: 2/16 high).
+    #[must_use]
+    pub fn flat_plate() -> Self {
+        Self::Boxes(vec![SubBox::new([0, 0, 0], [16, 2, 16])])
+    }
+
+    /// Small toggleable switch / lever sub-box.
+    #[must_use]
+    pub fn lever(_powered: bool) -> Self {
+        Self::Boxes(vec![SubBox::new([5, 0, 5], [11, 8, 11])])
+    }
+
+    /// Small vertical post (e.g. logic inverter torch).
+    #[must_use]
+    pub fn post() -> Self {
+        Self::Boxes(vec![SubBox::new([7, 0, 7], [9, 10, 9])])
+    }
 }
 
 #[cfg(test)]

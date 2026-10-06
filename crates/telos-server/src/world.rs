@@ -44,6 +44,8 @@ pub struct ServerWorld {
     lod_meshes: HashMap<LodNodeKey, Arc<LodMesh>>,
     storage: Option<WorldStorage>,
     dirty_chunks: HashSet<ChunkPos>,
+    /// Deterministic logic & signal propagation engine.
+    pub logic_engine: telos_sim::logic::LogicEngine,
 }
 
 impl ServerWorld {
@@ -74,6 +76,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: None,
             dirty_chunks: HashSet::new(),
+            logic_engine: telos_sim::logic::LogicEngine::new(),
         }
     }
 
@@ -97,6 +100,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
+            logic_engine: telos_sim::logic::LogicEngine::new(),
         })
     }
 
@@ -121,6 +125,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
+            logic_engine: telos_sim::logic::LogicEngine::new(),
         })
     }
 
@@ -149,6 +154,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage,
             dirty_chunks: HashSet::new(),
+            logic_engine: telos_sim::logic::LogicEngine::new(),
         })
     }
 
@@ -377,7 +383,129 @@ impl ServerWorld {
         self.dirty_chunks.insert(chunk_pos);
         self.invalidate_lod_hierarchy(chunk_pos);
 
+        // Logic component update and propagation
+        if new_flags.contains(StateFlags::LOGIC_COMPONENT) {
+            if let Some(ident) = self.registry.identifier(new_state) {
+                let kind = match ident.path() {
+                    "logic_wire" | "logic_wire_powered" => Some(telos_sim::logic::LogicKind::Wire),
+                    "logic_power_block" => Some(telos_sim::logic::LogicKind::PowerBlock),
+                    "logic_lever" => Some(telos_sim::logic::LogicKind::Lever { powered: false }),
+                    "logic_lever_on" => Some(telos_sim::logic::LogicKind::Lever { powered: true }),
+                    "logic_lamp" => Some(telos_sim::logic::LogicKind::Lamp { lit: false }),
+                    "logic_lamp_lit" => Some(telos_sim::logic::LogicKind::Lamp { lit: true }),
+                    "logic_repeater" => Some(telos_sim::logic::LogicKind::Repeater {
+                        facing: telos_core::coords::Face::North,
+                        delay: 1,
+                        powered: false,
+                    }),
+                    "logic_repeater_powered" => Some(telos_sim::logic::LogicKind::Repeater {
+                        facing: telos_core::coords::Face::North,
+                        delay: 1,
+                        powered: true,
+                    }),
+                    "logic_inverter" => Some(telos_sim::logic::LogicKind::Inverter {
+                        facing: telos_core::coords::Face::North,
+                        powered: true,
+                    }),
+                    "logic_inverter_off" => Some(telos_sim::logic::LogicKind::Inverter {
+                        facing: telos_core::coords::Face::North,
+                        powered: false,
+                    }),
+                    "logic_diode" => Some(telos_sim::logic::LogicKind::Diode {
+                        facing: telos_core::coords::Face::North,
+                    }),
+                    _ => None,
+                };
+                if let Some(k) = kind {
+                    self.logic_engine.set_component(pos, k);
+                }
+            }
+        } else if old_flags.contains(StateFlags::LOGIC_COMPONENT) {
+            self.logic_engine.remove_component(pos);
+        }
+
         Some((snapshot, version))
+    }
+
+    /// Resolves the corresponding `BlockStateId` for a logic component.
+    #[must_use]
+    pub fn resolve_logic_block_state(
+        &self,
+        _current: BlockStateId,
+        comp: &telos_sim::logic::LogicComponent,
+    ) -> Option<BlockStateId> {
+        let name = match comp.kind {
+            telos_sim::logic::LogicKind::Wire => {
+                if comp.power > 0 {
+                    "logic_wire_powered"
+                } else {
+                    "logic_wire"
+                }
+            }
+            telos_sim::logic::LogicKind::PowerBlock => "logic_power_block",
+            telos_sim::logic::LogicKind::Lever { powered } => {
+                if powered {
+                    "logic_lever_on"
+                } else {
+                    "logic_lever"
+                }
+            }
+            telos_sim::logic::LogicKind::Lamp { lit } => {
+                if lit {
+                    "logic_lamp_lit"
+                } else {
+                    "logic_lamp"
+                }
+            }
+            telos_sim::logic::LogicKind::Repeater { powered, .. } => {
+                if powered {
+                    "logic_repeater_powered"
+                } else {
+                    "logic_repeater"
+                }
+            }
+            telos_sim::logic::LogicKind::Inverter { powered, .. } => {
+                if powered {
+                    "logic_inverter"
+                } else {
+                    "logic_inverter_off"
+                }
+            }
+            telos_sim::logic::LogicKind::Diode { .. } => "logic_diode",
+        };
+
+        let ident = telos_core::ident::Identifier::new("telos", name).ok()?;
+        self.registry
+            .get(&ident)
+            .map(telos_voxel::Block::default_state)
+    }
+
+    /// Advances the logic simulation engine by one tick, updating component states.
+    /// Returns all block positions whose block state changed.
+    pub fn tick_logic(&mut self, current_tick: u64) -> Vec<(BlockPos, BlockStateId)> {
+        let changes = self.logic_engine.tick(current_tick);
+        let mut updated = Vec::new();
+
+        for (pos, comp) in changes {
+            let cur_state = self.get_block(pos);
+            if let Some(target) = self.resolve_logic_block_state(cur_state, &comp)
+                && target != cur_state
+            {
+                let old_flags = self.registry.flags(cur_state);
+                let new_flags = self.registry.flags(target);
+                let (chunk_pos, local_idx) = split_block_pos(pos);
+                if let Some(sc) = self.chunks.get_mut(&chunk_pos) {
+                    sc.chunk
+                        .set(local_idx, target, old_flags, new_flags, current_tick.max(1));
+                    let snapshot = sc.chunk.publish_snapshot();
+                    sc.snapshot = snapshot;
+                    self.dirty_chunks.insert(chunk_pos);
+                    updated.push((pos, target));
+                }
+            }
+        }
+
+        updated
     }
 
     /// Invalidates LOD pyramid nodes and cached meshes containing the given chunk.

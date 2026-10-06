@@ -18,6 +18,21 @@ uint get_texture_layer(uint mat) {
             return 0u; // stone
         case 11u: // Oak Stairs
             return 6u; // oak_planks
+        case 19u: // logic_wire (unpowered)
+        case 20u: // logic_wire_powered
+            return 20u; // redstone_dust_line0
+        case 22u: // logic_lever
+        case 23u: // logic_lever_on
+            return 23u; // lever
+        case 26u: // logic_repeater
+        case 30u: // logic_diode
+            return 21u; // repeater
+        case 27u: // logic_repeater_powered
+            return 22u; // repeater_on
+        case 28u: // logic_inverter
+            return 15u; // redstone_torch
+        case 29u: // logic_inverter_off
+            return 16u; // redstone_torch_off
         default:
             return 0u;
     }
@@ -28,6 +43,11 @@ void main() {
 
     // Sample repeating 2D texture array slice
     vec4 tex_color = texture(u_textures, vec3(v_uv, float(layer)));
+
+    // Discard transparent texels for cutout sub-cube geometry (wires, levers, torches)
+    if (tex_color.a < 0.1) {
+        discard;
+    }
 
     // Directional face shading factor
     float face_shade = 0.75;
@@ -58,6 +78,19 @@ void main() {
     vec3 light_color = mix(sampled_light, max(sampled_light, daylight_floor), sky_exposure);
 
     vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
+
+    // Tinting logic components (Phase 36)
+    if (v_material == 19u) {
+        // Unpowered wire: dark crimson red
+        tex_color.rgb *= vec3(0.35, 0.05, 0.05);
+    } else if (v_material == 20u) {
+        // Powered wire: bright glowing red with emissive pop
+        tex_color.rgb *= vec3(1.0, 0.15, 0.15);
+        total_light = max(total_light, vec3(0.9, 0.2, 0.2));
+    } else if (v_material == 27u || v_material == 28u) {
+        // Powered repeater / active inverter torch glow
+        total_light = max(total_light, vec3(0.85, 0.45, 0.2));
+    }
 
     out_color = vec4(tex_color.rgb * total_light, 1.0);
 }

@@ -550,5 +550,17 @@ mod tests {
             frozen.item_registry().placed_block(item_id),
             Some("telos:stone")
         );
+
+        let wire_id = Identifier::new("telos", "logic_wire").unwrap();
+        let wire_state = frozen
+            .get_block_state(&wire_id)
+            .expect("Logic wire registered");
+        assert_eq!(wire_state.as_u32(), 19);
+
+        let power_id = Identifier::new("telos", "logic_power_block").unwrap();
+        let power_state = frozen
+            .get_block_state(&power_id)
+            .expect("Power block registered");
+        assert_eq!(power_state.as_u32(), 21);
     }
 }

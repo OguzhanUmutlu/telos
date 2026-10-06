@@ -14,6 +14,7 @@ pub mod event;
 pub mod experience;
 pub mod hunger;
 pub mod inventory;
+pub mod logic;
 pub mod movement;
 pub mod particle;
 pub mod prediction;
@@ -42,6 +43,9 @@ pub use inventory::{
     InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
     inventory_click, is_armor, is_boots, is_chestplate, is_helmet, is_leggings,
     is_slot_valid_for_item, item_name, matching_armor_slot,
+};
+pub use logic::{
+    LogicChunk, LogicComponent, LogicEngine, LogicKind, MAX_SIGNAL_DISTANCE, ScheduledLogicTick,
 };
 pub use movement::{
     MAX_LEGAL_SPEED, MoveMode, MoveState, angles_to_direction, dequantize_pitch, dequantize_yaw,

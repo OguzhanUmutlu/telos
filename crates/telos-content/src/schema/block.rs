@@ -70,6 +70,16 @@ pub enum BlockShapeDef {
         #[serde(default)]
         wall: Option<String>,
     },
+    /// Tier 1 flat horizontal plate (wire, repeater, diode).
+    FlatPlate,
+    /// Tier 1 small toggleable switch / lever sub-box.
+    Lever {
+        /// Whether the lever is toggled on.
+        #[serde(default)]
+        powered: bool,
+    },
+    /// Tier 1 small vertical post (logic inverter torch).
+    Post,
 }
 
 fn default_true() -> bool {
@@ -149,6 +159,12 @@ pub struct BlockDef {
     /// Material texture index in the texture array layer.
     #[serde(default)]
     pub material_texture_index: Option<u16>,
+    /// Whether this block is a logic component.
+    #[serde(default)]
+    pub logic_component: bool,
+    /// Whether this block is actively powered.
+    #[serde(default)]
+    pub logic_powered: bool,
 }
 
 fn default_hardness() -> f32 {
@@ -173,6 +189,8 @@ impl Default for BlockDef {
             sound: None,
             item: BlockItemPolicy::Auto,
             material_texture_index: None,
+            logic_component: false,
+            logic_powered: false,
         }
     }
 }
@@ -207,6 +225,14 @@ impl BlockDef {
 
         if self.light_emission > 0 {
             flags |= StateFlags::EMITS_LIGHT;
+        }
+
+        if self.logic_component {
+            flags |= StateFlags::LOGIC_COMPONENT;
+        }
+
+        if self.logic_powered {
+            flags |= StateFlags::LOGIC_POWERED;
         }
 
         flags
@@ -249,6 +275,9 @@ impl BlockDef {
                 });
                 BlockShape::Torch { wall: wall_face }
             }
+            BlockShapeDef::FlatPlate => BlockShape::flat_plate(),
+            BlockShapeDef::Lever { powered } => BlockShape::lever(*powered),
+            BlockShapeDef::Post => BlockShape::post(),
         }
     }
 }

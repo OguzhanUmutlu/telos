@@ -28,6 +28,12 @@ uint get_texture_layer(uint mat, uint dir) {
             return 5u;
         case 7u: // Oak Planks
             return 6u;
+        case 21u: // logic_power_block
+            return 17u;
+        case 24u: // logic_lamp
+            return 18u;
+        case 25u: // logic_lamp_lit
+            return 19u;
         default:
             return 0u;
     }
@@ -75,6 +81,15 @@ void main() {
     vec3 light_color = mix(sampled_light, max(sampled_light, daylight_floor), sky_exposure);
 
     vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
+
+    // Emissive logic components (Phase 36)
+    if (v_material == 25u) {
+        // Lit redstone lamp emits warm unshaded glow without needing LightBfs flood
+        total_light = max(total_light, vec3(1.0, 0.92, 0.75));
+    } else if (v_material == 21u) {
+        // Redstone power block glows brightly
+        total_light = max(total_light, vec3(0.9, 0.3, 0.3));
+    }
 
     out_color = vec4(tex_color.rgb * total_light, tex_color.a);
 }

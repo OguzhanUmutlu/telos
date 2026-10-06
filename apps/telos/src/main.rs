@@ -416,17 +416,25 @@ const _: () = assert!(size_of::<ParticlePushConstants>() == 112);
 /// Resolves the terrain texture array layer and average tint color for a block state.
 fn block_state_to_particle_layer(state: telos_voxel::state::BlockStateId) -> (u32, [u8; 4]) {
     match state.0 {
-        1 => (0, [128, 128, 128, 255]),     // stone
-        2 => (1, [134, 96, 67, 255]),       // dirt
-        3 => (3, [120, 180, 80, 255]),      // grass
-        4 => (4, [60, 60, 60, 255]),        // bedrock
-        5 => (5, [219, 207, 156, 255]),     // sand
-        6 => (15, [64, 100, 200, 200]),     // water
-        7 | 11 => (6, [162, 130, 78, 255]), // oak planks & stairs
-        8 => (7, [60, 140, 50, 255]),       // oak leaves
-        9 => (8, [200, 220, 240, 180]),     // glass
-        10 => (0, [120, 120, 120, 255]),    // stone slab
-        15 => (11, [255, 200, 50, 255]),    // torch
+        1 => (0, [128, 128, 128, 255]),             // stone
+        2 => (1, [134, 96, 67, 255]),               // dirt
+        3 => (3, [120, 180, 80, 255]),              // grass
+        4 => (4, [60, 60, 60, 255]),                // bedrock
+        5 => (5, [219, 207, 156, 255]),             // sand
+        6 => (24, [64, 100, 200, 200]),             // water
+        7 | 11 => (6, [162, 130, 78, 255]),         // oak planks & stairs
+        8 => (7, [60, 140, 50, 255]),               // oak leaves
+        9 => (8, [200, 220, 240, 180]),             // glass
+        10 => (0, [120, 120, 120, 255]),            // stone slab
+        15 => (11, [255, 200, 50, 255]),            // torch
+        19 | 20 => (20, [200, 20, 20, 255]),        // wire
+        21 => (17, [220, 30, 30, 255]),             // redstone_block
+        22 | 23 => (23, [140, 110, 70, 255]),       // lever
+        24 => (18, [90, 55, 30, 255]),              // lamp
+        25 => (19, [255, 210, 100, 255]),           // lamp lit
+        26 | 27 | 30 => (21, [180, 180, 180, 255]), // repeater / diode
+        28 => (15, [255, 60, 60, 255]),             // inverter
+        29 => (16, [100, 30, 30, 255]),             // inverter off
         _ => (0, [180, 180, 180, 255]),
     }
 }
@@ -993,11 +1001,11 @@ const HOTBAR_ITEMS: [(&str, BlockStateId); 9] = [
     ("Dirt", BlockStateId::new(2)),
     ("Grass", BlockStateId::new(3)),
     ("Oak Planks", BlockStateId::new(7)),
-    ("Stone Slab", BlockStateId::new(10)),
-    ("Oak Stairs", BlockStateId::new(11)),
-    ("Oak Leaves", BlockStateId::new(8)),
-    ("Glass", BlockStateId::new(9)),
-    ("Water", BlockStateId::new(6)),
+    ("Logic Wire", BlockStateId::new(19)),
+    ("Power Block", BlockStateId::new(21)),
+    ("Lever", BlockStateId::new(22)),
+    ("Logic Lamp", BlockStateId::new(24)),
+    ("Repeater", BlockStateId::new(26)),
 ];
 
 struct GpuMeshLayer {
@@ -1476,11 +1484,18 @@ impl App {
             ..Default::default()
         };
 
-        let initial_mode = match game_settings.gameplay.game_mode.to_lowercase().as_str() {
-            "survival" => GameMode::Survival,
-            _ => GameMode::Creative,
+        let initial_mode = if args.screenshot.is_some() {
+            GameMode::Creative
+        } else {
+            match game_settings.gameplay.game_mode.to_lowercase().as_str() {
+                "survival" => GameMode::Survival,
+                _ => GameMode::Creative,
+            }
         };
         let mut physics = PlayerPhysicsController::new(d_spawn, initial_mode);
+        if args.screenshot.is_some() {
+            physics.flying = true;
+        }
         physics.set_pos_from_eye(camera.position);
 
         let mut pack_stack = ResourcePackStack::new();
@@ -1918,6 +1933,13 @@ impl App {
             chunk.set(local_idx, state_id, old_flags, new_flags, 1);
             self.chunks.insert(chunk_pos, chunk.publish_snapshot());
             self.mark_dirty_with_neighbors(chunk_pos);
+            tracing::info!(?pos, ?state_id, "Applied block update on client");
+        } else {
+            tracing::warn!(
+                ?pos,
+                ?chunk_pos,
+                "apply_block_update: chunk not loaded on client!"
+            );
         }
     }
 
@@ -2367,13 +2389,15 @@ impl App {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
+    )]
     fn update_particles(&mut self, dt: f32) {
         // Dev/screenshot showcase burst: trigger a visual particle burst when in screenshot mode or on frame 20
         let should_spawn_burst = if self.args.screenshot.is_some() {
-            self.total_frames >= 20
-                && self.total_frames <= 60
-                && self.total_frames.is_multiple_of(10)
+            false
         } else {
             self.total_frames == 20
         };
@@ -2410,6 +2434,43 @@ impl App {
             };
             self.particle_system
                 .spawn_from_event(&heart_ev, |_| (0, [255, 100, 120, 255]));
+        }
+
+        if self.total_frames == 35 && self.args.screenshot.is_some() {
+            // Build a demonstration circuit platform right in front of camera for visual verification
+            let cx = 128;
+            let cy = 44;
+            let cz = 156;
+
+            tracing::info!(
+                cx,
+                cy,
+                cz,
+                "Placing logic circuit showcase in front of camera"
+            );
+
+            for dx in -5..=5 {
+                for dz in -2..=2 {
+                    self.apply_block_update(
+                        BlockPos::new(cx + dx, cy - 1, cz + dz),
+                        BlockStateId::new(1),
+                    );
+                    self.apply_block_update(BlockPos::new(cx + dx, cy, cz + dz), BlockStateId::AIR);
+                    self.apply_block_update(
+                        BlockPos::new(cx + dx, cy + 1, cz + dz),
+                        BlockStateId::AIR,
+                    );
+                }
+            }
+            self.apply_block_update(BlockPos::new(cx - 4, cy, cz), BlockStateId::new(28)); // Logic Inverter
+            self.apply_block_update(BlockPos::new(cx - 3, cy, cz), BlockStateId::new(21)); // Power block
+            self.apply_block_update(BlockPos::new(cx - 2, cy, cz), BlockStateId::new(20)); // Powered wire
+            self.apply_block_update(BlockPos::new(cx - 1, cy, cz), BlockStateId::new(25)); // Lamp lit
+            self.apply_block_update(BlockPos::new(cx, cy, cz), BlockStateId::new(22)); // Lever
+            self.apply_block_update(BlockPos::new(cx + 1, cy, cz), BlockStateId::new(19)); // Wire (unpowered)
+            self.apply_block_update(BlockPos::new(cx + 2, cy, cz), BlockStateId::new(26)); // Repeater
+            self.apply_block_update(BlockPos::new(cx + 3, cy, cz), BlockStateId::new(24)); // Lamp unlit
+            self.apply_block_update(BlockPos::new(cx + 4, cy, cz), BlockStateId::new(30)); // Diode
         }
 
         // Ambient torch particles: sample a few positions around camera
@@ -6845,6 +6906,48 @@ impl ApplicationHandler for App {
                         }
                         MouseButton::Right => {
                             if let Some(hit) = self.targeted_block {
+                                let target_state = self.get_block_at(hit.pos);
+                                let is_lever = self
+                                    .block_registry
+                                    .identifier(target_state)
+                                    .is_some_and(|id| {
+                                        id.path() == "logic_lever" || id.path() == "logic_lever_on"
+                                    });
+                                if is_lever {
+                                    self.action_sequence += 1;
+                                    let msg = C2sMessage::BlockAction(C2sBlockAction {
+                                        sequence: self.action_sequence,
+                                        action: BlockActionKind::Interact,
+                                        x: hit.pos.x(),
+                                        y: hit.pos.y(),
+                                        z: hit.pos.z(),
+                                        input_tick: self.frame_counter,
+                                    });
+                                    let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                    let toggled_name = if self
+                                        .block_registry
+                                        .identifier(target_state)
+                                        .is_some_and(|id| id.path() == "logic_lever")
+                                    {
+                                        "logic_lever_on"
+                                    } else {
+                                        "logic_lever"
+                                    };
+                                    if let Ok(id) =
+                                        telos_core::ident::Identifier::new("telos", toggled_name)
+                                        && let Some(b) = self.block_registry.get(&id)
+                                    {
+                                        self.apply_block_update(hit.pos, b.default_state());
+                                    }
+                                    let hit_pos_f = Vec3::new(
+                                        hit.pos.x() as f32 + 0.5,
+                                        hit.pos.y() as f32 + 0.5,
+                                        hit.pos.z() as f32 + 0.5,
+                                    );
+                                    self.audio.play_procedural_place(hit_pos_f, 1.25);
+                                    return;
+                                }
+
                                 let norm = hit.face.normal_ivec();
                                 let place_pos = BlockPos::new(
                                     hit.pos.x() + norm.x,
@@ -7710,7 +7813,14 @@ fn load_and_upload_textures(
                 "dandelion" => [255, 230, 40, 255],
                 "torch" => [255, 200, 50, 255],
                 "short_grass" | "tall_grass" | "fern" => [100, 180, 60, 255],
-                "dead_bush" => [140, 110, 70, 255],
+                "dead_bush" | "lever" => [140, 110, 70, 255],
+                "redstone_torch" => [255, 60, 60, 255],
+                "redstone_torch_off" => [100, 30, 30, 255],
+                "redstone_block" => [220, 30, 30, 255],
+                "redstone_lamp" => [90, 55, 30, 255],
+                "redstone_lamp_on" => [255, 210, 100, 255],
+                "redstone_dust_line0" => [255, 255, 255, 255],
+                "repeater" | "repeater_on" => [180, 180, 180, 255],
                 _ => [255, 0, 255, 255],
             };
             for pixel in img.data.as_chunks_mut::<4>().0 {
@@ -7748,6 +7858,30 @@ fn load_and_upload_textures(
     );
     builder.insert("fern", load_texture_with_fallback("fern"));
     builder.insert("dead_bush", load_texture_with_fallback("dead_bush"));
+    builder.insert(
+        "redstone_torch",
+        load_texture_with_fallback("redstone_torch"),
+    );
+    builder.insert(
+        "redstone_torch_off",
+        load_texture_with_fallback("redstone_torch_off"),
+    );
+    builder.insert(
+        "redstone_block",
+        load_texture_with_fallback("redstone_block"),
+    );
+    builder.insert("redstone_lamp", load_texture_with_fallback("redstone_lamp"));
+    builder.insert(
+        "redstone_lamp_on",
+        load_texture_with_fallback("redstone_lamp_on"),
+    );
+    builder.insert(
+        "redstone_dust_line0",
+        load_texture_with_fallback("redstone_dust_line0"),
+    );
+    builder.insert("repeater", load_texture_with_fallback("repeater"));
+    builder.insert("repeater_on", load_texture_with_fallback("repeater_on"));
+    builder.insert("lever", load_texture_with_fallback("lever"));
 
     let water_frames = stack
         .load_animated_block_texture("water_still")
