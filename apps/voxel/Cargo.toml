@@ -19,6 +19,7 @@ vx-server = { workspace = true }
 vx-net = { workspace = true }
 vx-protocol = { workspace = true }
 vx-lod = { workspace = true }
+vx-ui = { workspace = true }
 hashbrown = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }

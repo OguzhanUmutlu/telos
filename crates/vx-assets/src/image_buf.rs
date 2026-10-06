@@ -39,6 +39,24 @@ impl RgbaImage {
         Self::from_png_bytes(&bytes, path)
     }
 
+    /// Loads and decodes a PNG file without any animation strip cropping.
+    pub fn from_file_exact(path: &Path) -> Result<Self, AssetError> {
+        let bytes = fs::read(path).map_err(|source| AssetError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let img = image::load_from_memory(&bytes).map_err(|e| AssetError::Decode {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let rgba = img.to_rgba8();
+        Ok(Self {
+            width: rgba.width(),
+            height: rgba.height(),
+            data: rgba.into_raw(),
+        })
+    }
+
     /// Loads an animated PNG strip from disk and returns all constituent square frames.
     pub fn frames_from_file(path: &Path) -> Result<Vec<Self>, AssetError> {
         let bytes = fs::read(path).map_err(|source| AssetError::Io {

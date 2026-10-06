@@ -21,6 +21,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../shaders/hiz_generate.comp");
     println!("cargo:rerun-if-changed=../../shaders/cull_chunks.comp");
     println!("cargo:rerun-if-changed=../../shaders/cull_lod.comp");
+    println!("cargo:rerun-if-changed=../../shaders/ui.vert");
+    println!("cargo:rerun-if-changed=../../shaders/ui.frag");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -49,6 +51,8 @@ fn main() {
         ("../../shaders/hiz_generate.comp", "hiz_generate.comp.spv"),
         ("../../shaders/cull_chunks.comp", "cull_chunks.comp.spv"),
         ("../../shaders/cull_lod.comp", "cull_lod.comp.spv"),
+        ("../../shaders/ui.vert", "ui.vert.spv"),
+        ("../../shaders/ui.frag", "ui.frag.spv"),
     ];
 
     for (src, dst) in shaders {

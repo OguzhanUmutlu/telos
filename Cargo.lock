@@ -127,6 +127,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "as-raw-xcb-connection"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2096,6 +2102,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2177,6 +2192,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "taffy"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99"
+dependencies = [
+ "arrayvec",
+ "serde",
+ "slotmap",
+ "smallvec",
 ]
 
 [[package]]
@@ -2486,6 +2513,7 @@ dependencies = [
  "vx-net",
  "vx-protocol",
  "vx-server",
+ "vx-ui",
  "vx-voxel",
  "vx-worldgen",
  "winit",
@@ -2652,6 +2680,22 @@ dependencies = [
  "vx-worldgen",
  "xxhash-rust",
  "zstd",
+]
+
+[[package]]
+name = "vx-ui"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "glam",
+ "image",
+ "proptest",
+ "slotmap",
+ "taffy",
+ "thiserror 2.0.21",
+ "vx-assets",
+ "vx-core",
 ]
 
 [[package]]

@@ -29,6 +29,7 @@ use vx_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
     C2sLoginStart, C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, S2cMessage,
 };
+use vx_ui::{BitmapFont, HudState, UiLayers, UiQuad, compute_gui_scale, render_hud};
 use vx_voxel::chunk::{Chunk, ChunkSnapshot};
 use vx_voxel::coords::LocalIdx;
 use vx_voxel::light::ChunkLight;
@@ -227,6 +228,14 @@ struct HighlightPushConstants {
     color: [f32; 4],
 }
 const _: () = assert!(size_of::<HighlightPushConstants>() == 112);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct UiPushConstants {
+    viewport_size: [f32; 2],
+    quad_buffer_address: u64,
+}
+const _: () = assert!(size_of::<UiPushConstants>() == 16);
 
 const MAX_CHUNK_CANDIDATES: usize = 4096;
 const MAX_LOD_CANDIDATES: usize = 4096;
@@ -907,6 +916,18 @@ struct App {
     cull_chunks_comp_shader: Option<ShaderModule>,
     cull_lod_pipeline: Option<ComputePipeline>,
     cull_lod_comp_shader: Option<ShaderModule>,
+
+    ui_pipeline: Option<GraphicsPipeline>,
+    ui_vert_shader: Option<ShaderModule>,
+    ui_frag_shader: Option<ShaderModule>,
+    ui_texture_array: Option<GpuTextureArray>,
+    ui_descriptor_pool: Option<vk::DescriptorPool>,
+    ui_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    ui_descriptor_set: Option<vk::DescriptorSet>,
+    ui_buffer: Option<GpuBuffer>,
+    ui_font: Option<BitmapFont>,
+    ui_layers: UiLayers,
+    hud_state: HudState,
 }
 
 impl App {
@@ -1044,12 +1065,25 @@ impl App {
             cull_chunks_comp_shader: None,
             cull_lod_pipeline: None,
             cull_lod_comp_shader: None,
+
+            ui_pipeline: None,
+            ui_vert_shader: None,
+            ui_frag_shader: None,
+            ui_texture_array: None,
+            ui_descriptor_pool: None,
+            ui_descriptor_set_layout: None,
+            ui_descriptor_set: None,
+            ui_buffer: None,
+            ui_font: None,
+            ui_layers: UiLayers::default(),
+            hud_state: HudState::default(),
         }
     }
 
     fn select_hotbar_slot(&mut self, slot: usize) {
         if slot < HOTBAR_ITEMS.len() {
             self.selected_hotbar_slot = slot;
+            self.hud_state.selected_slot = slot;
             self.selected_block_state = HOTBAR_ITEMS[slot].1;
             info!(
                 slot = slot + 1,
@@ -2772,6 +2806,146 @@ impl App {
             }
 
             device.cmd_end_rendering(cmd);
+
+            // ==========================================
+            // PHASE 3: RETAINED GUI & HUD PASS (Phase 16)
+            // ==========================================
+            if let (Some(ui_pipeline), Some(ui_descriptor_set), Some(font)) =
+                (&self.ui_pipeline, self.ui_descriptor_set, &self.ui_font)
+            {
+                let gui_scale = compute_gui_scale(swapchain_extent.width, swapchain_extent.height);
+
+                // Update HUD dynamic state
+                self.hud_state.selected_slot = self.selected_hotbar_slot;
+                self.hud_state.player_pos = [
+                    f64::from(self.camera.position.x),
+                    f64::from(self.camera.position.y),
+                    f64::from(self.camera.position.z),
+                ];
+                let (cpos, _) = vx_voxel::coords::split_block_pos(BlockPos::new(
+                    self.camera.position.x.floor() as i32,
+                    self.camera.position.y.floor() as i32,
+                    self.camera.position.z.floor() as i32,
+                ));
+                self.hud_state.chunk_pos = [cpos.x(), cpos.y(), cpos.z()];
+
+                let yaw_deg = self.camera.yaw.to_degrees();
+                let pitch_deg = self.camera.pitch.to_degrees();
+                self.hud_state.yaw = yaw_deg;
+                self.hud_state.pitch = pitch_deg;
+
+                let normalized_yaw = (yaw_deg % 360.0 + 360.0) % 360.0;
+                self.hud_state.facing = if (45.0..135.0).contains(&normalized_yaw) {
+                    "East (+X)".to_string()
+                } else if (135.0..225.0).contains(&normalized_yaw) {
+                    "South (+Z)".to_string()
+                } else if (225.0..315.0).contains(&normalized_yaw) {
+                    "West (-X)".to_string()
+                } else {
+                    "North (-Z)".to_string()
+                };
+
+                self.hud_state.frame_time_ms = (dt * 1000.0).max(0.01);
+                self.hud_state.chunks_rendered = self.visible_chunks_last as u32;
+                self.hud_state.lod_nodes_rendered = self.visible_lod_nodes_last as u32;
+
+                let mut ui_quads = Vec::with_capacity(256);
+                render_hud(
+                    &self.hud_state,
+                    font,
+                    &self.ui_layers,
+                    swapchain_extent.width,
+                    swapchain_extent.height,
+                    gui_scale,
+                    &mut ui_quads,
+                );
+
+                if !ui_quads.is_empty() {
+                    let required_bytes =
+                        (ui_quads.len() * std::mem::size_of::<UiQuad>()) as vk::DeviceSize;
+                    if let Some(ui_buf) = &mut self.ui_buffer {
+                        let allocator = gpu_context.allocator();
+                        if ui_buf.size() < required_bytes {
+                            ui_buf.destroy(device, allocator);
+                            if let Ok(new_buf) = GpuBuffer::new(
+                                device,
+                                allocator,
+                                "ui_quad_buffer",
+                                required_bytes.max(65536),
+                                vk::BufferUsageFlags::STORAGE_BUFFER
+                                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                                MemoryLocation::CpuToGpu,
+                            ) {
+                                *ui_buf = new_buf;
+                            }
+                        }
+                        if let Err(err) = ui_buf.write_bytes(bytemuck::cast_slice(&ui_quads)) {
+                            tracing::error!("Failed to write UI quad buffer: {err}");
+                        }
+
+                        let ui_color_attachment = vk::RenderingAttachmentInfo::default()
+                            .image_view(image_view)
+                            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .load_op(vk::AttachmentLoadOp::LOAD)
+                            .store_op(vk::AttachmentStoreOp::STORE);
+                        let ui_color_attachments = [ui_color_attachment];
+                        let ui_rendering_info = vk::RenderingInfo::default()
+                            .render_area(vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: swapchain_extent,
+                            })
+                            .layer_count(1)
+                            .color_attachments(&ui_color_attachments);
+
+                        device.cmd_begin_rendering(cmd, &ui_rendering_info);
+
+                        let ui_viewport = vk::Viewport::default()
+                            .x(0.0)
+                            .y(0.0)
+                            .width(swapchain_extent.width as f32)
+                            .height(swapchain_extent.height as f32)
+                            .min_depth(0.0)
+                            .max_depth(1.0);
+                        let ui_scissor = vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: swapchain_extent,
+                        };
+                        device.cmd_set_viewport(cmd, 0, &[ui_viewport]);
+                        device.cmd_set_scissor(cmd, 0, &[ui_scissor]);
+
+                        let ui_pc = UiPushConstants {
+                            viewport_size: [
+                                swapchain_extent.width as f32,
+                                swapchain_extent.height as f32,
+                            ],
+                            quad_buffer_address: ui_buf.device_address(),
+                        };
+                        device.cmd_bind_pipeline(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            ui_pipeline.raw(),
+                        );
+                        device.cmd_bind_descriptor_sets(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            ui_pipeline.layout(),
+                            0,
+                            &[ui_descriptor_set],
+                            &[],
+                        );
+                        device.cmd_push_constants(
+                            cmd,
+                            ui_pipeline.layout(),
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            bytemuck::bytes_of(&ui_pc),
+                        );
+                        device.cmd_draw(cmd, 6, ui_quads.len() as u32, 0, 0);
+
+                        device.cmd_end_rendering(cmd);
+                    }
+                }
+            }
         }
 
         if let Err(err) = gpu_context.end_frame(image_index) {
@@ -3190,6 +3364,207 @@ impl ApplicationHandler for App {
             }
         };
 
+        // ---------------------------------------------------------------------
+        // Initialize Retained GUI & HUD Resources (Phase 16)
+        // ---------------------------------------------------------------------
+        let (ui_texture_array, ui_font) = match load_and_upload_ui_textures(&gpu_context) {
+            Ok(res) => res,
+            Err(err) => {
+                tracing::warn!("Failed to load UI textures: {err}; using procedural fallback");
+                let fallback_bytes = vec![255u8; 256 * 256 * 4 * 4];
+                let fallback_regions: Vec<TextureMipRegion> = (0..4)
+                    .map(|layer| TextureMipRegion {
+                        buffer_offset: u64::from(layer * 256 * 256 * 4),
+                        layer,
+                        mip_level: 0,
+                        width: 256,
+                        height: 256,
+                    })
+                    .collect();
+                let fallback = match gpu_context.create_texture_array(
+                    256,
+                    4,
+                    1,
+                    &fallback_bytes,
+                    &fallback_regions,
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("Failed to create fallback UI texture array: {e}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                (fallback, BitmapFont::new_fallback(3))
+            }
+        };
+
+        // Query GPU device name for F3 overlay
+        let gpu_name = unsafe {
+            let props = gpu_context
+                .instance()
+                .raw()
+                .get_physical_device_properties(gpu_context.device().physical_device());
+            std::ffi::CStr::from_ptr(props.device_name.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        };
+        self.hud_state.gpu_name = gpu_name;
+
+        // Create UI descriptor set layout (binding 0: sampler2DArray)
+        let ui_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let ui_bindings = [ui_binding];
+        let ui_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&ui_bindings);
+        let ui_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&ui_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create UI descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        // Create UI descriptor pool and allocate descriptor set
+        let ui_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1);
+        let ui_pool_sizes = [ui_pool_size];
+        let ui_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .pool_sizes(&ui_pool_sizes);
+        let ui_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&ui_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create UI descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let ui_set_layouts = [ui_descriptor_set_layout];
+        let ui_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(ui_descriptor_pool)
+            .set_layouts(&ui_set_layouts);
+        let ui_descriptor_sets = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&ui_alloc_info)
+            {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::error!("Failed to allocate UI descriptor sets: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+        let ui_descriptor_set = ui_descriptor_sets[0];
+
+        // Bind UI texture array to descriptor set
+        let ui_image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(ui_texture_array.view())
+            .sampler(ui_texture_array.sampler());
+        let ui_image_infos = [ui_image_info];
+        let ui_write = vk::WriteDescriptorSet::default()
+            .dst_set(ui_descriptor_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&ui_image_infos);
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&[ui_write], &[]);
+        }
+
+        // Load UI shaders
+        let ui_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/ui.vert.spv"));
+        let ui_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/ui.frag.spv"));
+        let ui_vert_module = match ShaderModule::from_spv(gpu_context.device().raw(), ui_vert_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create UI vertex shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let ui_frag_module = match ShaderModule::from_spv(gpu_context.device().raw(), ui_frag_spv) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create UI fragment shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let ui_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(size_of::<UiPushConstants>() as u32);
+
+        let ui_pipeline = match GraphicsPipeline::create_dynamic_ui(
+            gpu_context.device().raw(),
+            ui_vert_module.raw(),
+            ui_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            &[ui_descriptor_set_layout],
+            &[ui_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create UI graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let initial_ui_buf_size = 4096 * std::mem::size_of::<UiQuad>() as vk::DeviceSize;
+        let ui_buffer = match GpuBuffer::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            "ui_quad_buffer",
+            initial_ui_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            MemoryLocation::CpuToGpu,
+        ) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::error!("Failed to create UI quad buffer: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        self.ui_texture_array = Some(ui_texture_array);
+        self.ui_font = Some(ui_font);
+        self.ui_descriptor_set_layout = Some(ui_descriptor_set_layout);
+        self.ui_descriptor_pool = Some(ui_descriptor_pool);
+        self.ui_descriptor_set = Some(ui_descriptor_set);
+        self.ui_vert_shader = Some(ui_vert_module);
+        self.ui_frag_shader = Some(ui_frag_module);
+        self.ui_pipeline = Some(ui_pipeline);
+        self.ui_buffer = Some(ui_buffer);
+
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
         self.pipeline = Some(pipeline);
@@ -3353,6 +3728,10 @@ impl ApplicationHandler for App {
                     KeyCode::Digit7 if pressed => self.select_hotbar_slot(6),
                     KeyCode::Digit8 if pressed => self.select_hotbar_slot(7),
                     KeyCode::Digit9 if pressed => self.select_hotbar_slot(8),
+                    KeyCode::F3 if pressed => {
+                        self.hud_state.f3_open = !self.hud_state.f3_open;
+                        info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
+                    }
                     KeyCode::Escape if pressed => {
                         if self.controller.mouse_captured {
                             self.controller.mouse_captured = false;
@@ -3364,6 +3743,20 @@ impl ApplicationHandler for App {
                         }
                     }
                     _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    #[allow(clippy::cast_possible_truncation)]
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
+                };
+                if scroll > 0.0 {
+                    let new_slot = (self.selected_hotbar_slot + 8) % 9;
+                    self.select_hotbar_slot(new_slot);
+                } else if scroll < 0.0 {
+                    let new_slot = (self.selected_hotbar_slot + 1) % 9;
+                    self.select_hotbar_slot(new_slot);
                 }
             }
             WindowEvent::Resized(physical_size) => {
@@ -3519,6 +3912,38 @@ impl ApplicationHandler for App {
                 frag.destroy(device);
             }
 
+            if let Some(mut pipeline) = self.ui_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.ui_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.ui_frag_shader.take() {
+                frag.destroy(device);
+            }
+
+            if let Some(pool) = self.ui_descriptor_pool.take() {
+                // SAFETY: Destroying UI descriptor pool on valid device
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+
+            if let Some(layout) = self.ui_descriptor_set_layout.take() {
+                // SAFETY: Destroying UI descriptor set layout on valid device
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+
+            if let Some(mut tex) = self.ui_texture_array.take() {
+                tex.destroy(device, allocator);
+            }
+
+            if let Some(mut buf) = self.ui_buffer.take() {
+                buf.destroy(device, allocator);
+            }
+
             if let Some(pool) = self.descriptor_pool.take() {
                 // SAFETY: Destroying descriptor pool on valid device
                 unsafe {
@@ -3624,6 +4049,150 @@ fn load_and_upload_textures(
     )?;
 
     Ok((texture_array, water_anim))
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
+    const UI_RES: u32 = 256;
+
+    let mut stack = ResourcePackStack::new();
+    stack.add_root("dev-assets/faithful-32x");
+    stack.add_root("dev-assets/classic-26.2");
+    stack.add_root("assets/voxel");
+
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 4) as usize];
+
+    // Helper to copy a sub-image into a 256x256 layer
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+        let layer_offset = layer * (UI_RES * UI_RES * 4) as usize;
+        let w = img.width.min(UI_RES);
+        let h = img.height.min(UI_RES);
+        for y in 0..h {
+            let src_start = ((y * img.width) * 4) as usize;
+            let src_end = src_start + (w * 4) as usize;
+            let dst_start = layer_offset + ((y * UI_RES) * 4) as usize;
+            dest[dst_start..dst_start + (w * 4) as usize]
+                .copy_from_slice(&img.data[src_start..src_end]);
+        }
+    };
+
+    // Layer 0: Hotbar (182x22)
+    let hotbar_img = stack.load_gui_sprite("hud/hotbar").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(182, 22);
+        for i in (0..img.data.len()).step_by(4) {
+            img.data[i] = 40;
+            img.data[i + 1] = 40;
+            img.data[i + 2] = 40;
+            img.data[i + 3] = 200;
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 0, &hotbar_img);
+
+    // Layer 1: Hotbar Selection (24x23)
+    let selection_img = stack
+        .load_gui_sprite("hud/hotbar_selection")
+        .unwrap_or_else(|_| {
+            let mut img = vx_assets::RgbaImage::new(24, 23);
+            for y in 0..23 {
+                for x in 0..24 {
+                    let idx = ((y * 24 + x) * 4) as usize;
+                    let is_border = x == 0 || x == 23 || y == 0 || y == 22;
+                    if is_border {
+                        img.data[idx] = 255;
+                        img.data[idx + 1] = 255;
+                        img.data[idx + 2] = 255;
+                        img.data[idx + 3] = 255;
+                    }
+                }
+            }
+            img
+        });
+    copy_to_layer(&mut pixel_data, 1, &selection_img);
+
+    // Layer 2: Crosshair (15x15)
+    let crosshair_img = stack.load_gui_sprite("hud/crosshair").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(15, 15);
+        for i in 0..15 {
+            let h_idx = ((7 * 15 + i) * 4) as usize;
+            img.data[h_idx] = 255;
+            img.data[h_idx + 1] = 255;
+            img.data[h_idx + 2] = 255;
+            img.data[h_idx + 3] = 255;
+
+            let v_idx = ((i * 15 + 7) * 4) as usize;
+            img.data[v_idx] = 255;
+            img.data[v_idx + 1] = 255;
+            img.data[v_idx + 2] = 255;
+            img.data[v_idx + 3] = 255;
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 2, &crosshair_img);
+
+    // Layer 3: Ascii Font (128x128 -> scale 2x to 256x256)
+    let ascii_img = stack.load_font_texture("ascii").unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(128, 128);
+        for (i, b) in img.data.iter_mut().enumerate() {
+            if i % 4 == 3 {
+                *b = 255;
+            } else {
+                *b = 200;
+            }
+        }
+        img
+    });
+
+    // Scale ascii 2x into Layer 3
+    let font = {
+        let mut ascii_256 = vec![0u8; (256 * 256 * 4) as usize];
+        let scale = (256 / ascii_img.width).max(1);
+        for y in 0..ascii_img.height {
+            for x in 0..ascii_img.width {
+                let src_idx = ((y * ascii_img.width + x) * 4) as usize;
+                let r = ascii_img.data[src_idx];
+                let g = ascii_img.data[src_idx + 1];
+                let b = ascii_img.data[src_idx + 2];
+                let a = ascii_img.data[src_idx + 3];
+
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let dst_x = x * scale + dx;
+                        let dst_y = y * scale + dy;
+                        if dst_x < 256 && dst_y < 256 {
+                            let dst_idx = ((dst_y * 256 + dst_x) * 4) as usize;
+                            ascii_256[dst_idx] = r;
+                            ascii_256[dst_idx + 1] = g;
+                            ascii_256[dst_idx + 2] = b;
+                            ascii_256[dst_idx + 3] = a;
+                        }
+                    }
+                }
+            }
+        }
+
+        let layer3_offset = 3 * (UI_RES * UI_RES * 4) as usize;
+        pixel_data[layer3_offset..layer3_offset + (256 * 256 * 4) as usize]
+            .copy_from_slice(&ascii_256);
+
+        BitmapFont::from_rgba(&ascii_256, 256, 256, 3)
+    };
+
+    let regions: Vec<TextureMipRegion> = (0..4)
+        .map(|layer| TextureMipRegion {
+            buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
+            layer,
+            mip_level: 0,
+            width: UI_RES,
+            height: UI_RES,
+        })
+        .collect();
+
+    let texture_array = gpu_context.create_texture_array(UI_RES, 4, 1, &pixel_data, &regions)?;
+
+    info!("UI texture array loaded (4 layers, 256x256, font baked)");
+
+    Ok((texture_array, font))
 }
 
 fn main() -> Result<()> {

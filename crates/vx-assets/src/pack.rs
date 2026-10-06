@@ -68,4 +68,45 @@ impl ResourcePackStack {
 
         RgbaImage::frames_from_file(&path)
     }
+
+    /// Finds a generic asset texture across standard Classic Voxel and Voxel asset directories.
+    #[must_use]
+    pub fn find_texture(&self, rel_path: &str) -> Option<PathBuf> {
+        let rel_paths = [
+            format!("assets/classic/{rel_path}"),
+            format!("assets/voxel/{rel_path}"),
+            rel_path.to_string(),
+        ];
+
+        for root in &self.roots {
+            for rel in &rel_paths {
+                let candidate = root.join(rel);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Loads and decodes a GUI sprite by relative sprite path (e.g. `"hud/hotbar"`).
+    pub fn load_gui_sprite(&self, name: &str) -> Result<RgbaImage, AssetError> {
+        let rel_path = format!("textures/gui/sprites/{name}.png");
+        let path = self
+            .find_texture(&rel_path)
+            .ok_or_else(|| AssetError::MissingTexture(name.to_string()))?;
+
+        RgbaImage::from_file_exact(&path)
+    }
+
+    /// Loads and decodes a font texture sheet by name (e.g. `"ascii"`).
+    pub fn load_font_texture(&self, name: &str) -> Result<RgbaImage, AssetError> {
+        let rel_path = format!("textures/font/{name}.png");
+        let path = self
+            .find_texture(&rel_path)
+            .ok_or_else(|| AssetError::MissingTexture(name.to_string()))?;
+
+        RgbaImage::from_file_exact(&path)
+    }
 }
