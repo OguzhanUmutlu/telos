@@ -1,0 +1,249 @@
+//! Built-in procedural acoustic synthesizer for fallback and out-of-the-box gameplay sound effects.
+
+use std::sync::Arc;
+
+/// Sample rate used for all procedural audio synthesizers (standard CD quality).
+pub const SYNTH_SAMPLE_RATE: u32 = 44_100;
+
+/// Fast, deterministic 32-bit PRNG for procedural noise generation.
+#[derive(Debug, Clone, Copy)]
+struct SimpleRng(u32);
+
+impl SimpleRng {
+    fn new(seed: u32) -> Self {
+        Self(if seed == 0 { 0x1234_5678 } else { seed })
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.0
+    }
+
+    /// Returns a uniform float in `[-1.0, 1.0]`.
+    fn next_f32(&mut self) -> f32 {
+        let val = (self.next_u32() >> 8) as f32 / 16_777_216.0; // [0, 1)
+        val * 2.0 - 1.0
+    }
+}
+
+/// Synthesizes a material footstep sound buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_footstep(material: &str, pitch: f32) -> Arc<[f32]> {
+    let pitch = pitch.clamp(0.5, 2.0);
+    let duration_sec = 0.14 / pitch;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0xABCD);
+
+    let (base_freq, noise_mix, decay_rate) = match material {
+        "grass" | "plant" | "foliage" => (180.0, 0.75, 28.0),
+        "wood" | "log" | "planks" => (320.0, 0.25, 36.0),
+        "stone" | "cobblestone" => (480.0, 0.45, 42.0),
+        "gravel" | "dirt" => (160.0, 0.85, 30.0),
+        "sand" => (140.0, 0.90, 24.0),
+        "water" => (520.0, 0.35, 20.0),
+        _ => (380.0, 0.40, 35.0),
+    };
+
+    let actual_freq = base_freq * pitch;
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let env = (-decay_rate * pitch * t).exp();
+
+        // Tonal impact sine wave + click
+        let tone = (2.0 * std::f32::consts::PI * actual_freq * t).sin();
+        let noise = rng.next_f32();
+
+        let sample = (tone * (1.0 - noise_mix) + noise * noise_mix) * env * 0.8;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a block crumbling and break sound buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_block_break(pitch: f32) -> Arc<[f32]> {
+    let pitch = pitch.clamp(0.5, 2.0);
+    let duration_sec = 0.22 / pitch;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0x9876);
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let env = (-18.0 * pitch * t).exp();
+
+        // Multiple crumbling crack pulses
+        let pulse1 = (-(35.0 * (t - 0.02).abs())).exp().max(0.0);
+        let pulse2 = (-(40.0 * (t - 0.07).abs())).exp().max(0.0);
+        let pulse3 = (-(45.0 * (t - 0.12).abs())).exp().max(0.0);
+        let pulse_env = 0.4 + 0.6 * (pulse1 + pulse2 + pulse3);
+
+        let noise = rng.next_f32();
+        let tone = (2.0 * std::f32::consts::PI * 220.0 * pitch * t).sin() * 0.3;
+
+        let sample = (noise * 0.8 + tone) * env * pulse_env * 0.85;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a block placement thud sound buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_block_place(pitch: f32) -> Arc<[f32]> {
+    let pitch = pitch.clamp(0.5, 2.0);
+    let duration_sec = 0.12 / pitch;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0x5432);
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let env = (-32.0 * pitch * t).exp();
+
+        let tone = (2.0 * std::f32::consts::PI * 240.0 * pitch * t).sin();
+        let snap = rng.next_f32() * 0.3;
+
+        let sample = (tone * 0.7 + snap) * env * 0.8;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a seamlessly loopable rain ambient sound buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_rain_loop() -> Arc<[f32]> {
+    let duration_sec = 1.5;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0x2468);
+
+    // Simple IIR low-pass filter to simulate gentle rain patter
+    let mut filtered = 0.0f32;
+    let alpha = 0.25;
+
+    for _ in 0..num_samples {
+        let raw = rng.next_f32();
+        filtered = filtered + alpha * (raw - filtered);
+
+        // Occasional droplet spike
+        let spike = if rng.next_u32().is_multiple_of(250) {
+            rng.next_f32() * 0.6
+        } else {
+            0.0
+        };
+
+        let sample = (filtered * 0.7 + spike) * 0.6;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    // Apply quick crossfade at buffer ends for seamless loop
+    let fade_len = (0.05 * SYNTH_SAMPLE_RATE as f32) as usize;
+    for i in 0..fade_len {
+        let factor = i as f32 / fade_len as f32;
+        let start_val = samples[i];
+        let end_idx = num_samples - fade_len + i;
+        let end_val = samples[end_idx];
+
+        samples[i] = end_val * (1.0 - factor) + start_val * factor;
+        samples[end_idx] = end_val * (1.0 - factor) + start_val * factor;
+    }
+
+    samples.into()
+}
+
+/// Synthesizes an explosive lightning thunder strike buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_thunder() -> Arc<[f32]> {
+    let duration_sec = 1.4;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0xFEDC);
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+
+        // Sharp initial crack at t = 0 followed by low-frequency rolling rumble
+        let crack_env = (-(80.0 * t)).exp();
+        let rumble_env = (-(3.5 * t)).exp();
+
+        let crack = rng.next_f32() * crack_env * 0.95;
+
+        // Low-frequency rumble (40 Hz with harmonics)
+        let sub_bass = (2.0 * std::f32::consts::PI * 42.0 * t).sin()
+            + 0.5 * (2.0 * std::f32::consts::PI * 84.0 * t).sin();
+        let rumble_noise = rng.next_f32() * 0.4;
+        let rumble = (sub_bass * 0.6 + rumble_noise) * rumble_env * 0.75;
+
+        let sample = (crack + rumble).clamp(-1.0, 1.0);
+        samples.push(sample);
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a damage hurt grunt sound buffer (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_entity_hurt(pitch: f32) -> Arc<[f32]> {
+    let pitch = pitch.clamp(0.5, 2.0);
+    let duration_sec = 0.18 / pitch;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let env = (-24.0 * pitch * t).exp();
+
+        // Downward frequency sweep from 300Hz down to 120Hz
+        let freq = (300.0 - 180.0 * (t / duration_sec)) * pitch;
+        let tone = (2.0 * std::f32::consts::PI * freq * t).sin();
+
+        // Soft distortion for gruffness
+        let saturated = (tone * 1.5).tanh();
+        let sample = saturated * env * 0.85;
+
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_footstep_bounds() {
+        for mat in &["grass", "stone", "wood", "dirt", "water"] {
+            let buf = synthesize_footstep(mat, 1.0);
+            assert!(!buf.is_empty());
+            for &s in buf.iter() {
+                assert!(!s.is_nan());
+                assert!((-1.0..=1.0).contains(&s));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rain_loop_seamless() {
+        let buf = synthesize_rain_loop();
+        assert!(!buf.is_empty());
+        // Verify start and end crossfade continuity
+        let diff = (buf[0] - buf[buf.len() - 1]).abs();
+        assert!(diff < 0.05);
+    }
+
+    #[test]
+    fn test_thunder_bounds() {
+        let buf = synthesize_thunder();
+        assert!(!buf.is_empty());
+        for &s in buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+    }
+}

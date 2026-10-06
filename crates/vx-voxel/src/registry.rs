@@ -184,6 +184,14 @@ impl BlockRegistry {
         self.state_to_flags.len()
     }
 
+    /// Looks up the block identifier for a given `BlockStateId`.
+    #[must_use]
+    pub fn identifier(&self, id: BlockStateId) -> Option<&Identifier> {
+        let &block_idx = self.state_to_block.get(id.as_usize())?;
+        let block = self.blocks.get(block_idx)?;
+        Some(&block.identifier)
+    }
+
     /// Creates a standard registry populated with baseline voxel blocks (stone, dirt, grass, etc.).
     #[allow(clippy::similar_names)]
     #[must_use]

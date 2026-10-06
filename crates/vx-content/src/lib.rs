@@ -10,6 +10,7 @@ pub mod pack;
 pub mod registry;
 pub mod save_map;
 pub mod schema;
+pub mod sound;
 
 pub use core_pack::{core_blocks, core_items};
 pub use error::{ContentError, Result};
@@ -21,3 +22,4 @@ pub use schema::{
     ArmorSlotDef, BlockDef, BlockItemPolicy, BlockShapeDef, ItemDef, ItemTypeDef, OpacityDef,
     PropertyDef, RenderLayerDef, TagDef, TagValueEntry,
 };
+pub use sound::{BlockSoundGroup, SoundCategory, SoundEvent};

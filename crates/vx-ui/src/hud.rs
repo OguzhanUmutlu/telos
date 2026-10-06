@@ -131,6 +131,8 @@ pub struct HudState {
     pub local_precipitation: String,
     /// Number of active entities tracked on client.
     pub entities_rendered: u32,
+    /// Number of active audio channels playing.
+    pub audio_channels: u32,
 }
 
 impl Default for HudState {
@@ -163,6 +165,7 @@ impl Default for HudState {
             weather_thunder_level: 0.0,
             local_precipitation: "None".to_string(),
             entities_rendered: 0,
+            audio_channels: 0,
         }
     }
 }
@@ -464,6 +467,7 @@ fn render_f3_overlay(
         ),
         format!("§fLOD Nodes: §e{} §factive", state.lod_nodes_rendered),
         format!("§fEntities: §d{} §ftracked", state.entities_rendered),
+        format!("§fAudio: §6{} §fchannels", state.audio_channels),
         format!("§fGUI Scale: §a{gui_scale}x"),
     ];
 

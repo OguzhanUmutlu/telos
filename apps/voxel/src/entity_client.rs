@@ -106,6 +106,12 @@ impl ClientEntityStore {
         self.entities.len()
     }
 
+    /// Looks up a client entity by network ID.
+    #[must_use]
+    pub fn get(&self, net_id: u32) -> Option<&ClientEntity> {
+        self.entities.get(&net_id)
+    }
+
     /// Returns an iterator over all tracked entities.
     pub fn iter(&self) -> impl Iterator<Item = &ClientEntity> {
         self.entities.values()

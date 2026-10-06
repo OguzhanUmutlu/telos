@@ -1199,6 +1199,11 @@ struct App {
     args: Args,
     total_frames: u32,
     manual_screenshot_requested: bool,
+
+    // Audio Engine & Acoustics (Phase 27)
+    audio: vx_audio::AudioEngine,
+    audio_step_dist: f32,
+    last_audio_pos: Vec3,
 }
 
 impl App {
@@ -1433,6 +1438,10 @@ impl App {
             args,
             total_frames: 0,
             manual_screenshot_requested: false,
+
+            audio: vx_audio::AudioEngine::new(),
+            audio_step_dist: 0.0,
+            last_audio_pos: spawn_pos,
         }
     }
 
@@ -1527,6 +1536,48 @@ impl App {
             chunk.set(local_idx, state_id, old_flags, new_flags, 1);
             self.chunks.insert(chunk_pos, chunk.publish_snapshot());
             self.mark_dirty_with_neighbors(chunk_pos);
+        }
+    }
+
+    fn get_block_at(&self, pos: BlockPos) -> BlockStateId {
+        let (chunk_pos, local_idx) = vx_voxel::coords::split_block_pos(pos);
+        if let Some(snap) = self.chunks.get(&chunk_pos) {
+            snap.blocks().get(local_idx)
+        } else {
+            BlockStateId::AIR
+        }
+    }
+
+    fn resolve_block_sound_material(&self, id: BlockStateId) -> &'static str {
+        if let Some(ident) = self.block_registry.identifier(id) {
+            let path = ident.path();
+            if path.contains("grass")
+                || path.contains("leaves")
+                || path.contains("plant")
+                || path.contains("flower")
+                || path.contains("dandelion")
+                || path.contains("poppy")
+            {
+                "grass"
+            } else if path.contains("wood")
+                || path.contains("log")
+                || path.contains("plank")
+                || path.contains("door")
+                || path.contains("fence")
+                || path.contains("stair")
+            {
+                "wood"
+            } else if path.contains("dirt") || path.contains("gravel") {
+                "dirt"
+            } else if path.contains("sand") {
+                "sand"
+            } else if path.contains("water") {
+                "water"
+            } else {
+                "stone"
+            }
+        } else {
+            "stone"
         }
     }
 
@@ -1730,6 +1781,8 @@ impl App {
                         self.weather_thunder_level = weather.thunder_level;
                         if weather.lightning_flash > 0 {
                             self.weather_lightning_flash = 1.0;
+                            let lightning_pos = self.camera.position + self.camera.forward() * 45.0;
+                            self.audio.play_thunder(lightning_pos);
                         }
                     }
                     S2cMessage::SpawnEntity(spawn) => {
@@ -1743,6 +1796,11 @@ impl App {
                     }
                     S2cMessage::EntityStatus(s) => {
                         self.entity_store.on_status(s.net_id, s.status);
+                        if s.status == 2
+                            && let Some(ent) = self.entity_store.get(s.net_id)
+                        {
+                            self.audio.play_procedural_hurt(ent.pos.as_vec3(), 1.0);
+                        }
                     }
                     S2cMessage::ChatMessage(chat) => {
                         let now_secs = self.start_time.elapsed().as_secs_f64();
@@ -2355,6 +2413,48 @@ impl App {
         self.last_frame_time = now;
 
         self.controller.update(&mut self.camera, dt);
+
+        // Update spatial audio listener
+        self.audio.set_listener(
+            self.camera.position,
+            self.camera.forward(),
+            self.camera.up(),
+        );
+
+        // Track player movement for footsteps
+        let delta_audio = self.camera.position - self.last_audio_pos;
+        let horiz_dist = (delta_audio.x * delta_audio.x + delta_audio.z * delta_audio.z).sqrt();
+        self.last_audio_pos = self.camera.position;
+
+        let foot_pos = BlockPos::new(
+            self.camera.position.x.floor() as i32,
+            (self.camera.position.y - 1.6).floor() as i32,
+            self.camera.position.z.floor() as i32,
+        );
+        let ground_block = self.get_block_at(foot_pos);
+        if ground_block != BlockStateId::AIR && horiz_dist > 1e-4 && horiz_dist < 2.5 {
+            self.audio_step_dist += horiz_dist;
+            if self.audio_step_dist >= 1.65 {
+                self.audio_step_dist = 0.0;
+                let sound_mat = self.resolve_block_sound_material(ground_block);
+                let pitch = 0.95
+                    + (self.camera.position.x.abs() * 7.13 + self.camera.position.z.abs() * 11.37)
+                        .fract()
+                        * 0.15;
+                self.audio.play_procedural_step(
+                    sound_mat,
+                    self.camera.position - Vec3::new(0.0, 1.5, 0.0),
+                    pitch,
+                );
+            }
+        }
+
+        // Ambient rain loop volume modulation & player cleanup
+        let rain_intensity = self
+            .weather_rain_level
+            .max(self.weather_thunder_level * 0.85);
+        self.audio.update_ambient_rain(rain_intensity);
+        self.audio.cleanup_finished_players();
 
         // Advance smooth client time of day (20 ticks per second)
         self.client_time_of_day =
@@ -3924,6 +4024,10 @@ impl App {
                         }
                     };
                 self.hud_state.local_precipitation = local_precip.to_string();
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    self.hud_state.audio_channels = self.audio.active_players_count() as u32;
+                }
 
                 let mut ui_quads = Vec::with_capacity(512);
                 render_hud(
@@ -5522,6 +5626,12 @@ impl ApplicationHandler for App {
                                 let _ = self
                                     .client_conn
                                     .send(Lane::Control, Payload::Msg(interact_msg));
+
+                                let ent_pos = self
+                                    .entity_store
+                                    .get(target_net_id)
+                                    .map_or(origin + forward * 2.0, |e| e.pos.as_vec3());
+                                self.audio.play_procedural_hurt(ent_pos, 1.0);
                                 return;
                             }
 
@@ -5537,6 +5647,18 @@ impl ApplicationHandler for App {
                                 });
                                 let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
                                 self.apply_block_update(hit.pos, BlockStateId::AIR);
+
+                                let hit_pos_f = Vec3::new(
+                                    hit.pos.x() as f32 + 0.5,
+                                    hit.pos.y() as f32 + 0.5,
+                                    hit.pos.z() as f32 + 0.5,
+                                );
+                                let pitch = 0.92
+                                    + (hit.pos.x().abs() as f32 * 0.1
+                                        + hit.pos.z().abs() as f32 * 0.2)
+                                        .fract()
+                                        * 0.16;
+                                self.audio.play_procedural_break(hit_pos_f, pitch);
                             }
                         }
                         MouseButton::Right => {
@@ -5561,6 +5683,18 @@ impl ApplicationHandler for App {
                                 });
                                 let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
                                 self.apply_block_update(place_pos, self.selected_block_state);
+
+                                let place_pos_f = Vec3::new(
+                                    place_pos.x() as f32 + 0.5,
+                                    place_pos.y() as f32 + 0.5,
+                                    place_pos.z() as f32 + 0.5,
+                                );
+                                let pitch = 0.95
+                                    + (place_pos.x().abs() as f32 * 0.13
+                                        + place_pos.z().abs() as f32 * 0.17)
+                                        .fract()
+                                        * 0.12;
+                                self.audio.play_procedural_place(place_pos_f, pitch);
                             }
                         }
                         _ => {}
