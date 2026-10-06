@@ -215,9 +215,13 @@ pub fn mesh_chunk_multilayers(
                 (4, bx, by, bz - 32)
             };
 
-            if let Some(snap) = neighbors[n_idx] {
-                let idx = LocalIdx::from_coords_unchecked(nx as u32, ny as u32, nz as u32);
-                snap.blocks().get(idx)
+            if (0..32).contains(&nx) && (0..32).contains(&ny) && (0..32).contains(&nz) {
+                if let Some(snap) = neighbors[n_idx] {
+                    let idx = LocalIdx::from_coords_unchecked(nx as u32, ny as u32, nz as u32);
+                    snap.blocks().get(idx)
+                } else {
+                    BlockStateId::AIR
+                }
             } else {
                 BlockStateId::AIR
             }
