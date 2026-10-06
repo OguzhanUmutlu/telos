@@ -11,6 +11,7 @@ use vx_server::{Server, ServerConfig};
 use vx_voxel::state::BlockStateId;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_server_handshake_and_chunk_streaming() {
     let config = ServerConfig {
         tps: 20,
@@ -118,6 +119,9 @@ fn test_server_handshake_and_chunk_streaming() {
             S2cMessage::LodNodeData(lod) => {
                 received_lod_nodes += 1;
                 assert!(lod.level >= 1);
+            }
+            S2cMessage::UpdateTime(time) => {
+                assert!(time.time_of_day >= 6000);
             }
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }

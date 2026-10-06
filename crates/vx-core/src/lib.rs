@@ -15,4 +15,8 @@ pub use coords::{
 pub use ident::{DEFAULT_NAMESPACE, Identifier, ParseIdentError};
 pub use raycast::{RaycastHit, raycast_voxels};
 pub use telemetry::{TelemetryConfig, init_telemetry};
-pub use time::FixedTimestep;
+pub use time::{
+    DAY_TICKS, FixedTimestep, LUNAR_CYCLE_DAYS, MIDNIGHT_TICKS, NOON_TICKS, SUNRISE_TICKS,
+    SUNSET_TICKS, daylight_factor, moon_direction, moon_phase, sun_angle, sun_direction,
+    sunset_factor,
+};

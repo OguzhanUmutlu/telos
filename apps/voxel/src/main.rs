@@ -20,8 +20,8 @@ use vx_core::{
     raycast_voxels,
 };
 use vx_gpu::{
-    ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTextureArray, GraphicsPipeline,
-    HiZPyramid, MemoryLocation, ShaderModule, TextureMipRegion, ash, vk,
+    ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
+    GraphicsPipeline, HiZPyramid, MemoryLocation, ShaderModule, TextureMipRegion, ash, vk,
 };
 use vx_net::{Connection, Lane, MemoryConnection, Payload};
 use vx_protocol::bounded::BoundedString;
@@ -236,6 +236,69 @@ struct UiPushConstants {
     quad_buffer_address: u64,
 }
 const _: () = assert!(size_of::<UiPushConstants>() == 16);
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SkyPushConstants {
+    inv_view_proj: [f32; 16],
+    sun_dir: [f32; 3],
+    time_of_day: f32,
+    moon_dir: [f32; 3],
+    moon_phase: u32,
+    camera_pos: [f32; 3],
+    _pad: f32,
+}
+const _: () = assert!(size_of::<SkyPushConstants>() == 112);
+
+/// 16x16 RGBA8 Dynamic Lighting Lookup Table (1024 bytes).
+#[derive(Clone, Copy)]
+pub struct LightmapLut {
+    /// Raw RGBA8 texel data for the 16x16 lightmap (X: block light, Y: sky light).
+    pub data: [u8; 1024],
+}
+
+impl Default for LightmapLut {
+    fn default() -> Self {
+        let mut lut = Self { data: [0; 1024] };
+        lut.update(1.0, 0.0);
+        lut
+    }
+}
+
+impl LightmapLut {
+    /// Recomputes the 16x16 lighting lookup table for the given sun elevation and time.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn update(&mut self, sun_elev: f32, time_ticks: f32) {
+        let daylight = vx_core::time::daylight_factor(sun_elev);
+        let sunset = vx_core::time::sunset_factor(sun_elev);
+
+        // Bounded torch flicker +-3.5% (strictly within +-4%)
+        let flicker = 1.0 + (time_ticks * 0.05).sin() * 0.025 + (time_ticks * 0.13).cos() * 0.01;
+        let day_col = Vec3::new(1.0, 1.0, 1.0).lerp(Vec3::new(1.0, 0.55, 0.25), sunset);
+        let sky_ambient = Vec3::new(0.05, 0.07, 0.11).lerp(day_col, daylight);
+        let torch_base = Vec3::new(1.0, 0.82, 0.58) * flicker;
+        let ambient = Vec3::splat(0.035);
+
+        for sky in 0..16 {
+            let s_norm = sky as f32 / 15.0;
+            let s_curve = s_norm * s_norm;
+            let sky_comp = sky_ambient * s_curve;
+
+            for block in 0..16 {
+                let b_norm = block as f32 / 15.0;
+                let b_curve = b_norm * b_norm;
+                let block_comp = torch_base * b_curve;
+
+                let color = (ambient + block_comp + sky_comp).clamp(Vec3::ZERO, Vec3::ONE);
+                let idx = (sky * 16 + block) * 4;
+                self.data[idx] = (color.x * 255.0).round() as u8;
+                self.data[idx + 1] = (color.y * 255.0).round() as u8;
+                self.data[idx + 2] = (color.z * 255.0).round() as u8;
+                self.data[idx + 3] = 255;
+            }
+        }
+    }
+}
 
 const MAX_CHUNK_CANDIDATES: usize = 4096;
 const MAX_LOD_CANDIDATES: usize = 4096;
@@ -928,6 +991,20 @@ struct App {
     ui_font: Option<BitmapFont>,
     ui_layers: UiLayers,
     hud_state: HudState,
+
+    // Day/Night & Celestial Rendering
+    client_time_of_day: f32,
+    client_world_age: u64,
+    lightmap_lut: LightmapLut,
+    lightmap_texture: Option<GpuTexture2d>,
+    lightmap_staging_buffers: Vec<GpuBuffer>,
+    sky_pipeline: Option<GraphicsPipeline>,
+    sky_vert_shader: Option<ShaderModule>,
+    sky_frag_shader: Option<ShaderModule>,
+    celestial_texture: Option<GpuTextureArray>,
+    sky_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    sky_descriptor_pool: Option<vk::DescriptorPool>,
+    sky_descriptor_set: Option<vk::DescriptorSet>,
 }
 
 impl App {
@@ -1077,6 +1154,19 @@ impl App {
             ui_font: None,
             ui_layers: UiLayers::default(),
             hud_state: HudState::default(),
+
+            client_time_of_day: 6000.0,
+            client_world_age: 0,
+            lightmap_lut: LightmapLut::default(),
+            lightmap_texture: None,
+            lightmap_staging_buffers: Vec::new(),
+            sky_pipeline: None,
+            sky_vert_shader: None,
+            sky_frag_shader: None,
+            celestial_texture: None,
+            sky_descriptor_set_layout: None,
+            sky_descriptor_pool: None,
+            sky_descriptor_set: None,
         }
     }
 
@@ -1263,6 +1353,11 @@ impl App {
                             sequence = ack.sequence,
                             "Server acknowledged block action"
                         );
+                    }
+                    S2cMessage::UpdateTime(update) => {
+                        self.client_world_age = update.world_age;
+                        let server_time = (update.time_of_day % vx_core::time::DAY_TICKS) as f32;
+                        self.client_time_of_day = server_time;
                     }
                     _ => {}
                 },
@@ -1711,6 +1806,10 @@ impl App {
 
         self.controller.update(&mut self.camera, dt);
 
+        // Advance smooth client time of day (20 ticks per second)
+        self.client_time_of_day =
+            (self.client_time_of_day + dt * 20.0) % (vx_core::time::DAY_TICKS as f32);
+
         // Voxel DDA Raycast for block aiming & selection
         let origin = self.camera.position;
         let forward = self.camera.forward();
@@ -1921,7 +2020,29 @@ impl App {
 
         #[allow(clippy::cast_precision_loss)]
         let aspect = swapchain_extent.width as f32 / swapchain_extent.height as f32;
-        let view_proj = self.camera.view_proj_matrix(aspect).to_cols_array();
+        let view_proj_mat = self.camera.view_proj_matrix(aspect);
+        let view_proj = view_proj_mat.to_cols_array();
+        let inv_view_proj = view_proj_mat.inverse().to_cols_array();
+
+        let sun_angle = vx_core::time::sun_angle(
+            self.client_time_of_day as u64,
+            self.client_time_of_day.fract(),
+        );
+        let sun_dir = vx_core::time::sun_direction(sun_angle);
+        let moon_dir = vx_core::time::moon_direction(sun_angle);
+        let day_number = self.client_world_age / vx_core::time::DAY_TICKS;
+        let moon_phase = vx_core::time::moon_phase(day_number);
+
+        self.lightmap_lut.update(sun_dir.y, self.client_time_of_day);
+
+        let staging_idx = if self.lightmap_staging_buffers.is_empty() {
+            0
+        } else {
+            (self.frame_counter as usize) % self.lightmap_staging_buffers.len()
+        };
+        if let Some(staging_buf) = self.lightmap_staging_buffers.get_mut(staging_idx) {
+            let _ = staging_buf.write_bytes(&self.lightmap_lut.data);
+        }
 
         let device = gpu_context.device().raw();
         let is_first_frame = u32::from(self.frame_counter <= 1);
@@ -1949,6 +2070,88 @@ impl App {
                     });
                 let init_barriers = [init_barrier];
                 let dep_info = vk::DependencyInfo::default().image_memory_barriers(&init_barriers);
+                device.cmd_pipeline_barrier2(cmd, &dep_info);
+            }
+
+            // Upload dynamic Lightmap LUT to lightmap_texture
+            if let Some(lightmap_tex) = &self.lightmap_texture
+                && let Some(staging_buf) = self.lightmap_staging_buffers.get(staging_idx)
+            {
+                let to_transfer = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(if self.frame_counter <= 1 {
+                        vk::PipelineStageFlags2::TOP_OF_PIPE
+                    } else {
+                        vk::PipelineStageFlags2::FRAGMENT_SHADER
+                    })
+                    .src_access_mask(if self.frame_counter <= 1 {
+                        vk::AccessFlags2::NONE
+                    } else {
+                        vk::AccessFlags2::SHADER_SAMPLED_READ
+                    })
+                    .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                    .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .old_layout(if self.frame_counter <= 1 {
+                        vk::ImageLayout::UNDEFINED
+                    } else {
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                    })
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .image(lightmap_tex.image())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                let to_transfer_barriers = [to_transfer];
+                let dep_info =
+                    vk::DependencyInfo::default().image_memory_barriers(&to_transfer_barriers);
+                device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+                let copy_region = vk::BufferImageCopy::default()
+                    .buffer_offset(0)
+                    .buffer_row_length(0)
+                    .buffer_image_height(0)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .image_extent(vk::Extent3D {
+                        width: 16,
+                        height: 16,
+                        depth: 1,
+                    });
+
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    staging_buf.raw(),
+                    lightmap_tex.image(),
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[copy_region],
+                );
+
+                let to_read = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(lightmap_tex.image())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                let to_read_barriers = [to_read];
+                let dep_info =
+                    vk::DependencyInfo::default().image_memory_barriers(&to_read_barriers);
                 device.cmd_pipeline_barrier2(cmd, &dep_info);
             }
 
@@ -2259,6 +2462,14 @@ impl App {
                     draw_info_buffer_address: mdi.lod_draw_early.device_address(),
                 };
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    lod_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
                 device.cmd_push_constants(
                     cmd,
                     lod_pipeline.layout(),
@@ -2690,6 +2901,14 @@ impl App {
                     draw_info_buffer_address: mdi.lod_draw_late.device_address(),
                 };
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    lod_pipeline.layout(),
+                    0,
+                    &[descriptor_set],
+                    &[],
+                );
                 device.cmd_push_constants(
                     cmd,
                     lod_pipeline.layout(),
@@ -2706,6 +2925,40 @@ impl App {
                     MAX_LOD_CANDIDATES as u32,
                     16,
                 );
+            }
+
+            // Pass 12: Celestial Sky Pass (Fullscreen reversed-Z triangle at z = 0.0)
+            if let (Some(sky_pipe), Some(sky_set)) = (&self.sky_pipeline, self.sky_descriptor_set) {
+                let sky_pc = SkyPushConstants {
+                    inv_view_proj,
+                    sun_dir: sun_dir.to_array(),
+                    time_of_day: self.client_time_of_day,
+                    moon_dir: moon_dir.to_array(),
+                    moon_phase,
+                    camera_pos: [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                    ],
+                    _pad: 0.0,
+                };
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, sky_pipe.raw());
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    sky_pipe.layout(),
+                    0,
+                    &[sky_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    sky_pipe.layout(),
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&sky_pc),
+                );
+                device.cmd_draw(cmd, 3, 1, 0, 0);
             }
 
             // Late Pass 5: Translucent (Water)
@@ -2848,6 +3101,20 @@ impl App {
                 self.hud_state.frame_time_ms = (dt * 1000.0).max(0.01);
                 self.hud_state.chunks_rendered = self.visible_chunks_last as u32;
                 self.hud_state.lod_nodes_rendered = self.visible_lod_nodes_last as u32;
+                self.hud_state.time_of_day = self.client_time_of_day as u64;
+                self.hud_state.day_number = day_number;
+                self.hud_state.moon_phase_name = match moon_phase {
+                    0 => "Full Moon",
+                    1 => "Waning Gibbous",
+                    2 => "Third Quarter",
+                    3 => "Waning Crescent",
+                    4 => "New Moon",
+                    5 => "Waxing Crescent",
+                    6 => "First Quarter",
+                    7 => "Waxing Gibbous",
+                    _ => "Unknown",
+                }
+                .to_string();
 
                 let mut ui_quads = Vec::with_capacity(256);
                 render_hud(
@@ -3003,14 +3270,58 @@ impl ApplicationHandler for App {
         };
         self.water_anim_info = water_anim_info;
 
-        // Create Descriptor Set Layout for binding 0 (sampler2DArray)
-        let binding = vk::DescriptorSetLayoutBinding::default()
+        let lightmap_texture = match GpuTexture2d::new_empty(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            16,
+            16,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::TRANSFER_DST,
+            vk::Filter::LINEAR,
+        ) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::error!("Failed to create lightmap texture: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let mut lightmap_staging_buffers = Vec::with_capacity(2);
+        let staging_names = ["lightmap_staging_0", "lightmap_staging_1"];
+        for name in staging_names {
+            let buf = match GpuBuffer::new(
+                gpu_context.device().raw(),
+                gpu_context.allocator(),
+                name,
+                1024,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                MemoryLocation::CpuToGpu,
+            ) {
+                Ok(b) => b,
+                Err(err) => {
+                    tracing::error!("Failed to create lightmap staging buffer: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+            lightmap_staging_buffers.push(buf);
+        }
+
+        // Create Descriptor Set Layout for binding 0 (sampler2DArray) and binding 1 (sampler2D lightmap)
+        let tex_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-        let bindings = [binding];
+        let lightmap_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = [tex_binding, lightmap_binding];
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
         let descriptor_set_layout = match unsafe {
@@ -3030,7 +3341,7 @@ impl ApplicationHandler for App {
         // Create Descriptor Pool
         let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1);
+            .descriptor_count(2);
         let pool_sizes = [pool_size];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
@@ -3070,20 +3381,30 @@ impl ApplicationHandler for App {
             }
         };
 
-        let image_info = vk::DescriptorImageInfo::default()
+        let tex_image_info = [vk::DescriptorImageInfo::default()
             .sampler(texture_array.sampler())
             .image_view(texture_array.view())
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        let image_infos = [image_info];
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
 
-        let descriptor_write = vk::WriteDescriptorSet::default()
-            .dst_set(descriptor_set)
-            .dst_binding(0)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&image_infos);
+        let lightmap_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(lightmap_texture.sampler())
+            .image_view(lightmap_texture.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
 
-        let descriptor_writes = [descriptor_write];
+        let descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&tex_image_info),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&lightmap_image_info),
+        ];
         unsafe {
             gpu_context
                 .device()
@@ -3307,7 +3628,7 @@ impl ApplicationHandler for App {
             Some(vk::Format::D32_SFLOAT),
             vk::CullModeFlags::BACK,
             vk::FrontFace::COUNTER_CLOCKWISE,
-            &[],
+            &[descriptor_set_layout],
             &[lod_push_constant_range],
         ) {
             Ok(p) => p,
@@ -3564,6 +3885,152 @@ impl ApplicationHandler for App {
         self.ui_frag_shader = Some(ui_frag_module);
         self.ui_pipeline = Some(ui_pipeline);
         self.ui_buffer = Some(ui_buffer);
+
+        // ---------------------------------------------------------------------
+        // Initialize Celestial & Sky Pass Resources (Phase 17)
+        // ---------------------------------------------------------------------
+        let celestial_texture = match load_and_upload_celestial_textures(&gpu_context) {
+            Ok(tex) => tex,
+            Err(err) => {
+                tracing::error!("Failed to load celestial textures: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let sky_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let sky_bindings = [sky_binding];
+        let sky_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&sky_bindings);
+        let sky_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&sky_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create sky descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let sky_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1);
+        let sky_pool_sizes = [sky_pool_size];
+        let sky_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&sky_pool_sizes);
+        let sky_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&sky_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create sky descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let sky_set_layouts = [sky_descriptor_set_layout];
+        let sky_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(sky_descriptor_pool)
+            .set_layouts(&sky_set_layouts);
+        let sky_descriptor_set = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&sky_alloc_info)
+            {
+                Ok(sets) => sets[0],
+                Err(err) => {
+                    tracing::error!("Failed to allocate sky descriptor set: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let celestial_image_info = [vk::DescriptorImageInfo::default()
+            .sampler(celestial_texture.sampler())
+            .image_view(celestial_texture.view())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let sky_descriptor_write = [vk::WriteDescriptorSet::default()
+            .dst_set(sky_descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&celestial_image_info)];
+        unsafe {
+            gpu_context
+                .device()
+                .raw()
+                .update_descriptor_sets(&sky_descriptor_write, &[]);
+        }
+
+        let sky_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/sky.vert.spv"));
+        let sky_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/sky.frag.spv"));
+        let sky_vert_module = match ShaderModule::from_spv(gpu_context.device().raw(), sky_vert_spv)
+        {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create sky vertex shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let sky_frag_module = match ShaderModule::from_spv(gpu_context.device().raw(), sky_frag_spv)
+        {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::error!("Failed to create sky fragment shader module: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let sky_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<SkyPushConstants>() as u32);
+
+        let sky_pipeline = match GraphicsPipeline::create_dynamic_sky(
+            gpu_context.device().raw(),
+            sky_vert_module.raw(),
+            sky_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            &[sky_descriptor_set_layout],
+            &[sky_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create sky graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        self.celestial_texture = Some(celestial_texture);
+        self.sky_descriptor_set_layout = Some(sky_descriptor_set_layout);
+        self.sky_descriptor_pool = Some(sky_descriptor_pool);
+        self.sky_descriptor_set = Some(sky_descriptor_set);
+        self.sky_vert_shader = Some(sky_vert_module);
+        self.sky_frag_shader = Some(sky_frag_module);
+        self.sky_pipeline = Some(sky_pipeline);
+        self.lightmap_texture = Some(lightmap_texture);
+        self.lightmap_staging_buffers = lightmap_staging_buffers;
 
         info!("Renderer and window loop successfully initialized, singleplayer streaming active");
 
@@ -3973,6 +4440,35 @@ impl ApplicationHandler for App {
             if let Some(mut depth) = self.depth_buffer.take() {
                 depth.destroy(device, allocator);
             }
+
+            if let Some(mut pipeline) = self.sky_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut vert) = self.sky_vert_shader.take() {
+                vert.destroy(device);
+            }
+            if let Some(mut frag) = self.sky_frag_shader.take() {
+                frag.destroy(device);
+            }
+            if let Some(pool) = self.sky_descriptor_pool.take() {
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+            if let Some(layout) = self.sky_descriptor_set_layout.take() {
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+            if let Some(mut tex) = self.celestial_texture.take() {
+                tex.destroy(device, allocator);
+            }
+            if let Some(mut tex) = self.lightmap_texture.take() {
+                tex.destroy(device, allocator);
+            }
+            for mut buf in self.lightmap_staging_buffers.drain(..) {
+                buf.destroy(device, allocator);
+            }
         }
     }
 }
@@ -4195,6 +4691,108 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
     Ok((texture_array, font))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+fn load_and_upload_celestial_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    const CELESTIAL_RES: u32 = 32;
+    const LAYER_COUNT: u32 = 9;
+
+    let mut pixel_data = vec![0u8; (CELESTIAL_RES * CELESTIAL_RES * 4 * LAYER_COUNT) as usize];
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &vx_assets::RgbaImage| {
+        let layer_offset = layer * (CELESTIAL_RES * CELESTIAL_RES * 4) as usize;
+        let w = img.width.min(CELESTIAL_RES);
+        let h = img.height.min(CELESTIAL_RES);
+        for y in 0..h {
+            let src_start = ((y * img.width) * 4) as usize;
+            let src_end = src_start + (w * 4) as usize;
+            let dst_start = layer_offset + ((y * CELESTIAL_RES) * 4) as usize;
+            dest[dst_start..dst_start + (w * 4) as usize]
+                .copy_from_slice(&img.data[src_start..src_end]);
+        }
+    };
+
+    // Layer 0: Sun
+    let sun_path = std::path::Path::new(
+        "dev-assets/classic-26.2/assets/classic/textures/environment/celestial/sun.png",
+    );
+    let sun_img = vx_assets::RgbaImage::from_file(sun_path).unwrap_or_else(|_| {
+        let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
+        for y in 0..CELESTIAL_RES {
+            for x in 0..CELESTIAL_RES {
+                let idx = ((y * CELESTIAL_RES + x) * 4) as usize;
+                let dx = x as f32 - 15.5;
+                let dy = y as f32 - 15.5;
+                if dx * dx + dy * dy <= 14.0 * 14.0 {
+                    img.data[idx] = 255;
+                    img.data[idx + 1] = 250;
+                    img.data[idx + 2] = 220;
+                    img.data[idx + 3] = 255;
+                }
+            }
+        }
+        img
+    });
+    copy_to_layer(&mut pixel_data, 0, &sun_img);
+
+    // Layers 1..=8: Moon phases
+    let moon_files = [
+        "full_moon",
+        "waning_gibbous",
+        "third_quarter",
+        "waning_crescent",
+        "new_moon",
+        "waxing_crescent",
+        "first_quarter",
+        "waxing_gibbous",
+    ];
+
+    for (phase_idx, name) in moon_files.iter().enumerate() {
+        let moon_path = format!(
+            "dev-assets/classic-26.2/assets/classic/textures/environment/celestial/moon/{name}.png"
+        );
+        let moon_img = vx_assets::RgbaImage::from_file(std::path::Path::new(&moon_path))
+            .unwrap_or_else(|_| {
+                let mut img = vx_assets::RgbaImage::new(CELESTIAL_RES, CELESTIAL_RES);
+                for y in 0..CELESTIAL_RES {
+                    for x in 0..CELESTIAL_RES {
+                        let idx = ((y * CELESTIAL_RES + x) * 4) as usize;
+                        let dx = x as f32 - 15.5;
+                        let dy = y as f32 - 15.5;
+                        if dx * dx + dy * dy <= 12.0 * 12.0 && phase_idx != 4 {
+                            img.data[idx] = 230;
+                            img.data[idx + 1] = 235;
+                            img.data[idx + 2] = 245;
+                            img.data[idx + 3] = 255;
+                        }
+                    }
+                }
+                img
+            });
+        copy_to_layer(&mut pixel_data, 1 + phase_idx, &moon_img);
+    }
+
+    let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
+        .map(|layer| TextureMipRegion {
+            buffer_offset: u64::from(layer * CELESTIAL_RES * CELESTIAL_RES * 4),
+            layer,
+            mip_level: 0,
+            width: CELESTIAL_RES,
+            height: CELESTIAL_RES,
+        })
+        .collect();
+
+    let texture_array =
+        gpu_context.create_texture_array(CELESTIAL_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
+
+    info!("Celestial texture array loaded (9 layers, 32x32)");
+
+    Ok(texture_array)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -4224,4 +4822,98 @@ fn main() -> Result<()> {
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lightmap_lut_dark_cave() {
+        let mut lut = LightmapLut::default();
+        lut.update(1.0, 0.0); // Noon
+
+        // Texel (0, 0) should be pitch dark ambient floor (<= 0.05, i.e. <= 13/255)
+        let r = f32::from(lut.data[0]) / 255.0;
+        let g = f32::from(lut.data[1]) / 255.0;
+        let b = f32::from(lut.data[2]) / 255.0;
+        assert!(r <= 0.05, "Texel (0,0) red too high: {r}");
+        assert!(g <= 0.05, "Texel (0,0) green too high: {g}");
+        assert!(b <= 0.05, "Texel (0,0) blue too high: {b}");
+    }
+
+    #[test]
+    fn test_lightmap_lut_bright_torchlight() {
+        let mut lut = LightmapLut::default();
+        lut.update(0.0, 0.0); // Sunset
+
+        // Texel (15, 0) should be bright torchlight (>= 0.8)
+        let idx = 15 * 4;
+        let r = f32::from(lut.data[idx]) / 255.0;
+        let g = f32::from(lut.data[idx + 1]) / 255.0;
+        assert!(r >= 0.8, "Texel (15,0) torch red too low: {r}");
+        assert!(g >= 0.7, "Texel (15,0) torch green too low: {g}");
+    }
+
+    #[test]
+    fn test_lightmap_lut_day_night_skylight() {
+        let mut lut = LightmapLut::default();
+
+        // Noon: texel (0, 15) should be bright day (>= 0.9)
+        lut.update(1.0, 0.0);
+        let idx = (15 * 16) * 4;
+        let r_day = f32::from(lut.data[idx]) / 255.0;
+        let g_day = f32::from(lut.data[idx + 1]) / 255.0;
+        let b_day = f32::from(lut.data[idx + 2]) / 255.0;
+        assert!(r_day >= 0.9, "Texel (0,15) day red too low: {r_day}");
+        assert!(g_day >= 0.9, "Texel (0,15) day green too low: {g_day}");
+        assert!(b_day >= 0.9, "Texel (0,15) day blue too low: {b_day}");
+
+        // Midnight: texel (0, 15) should be dark night (<= 0.15)
+        lut.update(-1.0, 0.0);
+        let r_night = f32::from(lut.data[idx]) / 255.0;
+        let g_night = f32::from(lut.data[idx + 1]) / 255.0;
+        let b_night = f32::from(lut.data[idx + 2]) / 255.0;
+        assert!(
+            r_night <= 0.15,
+            "Texel (0,15) night red too high: {r_night}"
+        );
+        assert!(
+            g_night <= 0.15,
+            "Texel (0,15) night green too high: {g_night}"
+        );
+        assert!(
+            b_night <= 0.15,
+            "Texel (0,15) night blue too high: {b_night}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn test_lightmap_lut_torch_flicker_bounded() {
+        let mut min_val = f32::MAX;
+        let mut max_val = f32::MIN;
+
+        let mut lut = LightmapLut::default();
+        let idx = 15 * 4;
+
+        for tick in 0..1000 {
+            lut.update(0.0, tick as f32);
+            let val = f32::from(lut.data[idx]) / 255.0;
+            if val < min_val {
+                min_val = val;
+            }
+            if val > max_val {
+                max_val = val;
+            }
+        }
+
+        let avg = f32::midpoint(min_val, max_val);
+        let dev = (max_val - min_val) / avg;
+        // Total deviation range <= 8% (+-4%)
+        assert!(
+            dev <= 0.08,
+            "Torch flicker deviation exceeded 8%: {dev} (min: {min_val}, max: {max_val})"
+        );
+    }
 }

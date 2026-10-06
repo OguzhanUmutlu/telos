@@ -30,7 +30,7 @@ pub use hiz::HiZPyramid;
 pub use instance::Instance;
 pub use pipeline::{GraphicsPipeline, ShaderModule};
 pub use swapchain::Swapchain;
-pub use texture::{GpuTextureArray, TextureMipRegion};
+pub use texture::{GpuTexture2d, GpuTextureArray, TextureMipRegion};
 
 // Re-export ash and gpu_allocator for ergonomics
 pub use ash;

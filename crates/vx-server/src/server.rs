@@ -9,7 +9,7 @@ use vx_net::{Connection, Lane, Payload};
 use vx_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sMessage, ChunkPayload, ConnectionPhase, LodPayload,
     S2cBlockActionAck, S2cBlockUpdate, S2cChunkData, S2cChunkUnload, S2cHelloReply, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cUniformChunk,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cUniformChunk, S2cUpdateTime,
 };
 use vx_voxel::registry::BlockRegistry;
 use vx_voxel::state::BlockStateId;
@@ -27,6 +27,7 @@ pub struct Server {
     next_session_id: u64,
     next_entity_id: u32,
     tick_count: u64,
+    time_of_day: u64,
 }
 
 impl Server {
@@ -55,6 +56,7 @@ impl Server {
             next_session_id: 1,
             next_entity_id: 1,
             tick_count: 0,
+            time_of_day: vx_core::NOON_TICKS,
         }
     }
 
@@ -94,6 +96,17 @@ impl Server {
 
         info!(session_id, entity_id, "Registered new client session");
         session_id
+    }
+
+    /// Current time of day in ticks `[0..24000)`.
+    #[must_use]
+    pub fn time_of_day(&self) -> u64 {
+        self.time_of_day
+    }
+
+    /// Sets the current time of day in ticks.
+    pub fn set_time_of_day(&mut self, time: u64) {
+        self.time_of_day = time % vx_core::DAY_TICKS;
     }
 
     /// Advances the server simulation by one tick (20 TPS fixed).
@@ -162,6 +175,14 @@ impl Server {
                                     view_distance: session.view_distance,
                                 });
                                 let _ = session.connection.send(Lane::Control, Payload::Msg(join));
+
+                                let time_msg = S2cMessage::UpdateTime(S2cUpdateTime {
+                                    world_age: self.tick_count,
+                                    time_of_day: self.time_of_day,
+                                });
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(time_msg));
 
                                 // Force initial chunk subscriptions
                                 let _ = session.recompute_subscriptions();
@@ -397,6 +418,22 @@ impl Server {
             && let Err(err) = self.world.save_dirty_chunks()
         {
             tracing::error!("Autosave failed: {err}");
+        }
+
+        // 5. Time progression and periodic synchronization
+        self.time_of_day = (self.time_of_day + 1) % vx_core::DAY_TICKS;
+        if self.tick_count.is_multiple_of(20) {
+            let time_msg = S2cMessage::UpdateTime(S2cUpdateTime {
+                world_age: self.tick_count,
+                time_of_day: self.time_of_day,
+            });
+            for session in self.sessions.values_mut() {
+                if session.phase == ConnectionPhase::Play {
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(time_msg.clone()));
+                }
+            }
         }
     }
 

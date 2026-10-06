@@ -10,6 +10,7 @@ layout(location = 5) in vec3 v_light; // x: ao (0..3), y: sky (0..15), z: block 
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_textures;
+layout(set = 0, binding = 1) uniform sampler2D u_lightmap;
 
 uint get_texture_layer(uint mat) {
     switch (mat) {
@@ -21,8 +22,6 @@ uint get_texture_layer(uint mat) {
             return 0u;
     }
 }
-
-const vec3 TORCH_COLOR = vec3(1.0, 0.82, 0.55);
 
 void main() {
     uint layer = get_texture_layer(v_material);
@@ -48,17 +47,11 @@ void main() {
     // Smooth ambient occlusion factor
     float ao_factor = mix(0.35, 1.0, ao_raw / 3.0);
 
-    // Sky light with directional sunlight modulation
-    float sky_norm = clamp(sky_raw / 15.0, 0.0, 1.0);
-    vec3 sun_light = vec3(sky_norm * face_shade);
+    // Sample 16x16 lightmap LUT with bilinear filtering
+    vec2 lightmap_uv = clamp(vec2(block_raw + 0.5, sky_raw + 0.5) / 16.0, 0.0, 1.0);
+    vec3 light_color = texture(u_lightmap, lightmap_uv).rgb;
 
-    // Block light (warm torch color with quadratic falloff)
-    float block_norm = clamp(block_raw / 15.0, 0.0, 1.0);
-    vec3 torch_light = TORCH_COLOR * (block_norm * block_norm * 0.85 + block_norm * 0.15);
-
-    const float AMBIENT_FLOOR = 0.04;
-    vec3 total_light = (max(vec3(AMBIENT_FLOOR), sun_light) + torch_light) * ao_factor;
-    total_light = clamp(total_light, 0.0, 1.0);
+    vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
 
     out_color = vec4(tex_color.rgb * total_light, 1.0);
 }

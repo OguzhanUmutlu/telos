@@ -8,6 +8,8 @@ layout(location = 3) in float v_distance;
 
 layout(location = 0) out vec4 out_color;
 
+layout(set = 0, binding = 1) uniform sampler2D u_lightmap;
+
 layout(push_constant) uniform LodPushConstants {
     mat4 view_proj;
     ivec3 node_pos;
@@ -17,8 +19,6 @@ layout(push_constant) uniform LodPushConstants {
     vec3 camera_pos;
     float max_distance;
 } pc;
-
-const vec3 TORCH_COLOR = vec3(1.0, 0.82, 0.55);
 
 void main() {
     // Directional face shading factor matching chunk.frag
@@ -39,15 +39,12 @@ void main() {
     float block_raw = v_light.z; // 0..15
 
     float ao_factor = mix(0.5, 1.0, ao_raw / 3.0);
-    float sky_norm = clamp(sky_raw / 15.0, 0.0, 1.0);
-    vec3 sun_light = vec3(sky_norm * face_shade);
 
-    float block_norm = clamp(block_raw / 15.0, 0.0, 1.0);
-    vec3 torch_light = TORCH_COLOR * (block_norm * block_norm * 0.85 + block_norm * 0.15);
+    // Sample 16x16 lightmap LUT with bilinear filtering
+    vec2 lightmap_uv = clamp(vec2(block_raw + 0.5, sky_raw + 0.5) / 16.0, 0.0, 1.0);
+    vec3 light_color = texture(u_lightmap, lightmap_uv).rgb;
 
-    const float AMBIENT_FLOOR = 0.08;
-    vec3 total_light = (max(vec3(AMBIENT_FLOOR), sun_light) + torch_light) * ao_factor;
-    total_light = clamp(total_light, 0.0, 1.0);
+    vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
 
     vec3 lit_color = v_color.rgb * total_light;
 
@@ -55,7 +52,8 @@ void main() {
     float fog_start = pc.max_distance * 0.75;
     float fog_end = pc.max_distance;
     float fog_factor = clamp((v_distance - fog_start) / max(1.0, fog_end - fog_start), 0.0, 1.0);
-    vec3 sky_fog_color = vec3(0.68, 0.82, 1.0); // Classic Voxel sky blue
+    // Sky fog matches ambient sky light color dynamically across day, sunset, and night
+    vec3 sky_fog_color = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;
     vec3 final_rgb = mix(lit_color, sky_fog_color, fog_factor);
 
     out_color = vec4(final_rgb, v_color.a);

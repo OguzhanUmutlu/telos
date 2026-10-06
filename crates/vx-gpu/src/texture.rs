@@ -307,3 +307,155 @@ impl GpuTextureArray {
         }
     }
 }
+
+/// A GPU-allocated Vulkan 2D texture (`VkImage`) with combined image sampler.
+pub struct GpuTexture2d {
+    image: vk::Image,
+    allocation: Option<Allocation>,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+    extent: vk::Extent2D,
+    format: vk::Format,
+}
+
+impl GpuTexture2d {
+    /// Creates an empty 2D texture image, view, and sampler.
+    pub fn new_empty(
+        device: &ash::Device,
+        allocator: &GpuAllocator,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        sampler_filter: vk::Filter,
+    ) -> Result<Self, GpuError> {
+        let extent = vk::Extent2D { width, height };
+
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(usage | vk::ImageUsageFlags::SAMPLED)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        // SAFETY: Creating image on valid device
+        let image = unsafe { device.create_image(&image_info, None)? };
+        // SAFETY: Querying memory requirements for image
+        let reqs = unsafe { device.get_image_memory_requirements(image) };
+
+        let allocation = allocator.allocate("texture_2d", reqs, MemoryLocation::GpuOnly, false)?;
+
+        // SAFETY: Binding image memory
+        unsafe {
+            device.bind_image_memory(image, allocation.memory(), allocation.offset())?;
+        }
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            );
+
+        // SAFETY: Creating image view for 2D texture
+        let view = unsafe { device.create_image_view(&view_info, None)? };
+
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(sampler_filter)
+            .min_filter(sampler_filter)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .min_lod(0.0)
+            .max_lod(0.0);
+
+        // SAFETY: Creating sampler for 2D texture
+        let sampler = unsafe { device.create_sampler(&sampler_info, None)? };
+
+        Ok(Self {
+            image,
+            allocation: Some(allocation),
+            view,
+            sampler,
+            extent,
+            format,
+        })
+    }
+
+    /// Image handle.
+    #[inline]
+    #[must_use]
+    pub fn image(&self) -> vk::Image {
+        self.image
+    }
+
+    /// Image view handle.
+    #[inline]
+    #[must_use]
+    pub fn view(&self) -> vk::ImageView {
+        self.view
+    }
+
+    /// Combined sampler handle.
+    #[inline]
+    #[must_use]
+    pub fn sampler(&self) -> vk::Sampler {
+        self.sampler
+    }
+
+    /// Texture extent in pixels.
+    #[inline]
+    pub fn extent(&self) -> vk::Extent2D {
+        self.extent
+    }
+
+    /// Texture pixel format.
+    #[inline]
+    #[must_use]
+    pub fn format(&self) -> vk::Format {
+        self.format
+    }
+
+    /// Destroys sampler, view, image, and frees GPU allocation.
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &GpuAllocator) {
+        // SAFETY: Destroying Vulkan objects with valid device handle
+        unsafe {
+            if self.sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.sampler, None);
+                self.sampler = vk::Sampler::null();
+            }
+
+            if self.view != vk::ImageView::null() {
+                device.destroy_image_view(self.view, None);
+                self.view = vk::ImageView::null();
+            }
+
+            if self.image != vk::Image::null() {
+                device.destroy_image(self.image, None);
+                self.image = vk::Image::null();
+            }
+        }
+
+        if let Some(alloc) = self.allocation.take()
+            && let Err(e) = allocator.free(alloc)
+        {
+            tracing::error!("Failed to free texture_2d allocation: {e}");
+        }
+    }
+}

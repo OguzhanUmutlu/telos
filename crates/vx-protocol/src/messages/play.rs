@@ -1152,3 +1152,50 @@ impl S2cBlockActionAck {
         Ok(Self { sequence })
     }
 }
+
+/// Server synchronizes world age and time of day to clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cUpdateTime {
+    /// Total ticks elapsed in the world since generation.
+    pub world_age: u64,
+    /// Current time of day in ticks (0..24000).
+    pub time_of_day: u64,
+}
+
+impl S2cUpdateTime {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varlong(self.world_age, buf);
+        encode_varlong(self.time_of_day, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let world_age = decode_varlong(cursor)?;
+        let time_of_day = decode_varlong(cursor)?;
+        Ok(Self {
+            world_age,
+            time_of_day,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_update_time_codec_round_trip() {
+        let msg = S2cUpdateTime {
+            world_age: 144_000,
+            time_of_day: 6_000,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+
+        let mut cursor = &buf[..];
+        let decoded = S2cUpdateTime::decode(&mut cursor).expect("failed to decode S2cUpdateTime");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+}

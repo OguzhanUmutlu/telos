@@ -15,7 +15,7 @@ pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sKeepAlive, C2sPlayerPosition, ChunkPayload,
     LodPayload, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cUniformChunk,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cUniformChunk, S2cUpdateTime,
     decode_chunk_snapshot, encode_chunk_snapshot,
 };
 
@@ -179,6 +179,8 @@ pub enum S2cMessage {
     BlockUpdate(S2cBlockUpdate),
     /// Play phase acknowledgment of client block predictions.
     BlockActionAck(S2cBlockActionAck),
+    /// Play phase world age and time-of-day synchronization.
+    UpdateTime(S2cUpdateTime),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -202,7 +204,8 @@ impl S2cMessage {
             | Self::LodNodeData(_)
             | Self::LodNodeUnload(_)
             | Self::BlockUpdate(_)
-            | Self::BlockActionAck(_) => Some(ConnectionPhase::Play),
+            | Self::BlockActionAck(_)
+            | Self::UpdateTime(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -224,6 +227,7 @@ impl S2cMessage {
             Self::LodNodeUnload(_) => 7,
             Self::BlockUpdate(_) => 8,
             Self::BlockActionAck(_) => 9,
+            Self::UpdateTime(_) => 10,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -245,6 +249,7 @@ impl S2cMessage {
             Self::LodNodeUnload(m) => m.encode(buf),
             Self::BlockUpdate(m) => m.encode(buf),
             Self::BlockActionAck(m) => m.encode(buf),
+            Self::UpdateTime(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

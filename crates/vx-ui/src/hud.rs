@@ -67,6 +67,12 @@ pub struct HudState {
     pub gpu_name: String,
     /// Whether the F3 debug performance overlay is toggled on.
     pub f3_open: bool,
+    /// Current world time of day in ticks (0..24000).
+    pub time_of_day: u64,
+    /// Current world day count.
+    pub day_number: u64,
+    /// Current lunar phase display name.
+    pub moon_phase_name: String,
 }
 
 impl Default for HudState {
@@ -85,6 +91,9 @@ impl Default for HudState {
             lod_nodes_rendered: 0,
             gpu_name: "Vulkan Device".to_string(),
             f3_open: false,
+            time_of_day: 6000,
+            day_number: 0,
+            moon_phase_name: "Full Moon".to_string(),
         }
     }
 }
@@ -176,6 +185,10 @@ fn render_f3_overlay(
     let block_y = state.player_pos[1].floor() as i32;
     let block_z = state.player_pos[2].floor() as i32;
 
+    let total_minutes = ((state.time_of_day + 6000) % 24000) * 1440 / 24000;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+
     let left_lines = [
         "§fVoxel Engine 0.1.0-dev".to_string(),
         format!("§fFPS: §a{} §f({:.2} ms)", state.fps, state.frame_time_ms),
@@ -190,6 +203,10 @@ fn render_f3_overlay(
         format!(
             "§fFacing: §6{} §f(Yaw: {:.1}, Pitch: {:.1})",
             state.facing, state.yaw, state.pitch
+        ),
+        format!(
+            "§fTime: §e{:02}:{:02} §f(Day {}, §b{}§f)",
+            hours, minutes, state.day_number, state.moon_phase_name
         ),
     ];
 

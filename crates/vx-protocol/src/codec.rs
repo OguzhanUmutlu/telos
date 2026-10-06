@@ -361,6 +361,9 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 7 => S2cMessage::LodNodeUnload(S2cLodNodeUnload::decode(&mut frame_cur)?),
                 8 => S2cMessage::BlockUpdate(S2cBlockUpdate::decode(&mut frame_cur)?),
                 9 => S2cMessage::BlockActionAck(S2cBlockActionAck::decode(&mut frame_cur)?),
+                10 => {
+                    S2cMessage::UpdateTime(crate::messages::S2cUpdateTime::decode(&mut frame_cur)?)
+                }
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
