@@ -52,6 +52,15 @@ bitflags! {
     }
 }
 
+bitflags! {
+    /// Flags stored in the container preamble describing container-wide settings.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct RegionFlags: u32 {
+        /// Chunks in this region container are compressed with Zstandard.
+        const COMPRESSED = 1 << 0;
+    }
+}
+
 /// Compression codec identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -90,8 +99,8 @@ pub struct Preamble {
     pub container_version: u16,
     /// Payload kind (1 = Chunks).
     pub kind: u16,
-    /// Flags (reserved, must be 0).
-    pub flags: u32,
+    /// Region flags (COMPRESSED = 1 << 0).
+    pub flags: RegionFlags,
     /// Monotonically increasing commit counter.
     pub generation: u64,
     /// Region coordinates (rx, ry, rz).
@@ -100,8 +109,8 @@ pub struct Preamble {
     pub entry_count: u32,
     /// Logical EOF: total sectors allocated at commit time.
     pub file_sectors: u32,
-    /// Reserved field.
-    pub reserved: u32,
+    /// Zstandard compression level (0 = uncompressed, 1..=22 = level).
+    pub compression_level: u32,
     /// XXH3 checksum of the entire entry table (16,384 bytes).
     pub table_checksum: u64,
     /// XXH3 checksum of preamble bytes 0..56.
@@ -324,19 +333,37 @@ pub struct HeaderSlot {
 }
 
 impl HeaderSlot {
-    /// Creates a fresh empty header slot for the given region coordinates.
+    /// Creates a fresh empty header slot for the given region coordinates with default compression (Zstd level 3).
     #[must_use]
     pub fn new_empty(rx: i32, ry: i32, rz: i32, generation: u64) -> Self {
+        Self::new_empty_with_compression(rx, ry, rz, generation, true, 3)
+    }
+
+    /// Creates a fresh empty header slot with configurable compression settings.
+    #[must_use]
+    pub fn new_empty_with_compression(
+        rx: i32,
+        ry: i32,
+        rz: i32,
+        generation: u64,
+        compressed: bool,
+        compression_level: u32,
+    ) -> Self {
         let entries = alloc_empty_entries();
+        let flags = if compressed {
+            RegionFlags::COMPRESSED
+        } else {
+            RegionFlags::empty()
+        };
         let mut preamble = Preamble {
             container_version: CONTAINER_VERSION,
             kind: KIND_CHUNKS,
-            flags: 0,
+            flags,
             generation,
             region_pos: (rx, ry, rz),
             entry_count: ENTRY_COUNT as u32,
             file_sectors: DATA_START_SECTOR,
-            reserved: 0,
+            compression_level: if compressed { compression_level } else { 0 },
             table_checksum: 0,
             preamble_checksum: 0,
         };
@@ -351,14 +378,14 @@ impl HeaderSlot {
         preamble_bytes[0..8].copy_from_slice(&CONTAINER_MAGIC);
         preamble_bytes[8..10].copy_from_slice(&preamble.container_version.to_le_bytes());
         preamble_bytes[10..12].copy_from_slice(&preamble.kind.to_le_bytes());
-        preamble_bytes[12..16].copy_from_slice(&preamble.flags.to_le_bytes());
+        preamble_bytes[12..16].copy_from_slice(&preamble.flags.bits().to_le_bytes());
         preamble_bytes[16..24].copy_from_slice(&preamble.generation.to_le_bytes());
         preamble_bytes[24..28].copy_from_slice(&preamble.region_pos.0.to_le_bytes());
         preamble_bytes[28..32].copy_from_slice(&preamble.region_pos.1.to_le_bytes());
         preamble_bytes[32..36].copy_from_slice(&preamble.region_pos.2.to_le_bytes());
         preamble_bytes[36..40].copy_from_slice(&preamble.entry_count.to_le_bytes());
         preamble_bytes[40..44].copy_from_slice(&preamble.file_sectors.to_le_bytes());
-        preamble_bytes[44..48].copy_from_slice(&preamble.reserved.to_le_bytes());
+        preamble_bytes[44..48].copy_from_slice(&preamble.compression_level.to_le_bytes());
         preamble_bytes[48..56].copy_from_slice(&preamble.table_checksum.to_le_bytes());
         preamble.preamble_checksum = xxh3_64(&preamble_bytes);
 
@@ -381,14 +408,14 @@ impl HeaderSlot {
         out[0..8].copy_from_slice(&CONTAINER_MAGIC);
         out[8..10].copy_from_slice(&self.preamble.container_version.to_le_bytes());
         out[10..12].copy_from_slice(&self.preamble.kind.to_le_bytes());
-        out[12..16].copy_from_slice(&self.preamble.flags.to_le_bytes());
+        out[12..16].copy_from_slice(&self.preamble.flags.bits().to_le_bytes());
         out[16..24].copy_from_slice(&self.preamble.generation.to_le_bytes());
         out[24..28].copy_from_slice(&self.preamble.region_pos.0.to_le_bytes());
         out[28..32].copy_from_slice(&self.preamble.region_pos.1.to_le_bytes());
         out[32..36].copy_from_slice(&self.preamble.region_pos.2.to_le_bytes());
         out[36..40].copy_from_slice(&self.preamble.entry_count.to_le_bytes());
         out[40..44].copy_from_slice(&self.preamble.file_sectors.to_le_bytes());
-        out[44..48].copy_from_slice(&self.preamble.reserved.to_le_bytes());
+        out[44..48].copy_from_slice(&self.preamble.compression_level.to_le_bytes());
         out[48..56].copy_from_slice(&table_checksum.to_le_bytes());
 
         // 3. Compute preamble checksum
@@ -441,12 +468,10 @@ impl HeaderSlot {
         }
 
         let kind = u16::from_le_bytes(buf[10..12].try_into().unwrap());
-        let flags = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-        if flags != 0 {
-            return Err(StorageError::CorruptPayload(format!(
-                "Non-zero preamble flags: {flags:#010x}"
-            )));
-        }
+        let flags_raw = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+        let flags = RegionFlags::from_bits(flags_raw).ok_or_else(|| {
+            StorageError::CorruptPayload(format!("Unknown preamble flags: {flags_raw:#010x}"))
+        })?;
 
         let generation = u64::from_le_bytes(buf[16..24].try_into().unwrap());
         let rx = i32::from_le_bytes(buf[24..28].try_into().unwrap());
@@ -467,7 +492,7 @@ impl HeaderSlot {
         }
 
         let file_sectors = u32::from_le_bytes(buf[40..44].try_into().unwrap());
-        let reserved = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+        let compression_level = u32::from_le_bytes(buf[44..48].try_into().unwrap());
         let table_checksum = u64::from_le_bytes(buf[48..56].try_into().unwrap());
 
         // 4. Verify table checksum
@@ -496,7 +521,7 @@ impl HeaderSlot {
             region_pos: (rx, ry, rz),
             entry_count,
             file_sectors,
-            reserved,
+            compression_level,
             table_checksum,
             preamble_checksum: stored_preamble_checksum,
         };

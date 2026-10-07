@@ -76,6 +76,10 @@ fn default_worlds() -> Vec<WorldConfig> {
     vec![WorldConfig::default()]
 }
 
+const fn default_region_compression_level() -> u32 {
+    3
+}
+
 /// Configuration parameters for server tick rate, view distance, network, and dimensions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -122,6 +126,12 @@ pub struct ServerConfig {
     /// Autosave interval in server ticks (default: 600 = 30 seconds at 20 TPS).
     #[serde(default = "default_autosave_interval_ticks")]
     pub autosave_interval_ticks: u32,
+    /// Whether region container files are compressed (default: true).
+    #[serde(default = "default_true")]
+    pub region_compression: bool,
+    /// Zstandard compression level for region files (default: 3).
+    #[serde(default = "default_region_compression_level")]
+    pub region_compression_level: u32,
     /// Data pack directory paths to scan and load on server startup.
     #[serde(default)]
     pub data_pack_directories: Vec<PathBuf>,
@@ -147,6 +157,8 @@ impl Default for ServerConfig {
             lod_nodes_per_tick_per_player: default_lod_nodes_per_tick_per_player(),
             save_directory: None,
             autosave_interval_ticks: default_autosave_interval_ticks(),
+            region_compression: default_true(),
+            region_compression_level: default_region_compression_level(),
             data_pack_directories: Vec::new(),
             worlds: default_worlds(),
         }

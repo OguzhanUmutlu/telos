@@ -142,13 +142,13 @@ impl MainMenuScreen {
         tick: u64,
         out: &mut Vec<UiQuad>,
     ) {
-        // Dark background backdrop (translucent overlay or solid background)
+        // Translucent dark vignette overlay so 3D world panorama is visible
         let px_w = (width_gui * scale as f32).round() as u16;
         let px_h = (height_gui * scale as f32).round() as u16;
         out.push(UiQuad::solid(
             [0, 0],
             [px_w, px_h],
-            UiQuad::rgba(20, 22, 28, 255),
+            UiQuad::rgba(0, 0, 0, 75),
         ));
 
         // Large stylized title "TELOS"

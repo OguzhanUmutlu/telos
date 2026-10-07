@@ -30,32 +30,39 @@ impl SimpleRng {
 #[must_use]
 pub fn synthesize_footstep(material: &str, pitch: f32) -> Arc<[f32]> {
     let pitch = pitch.clamp(0.5, 2.0);
-    let duration_sec = 0.14 / pitch;
+    let duration_sec = 0.12 / pitch;
     let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
     let mut samples = Vec::with_capacity(num_samples);
     let mut rng = SimpleRng::new(0xABCD);
 
-    let (base_freq, noise_mix, decay_rate) = match material {
-        "grass" | "plant" | "foliage" => (180.0, 0.75, 28.0),
-        "wood" | "log" | "planks" => (320.0, 0.25, 36.0),
-        "stone" | "cobblestone" => (480.0, 0.45, 42.0),
-        "gravel" | "dirt" => (160.0, 0.85, 30.0),
-        "sand" => (140.0, 0.90, 24.0),
-        "water" => (520.0, 0.35, 20.0),
-        _ => (380.0, 0.40, 35.0),
+    let (base_freq, lpf_alpha, decay_rate, noise_ratio) = match material {
+        "grass" | "plant" | "foliage" => (100.0, 0.16, 32.0, 0.85),
+        "wood" | "log" | "planks" => (140.0, 0.28, 38.0, 0.70),
+        "stone" | "cobblestone" => (180.0, 0.38, 44.0, 0.65),
+        "gravel" | "dirt" => (90.0, 0.20, 34.0, 0.82),
+        "sand" => (80.0, 0.14, 28.0, 0.88),
+        "water" => (220.0, 0.30, 22.0, 0.60),
+        _ => (120.0, 0.25, 35.0, 0.75),
     };
 
-    let actual_freq = base_freq * pitch;
+    let mut filtered_noise = 0.0f32;
+    let mut phase = 0.0f32;
 
     for i in 0..num_samples {
         let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
-        let env = (-decay_rate * pitch * t).exp();
+        let attack = (t / 0.003).min(1.0);
+        let env = attack * (-decay_rate * pitch * t).exp();
 
-        // Tonal impact sine wave + click
-        let tone = (2.0 * std::f32::consts::PI * actual_freq * t).sin();
-        let noise = rng.next_f32();
+        // Low-pass filtered noise for natural material texture
+        let raw_noise = rng.next_f32();
+        filtered_noise += lpf_alpha * (raw_noise - filtered_noise);
 
-        let sample = (tone * (1.0 - noise_mix) + noise * noise_mix) * env * 0.8;
+        // Pitch-drop transient for physical impact body
+        let inst_freq = base_freq * (0.6 + 1.8 * (-90.0 * t).exp()) * pitch;
+        phase += 2.0 * std::f32::consts::PI * inst_freq / SYNTH_SAMPLE_RATE as f32;
+        let tone = phase.sin();
+
+        let sample = (tone * (1.0 - noise_ratio) + filtered_noise * noise_ratio) * env * 0.75;
         samples.push(sample.clamp(-1.0, 1.0));
     }
 
@@ -66,25 +73,33 @@ pub fn synthesize_footstep(material: &str, pitch: f32) -> Arc<[f32]> {
 #[must_use]
 pub fn synthesize_block_break(pitch: f32) -> Arc<[f32]> {
     let pitch = pitch.clamp(0.5, 2.0);
-    let duration_sec = 0.22 / pitch;
+    let duration_sec = 0.20 / pitch;
     let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
     let mut samples = Vec::with_capacity(num_samples);
     let mut rng = SimpleRng::new(0x9876);
 
+    let mut filtered_noise = 0.0f32;
+    let mut phase = 0.0f32;
+
     for i in 0..num_samples {
         let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
-        let env = (-18.0 * pitch * t).exp();
+        let env = (-20.0 * pitch * t).exp();
 
         // Multiple crumbling crack pulses
-        let pulse1 = (-(35.0 * (t - 0.02).abs())).exp().max(0.0);
-        let pulse2 = (-(40.0 * (t - 0.07).abs())).exp().max(0.0);
-        let pulse3 = (-(45.0 * (t - 0.12).abs())).exp().max(0.0);
-        let pulse_env = 0.4 + 0.6 * (pulse1 + pulse2 + pulse3);
+        let pulse1 = (-(45.0 * (t - 0.02).abs())).exp().max(0.0);
+        let pulse2 = (-(50.0 * (t - 0.06).abs())).exp().max(0.0);
+        let pulse3 = (-(55.0 * (t - 0.10).abs())).exp().max(0.0);
+        let pulse_env = 0.3 + 0.7 * (pulse1 + pulse2 + pulse3);
 
-        let noise = rng.next_f32();
-        let tone = (2.0 * std::f32::consts::PI * 220.0 * pitch * t).sin() * 0.3;
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.32 * (raw_noise - filtered_noise);
 
-        let sample = (noise * 0.8 + tone) * env * pulse_env * 0.85;
+        // Low thud transient
+        let inst_freq = 90.0 * (0.5 + 1.5 * (-60.0 * t).exp()) * pitch;
+        phase += 2.0 * std::f32::consts::PI * inst_freq / SYNTH_SAMPLE_RATE as f32;
+        let thud = phase.sin() * 0.25;
+
+        let sample = (filtered_noise * 0.85 + thud) * env * pulse_env * 0.80;
         samples.push(sample.clamp(-1.0, 1.0));
     }
 
@@ -95,19 +110,28 @@ pub fn synthesize_block_break(pitch: f32) -> Arc<[f32]> {
 #[must_use]
 pub fn synthesize_block_place(pitch: f32) -> Arc<[f32]> {
     let pitch = pitch.clamp(0.5, 2.0);
-    let duration_sec = 0.12 / pitch;
+    let duration_sec = 0.10 / pitch;
     let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
     let mut samples = Vec::with_capacity(num_samples);
     let mut rng = SimpleRng::new(0x5432);
 
+    let mut filtered_noise = 0.0f32;
+    let mut phase = 0.0f32;
+
     for i in 0..num_samples {
         let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
-        let env = (-32.0 * pitch * t).exp();
+        let attack = (t / 0.002).min(1.0);
+        let env = attack * (-36.0 * pitch * t).exp();
 
-        let tone = (2.0 * std::f32::consts::PI * 240.0 * pitch * t).sin();
-        let snap = rng.next_f32() * 0.3;
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.35 * (raw_noise - filtered_noise);
 
-        let sample = (tone * 0.7 + snap) * env * 0.8;
+        // Downward resonant thud from 180Hz down to 60Hz
+        let inst_freq = 70.0 * (0.7 + 1.8 * (-110.0 * t).exp()) * pitch;
+        phase += 2.0 * std::f32::consts::PI * inst_freq / SYNTH_SAMPLE_RATE as f32;
+        let thud = phase.sin();
+
+        let sample = (thud * 0.45 + filtered_noise * 0.55) * env * 0.80;
         samples.push(sample.clamp(-1.0, 1.0));
     }
 

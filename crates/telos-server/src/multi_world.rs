@@ -35,6 +35,20 @@ pub struct WorldConfig {
     /// Optional custom world save directory.
     #[serde(default)]
     pub save_directory: Option<PathBuf>,
+    /// Whether region container files are compressed (default: true).
+    #[serde(default = "default_true")]
+    pub region_compression: bool,
+    /// Zstandard compression level for region files (default: 3).
+    #[serde(default = "default_compression_level")]
+    pub region_compression_level: u32,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_compression_level() -> u32 {
+    3
 }
 
 impl Default for WorldConfig {
@@ -44,6 +58,8 @@ impl Default for WorldConfig {
             seed: 1337,
             generator: GeneratorKind::Standard,
             save_directory: None,
+            region_compression: true,
+            region_compression_level: 3,
         }
     }
 }

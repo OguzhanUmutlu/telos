@@ -29,9 +29,10 @@ use telos_sim::command::{
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
     AttributeKind, Attributes, CombatTracker, DamageType, EffectInstance, EnchantmentKind,
-    EntityType, Experience, Health, Hunger, HurtTime, Inventory, ItemStack, MobBundle, NetEntity,
-    PlayerPositions, Position, PotionType, Rotation, SimParams, SimulationFrozen, StatusEffectKind,
-    StatusEffects, Velocity, WeatherKind, WeatherState, apply_mitigated_damage, build_sim_schedule,
+    EntityType, Experience, Health, Hunger, HurtTime, Inventory, ItemStack, MobBundle, MoveMode,
+    NetEntity, PlayerPositions, Position, PotionType, Rotation, SimParams, SimulationFrozen,
+    StatusEffectKind, StatusEffects, Velocity, WeatherKind, WeatherState, apply_mitigated_damage,
+    build_sim_schedule,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -138,6 +139,7 @@ impl Server {
 
     /// Creates a new `Server` instance with pre-configured frozen registries.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn with_registries(
         seed: u64,
         config: ServerConfig,
@@ -146,7 +148,13 @@ impl Server {
         let mut worlds_vec = Vec::new();
         if config.worlds.is_empty() {
             let default_world = if let Some(dir) = &config.save_directory {
-                match ServerWorld::with_content_storage(seed, &registries, dir) {
+                match ServerWorld::with_content_storage_and_compression(
+                    seed,
+                    &registries,
+                    dir,
+                    config.region_compression,
+                    config.region_compression_level,
+                ) {
                     Ok(w) => w,
                     Err(err) => {
                         tracing::error!(
@@ -165,6 +173,8 @@ impl Server {
                 if let (None, Some(base_dir)) =
                     (&resolved_w_cfg.save_directory, &config.save_directory)
                 {
+                    resolved_w_cfg.region_compression = config.region_compression;
+                    resolved_w_cfg.region_compression_level = config.region_compression_level;
                     if idx == 0 {
                         resolved_w_cfg.save_directory = Some(base_dir.clone());
                     } else {
@@ -666,10 +676,18 @@ impl Server {
         let entity_id = self.next_entity_id;
         self.next_entity_id += 1;
 
-        let session = PlayerSession::new(session_id, entity_id, conn, &self.config);
+        let spawn_pos = DVec3::new(128.0, 45.0, 160.0);
+
+        let session =
+            PlayerSession::new_with_spawn(session_id, entity_id, conn, &self.config, spawn_pos);
         self.sessions.insert(session_id, session);
 
-        info!(session_id, entity_id, "Registered new client session");
+        info!(
+            session_id,
+            entity_id,
+            ?spawn_pos,
+            "Registered new client session"
+        );
         session_id
     }
 
@@ -958,12 +976,43 @@ impl Server {
                             }
                         }
                         C2sMessage::PlayerPosition(pos) => {
+                            let old_y = session.position.y;
+                            let was_ground = session.on_ground;
                             session.update_position(
                                 DVec3::new(pos.x, pos.y, pos.z),
                                 pos.yaw,
                                 pos.pitch,
                                 pos.on_ground,
                             );
+                            if session.move_mode == MoveMode::NoClipFly || session.move_state.flying
+                            {
+                                session.fall_distance = 0.0;
+                            } else if pos.on_ground {
+                                if !was_ground && session.fall_distance > 3.0 {
+                                    let fall_dmg = session.fall_distance - 3.0;
+                                    if let Some(entity) = session.ecs_entity {
+                                        let mut query =
+                                            self.ecs_world
+                                                .query::<(&mut Health, &mut CombatTracker)>();
+                                        if let Ok((mut health, mut combat)) =
+                                            query.get_mut(&mut self.ecs_world, entity)
+                                        {
+                                            telos_sim::apply_damage(
+                                                &mut health,
+                                                &mut combat,
+                                                fall_dmg,
+                                                DamageType::Fall,
+                                            );
+                                        }
+                                    }
+                                }
+                                session.fall_distance = 0.0;
+                            } else if pos.y < old_y {
+                                #[allow(clippy::cast_possible_truncation)]
+                                {
+                                    session.fall_distance += (old_y - pos.y) as f32;
+                                }
+                            }
                         }
                         C2sMessage::BlockAction(action) => {
                             block_actions.push((*session_id, action));
@@ -1856,10 +1905,40 @@ impl Server {
                 || session.awaiting_teleport.is_some()
                 || self.tick_count.is_multiple_of(20)
             {
+                let old_y = session.position.y;
+                let was_ground = session.on_ground;
                 session.position = session.move_state.pos;
                 session.yaw = session.move_state.yaw;
                 session.pitch = session.move_state.pitch;
                 session.on_ground = session.move_state.on_ground;
+
+                if session.move_mode == MoveMode::NoClipFly || session.move_state.flying {
+                    session.fall_distance = 0.0;
+                } else if session.on_ground {
+                    if !was_ground && session.fall_distance > 3.0 {
+                        let fall_dmg = session.fall_distance - 3.0;
+                        if let Some(entity) = session.ecs_entity {
+                            let mut query =
+                                self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                            if let Ok((mut health, mut combat)) =
+                                query.get_mut(&mut self.ecs_world, entity)
+                            {
+                                telos_sim::apply_damage(
+                                    &mut health,
+                                    &mut combat,
+                                    fall_dmg,
+                                    DamageType::Fall,
+                                );
+                            }
+                        }
+                    }
+                    session.fall_distance = 0.0;
+                } else if session.position.y < old_y {
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        session.fall_distance += (old_y - session.position.y) as f32;
+                    }
+                }
 
                 let ack_msg = S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
                     client_tick_ack: session.last_processed_client_tick,

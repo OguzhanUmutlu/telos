@@ -50,6 +50,8 @@ pub struct WorldSelectScreen {
     pub scroll_offset: f32,
     /// Header title text.
     pub title: String,
+    /// Last card clicked index and timestamp for double-click detection.
+    pub last_card_click: Option<(usize, std::time::Instant)>,
 }
 
 impl Default for WorldSelectScreen {
@@ -68,6 +70,7 @@ impl WorldSelectScreen {
             buttons: Vec::new(),
             scroll_offset: 0.0,
             title: "Select World".to_string(),
+            last_card_click: None,
         }
     }
 
@@ -131,18 +134,25 @@ impl WorldSelectScreen {
         catalog: &LanguageCatalog,
     ) {
         let center_x = width_gui * 0.5;
-        let btn_w = 140.0;
         let btn_h = 24.0;
         let bottom_y = height_gui - 36.0;
 
         self.title = catalog.translate("selectWorld.title").to_string();
         let has_sel = self.selected_index.is_some() && !self.worlds.is_empty();
 
+        let w_play = 130.0;
+        let w_create = 130.0;
+        let w_del = 90.0;
+        let w_cancel = 90.0;
+        let gap = 10.0;
+        let total_w = w_play + gap + w_create + gap + w_del + gap + w_cancel;
+        let start_x = center_x - total_w * 0.5;
+
         let mut b1 = MenuButton::new(
             1,
-            center_x - btn_w - 75.0,
+            start_x,
             bottom_y,
-            btn_w,
+            w_play,
             btn_h,
             catalog.translate("selectWorld.select"),
         );
@@ -150,18 +160,18 @@ impl WorldSelectScreen {
 
         let b2 = MenuButton::new(
             2,
-            center_x - 70.0,
+            start_x + w_play + gap,
             bottom_y,
-            btn_w,
+            w_create,
             btn_h,
             catalog.translate("selectWorld.create"),
         );
 
         let mut b3 = MenuButton::new(
             3,
-            center_x + 75.0,
+            start_x + w_play + gap + w_create + gap,
             bottom_y,
-            btn_w,
+            w_del,
             btn_h,
             catalog.translate("selectWorld.delete"),
         );
@@ -169,9 +179,9 @@ impl WorldSelectScreen {
 
         let b4 = MenuButton::new(
             4,
-            center_x + btn_w + 80.0,
+            start_x + w_play + gap + w_create + gap + w_del + gap,
             bottom_y,
-            70.0,
+            w_cancel,
             btn_h,
             catalog.translate("gui.cancel"),
         );
@@ -223,14 +233,24 @@ impl WorldSelectScreen {
         let card_x = (width_gui - card_w) * 0.5;
         let start_y = 50.0 - self.scroll_offset;
 
-        for (i, _) in self.worlds.iter().enumerate() {
+        for (i, world) in self.worlds.iter().enumerate() {
             let card_y = start_y + (i as f32) * (card_h + 6.0);
             if mouse_x >= card_x
                 && mouse_x <= card_x + card_w
                 && mouse_y >= card_y
                 && mouse_y <= card_y + card_h
             {
+                let now = std::time::Instant::now();
+                if let Some((prev_i, prev_t)) = self.last_card_click
+                    && prev_i == i
+                    && now.duration_since(prev_t).as_millis() < 400
+                {
+                    self.selected_index = Some(i);
+                    self.last_card_click = None;
+                    return Some(WorldSelectAction::PlayWorld(world.clone()));
+                }
                 self.selected_index = Some(i);
+                self.last_card_click = Some((i, now));
                 break;
             }
         }

@@ -101,12 +101,14 @@ fn test_server_config_toml_roundtrip() {
                 seed: 123,
                 generator: GeneratorKind::Void,
                 save_directory: None,
+                ..Default::default()
             },
             WorldConfig {
                 name: "arena".to_string(),
                 seed: 456,
                 generator: GeneratorKind::Flat,
                 save_directory: None,
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -137,12 +139,14 @@ fn test_multi_world_concurrent_ticking_and_player_transfer() {
                 seed: 1337,
                 generator: GeneratorKind::Standard,
                 save_directory: None,
+                ..Default::default()
             },
             WorldConfig {
                 name: "flat".to_string(),
                 seed: 42,
                 generator: GeneratorKind::Flat,
                 save_directory: None,
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -223,12 +227,14 @@ fn test_world_command_list_and_teleport() {
                 seed: 1337,
                 generator: GeneratorKind::Standard,
                 save_directory: None,
+                ..Default::default()
             },
             WorldConfig {
                 name: "mining".to_string(),
                 seed: 42,
                 generator: GeneratorKind::Flat,
                 save_directory: None,
+                ..Default::default()
             },
         ],
         ..Default::default()

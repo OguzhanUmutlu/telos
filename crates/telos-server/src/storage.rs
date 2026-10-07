@@ -21,11 +21,22 @@ pub struct WorldStorage {
     regions: HashMap<RegionPos, RegionFile<FileRegionIo>>,
     save_map: Option<WorldRegistryMap>,
     remap: Option<RegistryRemap>,
+    compression_enabled: bool,
+    compression_level: u32,
 }
 
 impl WorldStorage {
     /// Initializes `WorldStorage` at the given root directory (e.g. `saves/world`) without save-ID remapping.
     pub fn new(root_dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        Self::new_with_compression(root_dir, true, 3)
+    }
+
+    /// Initializes `WorldStorage` at the given root directory with explicit compression settings.
+    pub fn new_with_compression(
+        root_dir: impl AsRef<Path>,
+        compression_enabled: bool,
+        compression_level: u32,
+    ) -> std::io::Result<Self> {
         let regions_dir = root_dir.as_ref().join("regions");
         create_dir_all(&regions_dir)?;
         Ok(Self {
@@ -33,6 +44,8 @@ impl WorldStorage {
             regions: HashMap::new(),
             save_map: None,
             remap: None,
+            compression_enabled,
+            compression_level,
         })
     }
 
@@ -40,6 +53,16 @@ impl WorldStorage {
     pub fn open_or_create(
         root_dir: impl AsRef<Path>,
         registries: &FrozenRegistries,
+    ) -> std::io::Result<Self> {
+        Self::open_or_create_with_compression(root_dir, registries, true, 3)
+    }
+
+    /// Initializes `WorldStorage` at root directory with full save-ID mapping and custom compression settings.
+    pub fn open_or_create_with_compression(
+        root_dir: impl AsRef<Path>,
+        registries: &FrozenRegistries,
+        compression_enabled: bool,
+        compression_level: u32,
     ) -> std::io::Result<Self> {
         let root = root_dir.as_ref();
         let regions_dir = root.join("regions");
@@ -54,7 +77,30 @@ impl WorldStorage {
             regions: HashMap::new(),
             save_map: Some(save_map),
             remap: Some(remap),
+            compression_enabled,
+            compression_level,
         })
+    }
+
+    /// Sets the compression configuration for newly opened or committed region files.
+    pub fn set_compression(&mut self, enabled: bool, level: u32) {
+        self.compression_enabled = enabled;
+        self.compression_level = level;
+        for region in self.regions.values_mut() {
+            region.set_compression(enabled, level);
+        }
+    }
+
+    /// Returns whether compression is enabled for this world storage.
+    #[must_use]
+    pub fn is_compressed(&self) -> bool {
+        self.compression_enabled
+    }
+
+    /// Returns the compression level for this world storage.
+    #[must_use]
+    pub fn compression_level(&self) -> u32 {
+        self.compression_level
     }
 
     /// Returns a reference to the active `WorldRegistryMap`, if initialized.
@@ -79,7 +125,14 @@ impl WorldStorage {
                 .open(&path)
                 .map_err(telos_storage::StorageError::Io)?;
             let io = FileRegionIo::new(file);
-            let region = RegionFile::open(io, rpos.x, rpos.y, rpos.z)?;
+            let region = RegionFile::open_with_compression(
+                io,
+                rpos.x,
+                rpos.y,
+                rpos.z,
+                self.compression_enabled,
+                self.compression_level,
+            )?;
             self.regions.insert(rpos, region);
         }
         Ok(self.regions.get_mut(&rpos).unwrap())

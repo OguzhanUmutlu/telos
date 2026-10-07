@@ -121,10 +121,19 @@ void main() {
 
     gl_Position = pc.view_proj * vec4(world_pos, 1.0);
 
+    vec2 out_uv;
+    if (dir == 0u || dir == 5u) {
+        out_uv = vec2(corner_uv.y, float(w) - corner_uv.x);
+    } else if (dir == 1u || dir == 4u) {
+        out_uv = vec2(corner_uv.x, float(h) - corner_uv.y);
+    } else {
+        out_uv = corner_uv;
+    }
+
     v_normal = NORMALS[dir];
     v_world_pos = world_pos;
     v_material = material;
     v_dir = dir;
-    v_uv = corner_uv;
+    v_uv = out_uv;
     v_light = vec3(float(ao), float(sky), float(block));
 }

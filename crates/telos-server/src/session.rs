@@ -91,12 +91,14 @@ pub struct PlayerSession {
     pub awaiting_teleport: Option<u32>,
     /// Active movement simulation mode.
     pub move_mode: MoveMode,
+    /// Accumulated fall distance in blocks for fall damage calculation.
+    pub fall_distance: f32,
     /// Name of the world/dimension this session currently resides in.
     pub world_name: String,
 }
 
 impl PlayerSession {
-    /// Creates a new `PlayerSession` starting in the `Hello` phase.
+    /// Creates a new `PlayerSession` starting in the `Hello` phase with default spawn.
     #[must_use]
     pub fn new(
         session_id: u64,
@@ -104,7 +106,24 @@ impl PlayerSession {
         connection: Box<dyn Connection<S2cMessage, C2sMessage>>,
         config: &ServerConfig,
     ) -> Self {
-        let spawn_pos = DVec3::new(128.0, 45.0, 160.0);
+        Self::new_with_spawn(
+            session_id,
+            entity_id,
+            connection,
+            config,
+            DVec3::new(128.0, 45.0, 160.0),
+        )
+    }
+
+    /// Creates a new `PlayerSession` starting in the `Hello` phase with a custom spawn point.
+    #[must_use]
+    pub fn new_with_spawn(
+        session_id: u64,
+        entity_id: u32,
+        connection: Box<dyn Connection<S2cMessage, C2sMessage>>,
+        config: &ServerConfig,
+        spawn_pos: DVec3,
+    ) -> Self {
         #[allow(clippy::cast_possible_wrap)]
         let clipmap_config = LodClipmapConfig {
             r0: (config.view_distance as f32) * 32.0,
@@ -124,6 +143,7 @@ impl PlayerSession {
             yaw: -90.0,
             pitch: 0.0,
             on_ground: false,
+            fall_distance: 0.0,
             view_distance: config.view_distance,
             simulation_distance: config.simulation_distance,
             vertical_view_distance: config.vertical_view_distance,

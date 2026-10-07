@@ -6,14 +6,21 @@ use crate::format::header::CodecId;
 /// Maximum allowable uncompressed chunk payload size (4 MiB decompression bomb guard).
 pub const MAX_RAW_PAYLOAD_SIZE: u32 = 4 * 1024 * 1024;
 
-/// Compresses `data` using the specified codec.
+/// Compresses `data` using the specified codec and default compression level (level 3 for Zstd).
 pub fn compress(codec: CodecId, data: &[u8]) -> Result<Vec<u8>> {
+    compress_with_level(codec, data, 3)
+}
+
+/// Compresses `data` using the specified codec and explicit compression level.
+///
+/// For `CodecId::Zstd`, `level` is clamped to valid Zstandard levels `1..=22`.
+pub fn compress_with_level(codec: CodecId, data: &[u8], level: i32) -> Result<Vec<u8>> {
     match codec {
         CodecId::Raw => Ok(data.to_vec()),
         CodecId::Lz4 => Ok(lz4_flex::block::compress(data)),
         CodecId::Zstd => {
-            // Level 3 provides excellent compression ratio with very low CPU latency (~80 µs)
-            zstd::bulk::compress(data, 3)
+            let clamped_level = level.clamp(1, 22);
+            zstd::bulk::compress(data, clamped_level)
                 .map_err(|e| StorageError::Compression(format!("Zstd compress failed: {e}")))
         }
         CodecId::ZstdDict => Err(StorageError::Compression(

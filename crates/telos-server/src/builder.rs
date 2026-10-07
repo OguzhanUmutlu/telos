@@ -112,6 +112,20 @@ impl ServerBuilder {
         self
     }
 
+    /// Sets whether region container files are compressed.
+    #[must_use]
+    pub fn region_compression(mut self, enabled: bool) -> Self {
+        self.config.region_compression = enabled;
+        self
+    }
+
+    /// Sets the Zstandard compression level for region files.
+    #[must_use]
+    pub fn region_compression_level(mut self, level: u32) -> Self {
+        self.config.region_compression_level = level;
+        self
+    }
+
     /// Registers a custom dimension/world with name, seed, and generator kind.
     #[must_use]
     pub fn world(mut self, name: impl Into<String>, seed: u64, generator: GeneratorKind) -> Self {
@@ -120,6 +134,8 @@ impl ServerBuilder {
             seed,
             generator,
             save_directory: None,
+            region_compression: self.config.region_compression,
+            region_compression_level: self.config.region_compression_level,
         });
         self
     }

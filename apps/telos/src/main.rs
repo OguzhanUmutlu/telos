@@ -1414,10 +1414,16 @@ impl App {
             if parts.len() == 3 {
                 Vec3::new(parts[0], parts[1], parts[2])
             } else {
-                Vec3::new(128.0, 45.0, 160.0)
+                let climate = telos_worldgen::ClimatePoint::sample(args.seed, 0.0, 0.0);
+                let h = telos_worldgen::density::base_terrain_height(args.seed, 0.0, 0.0, &climate);
+                let y = (h.max(1.0).ceil() + 2.0).max(25.0);
+                Vec3::new(0.5, y, 0.5)
             }
         } else {
-            Vec3::new(128.0, 45.0, 160.0)
+            let climate = telos_worldgen::ClimatePoint::sample(args.seed, 0.0, 0.0);
+            let h = telos_worldgen::density::base_terrain_height(args.seed, 0.0, 0.0, &climate);
+            let y = (h.max(1.0).ceil() + 2.0).max(25.0);
+            Vec3::new(0.5, y, 0.5)
         };
         let mut camera = Camera::new(spawn_pos);
         if let Some(yaw_deg) = args.yaw {
@@ -1426,7 +1432,7 @@ impl App {
         if let Some(pitch_deg) = args.pitch {
             camera.pitch = pitch_deg.to_radians();
         } else {
-            camera.pitch = -0.3;
+            camera.pitch = -0.15;
         }
 
         let registries = Arc::new(FrozenRegistries::new_default());
@@ -1589,6 +1595,24 @@ impl App {
         let settings_screen = SettingsScreen::new(game_settings.clone());
         let pause_menu = PauseMenuScreen::new();
 
+        let mut initial_chunks = HashMap::new();
+        let mut initial_dirty = HashSet::new();
+        if !is_direct_ingame {
+            let world_gen =
+                telos_worldgen::WorldGenerator::new(args.seed, registries.block_registry());
+            for cx in -2..=2 {
+                for cz in -2..=2 {
+                    for cy in -1..=1 {
+                        let cpos = ChunkPos::new(cx, cy, cz);
+                        let mut chunk = world_gen.generate_chunk(cpos);
+                        let snap = chunk.publish_snapshot();
+                        initial_chunks.insert(cpos, snap);
+                        initial_dirty.insert(cpos);
+                    }
+                }
+            }
+        }
+
         Self {
             validation: args.validation,
             view_distance: args.view_distance,
@@ -1643,9 +1667,9 @@ impl App {
 
             registries: Arc::clone(&registries),
             block_registry: registries.block_registry().clone(),
-            chunks: HashMap::new(),
+            chunks: initial_chunks,
             chunk_meshes: HashMap::new(),
-            dirty_chunks: HashSet::new(),
+            dirty_chunks: initial_dirty,
 
             lod_meshes: HashMap::new(),
             pending_lod_uploads: HashMap::new(),
@@ -1802,6 +1826,7 @@ impl App {
             seed,
             generator: gen_kind,
             save_directory: Some(world_dir.clone()),
+            ..Default::default()
         };
 
         let config = telos_server::ServerConfig {
@@ -1862,7 +1887,7 @@ impl App {
             "survival" => GameMode::Survival,
             _ => GameMode::Creative,
         };
-        self.physics = PlayerPhysicsController::new(DVec3::new(0.0, 70.0, 0.0), initial_mode);
+        self.physics = PlayerPhysicsController::new(DVec3::new(128.0, 45.0, 160.0), initial_mode);
         self.camera.position = self.physics.eye_pos();
         self.client_phase = ConnectionPhase::Hello;
         self.is_paused = false;
@@ -2122,14 +2147,10 @@ impl App {
                             true,
                         ));
                         self.smoothing.reset();
-                        #[allow(clippy::cast_possible_truncation)]
-                        {
-                            self.camera.position = Vec3::new(
-                                join.spawn_x as f32,
-                                join.spawn_y as f32,
-                                join.spawn_z as f32,
-                            );
-                        }
+                        self.physics.pos = spawn_dvec;
+                        self.physics.vel = Vec3::ZERO;
+                        self.physics.on_ground = false;
+                        self.camera.position = self.physics.eye_pos();
                         self.client_phase = ConnectionPhase::Play;
                     }
                     other => {
@@ -7281,9 +7302,6 @@ impl ApplicationHandler for App {
                         return;
                     }
                     AppScreen::MainMenu => {
-                        if pressed && code == KeyCode::Escape {
-                            event_loop.exit();
-                        }
                         return;
                     }
                     AppScreen::InGame => {}

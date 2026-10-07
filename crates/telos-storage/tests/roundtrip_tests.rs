@@ -210,3 +210,72 @@ fn test_chunk_update_and_delete() {
     let loaded3 = region.read_chunk(pos).unwrap();
     assert!(loaded3.is_none(), "Deleted chunk must return None");
 }
+
+#[test]
+fn test_configurable_region_compression() {
+    let sim_fs = SimFs::new();
+    let rx = 1;
+    let ry = 2;
+    let rz = 3;
+
+    // 1. Initialize region with Zstd level 9 compression
+    let mut region = RegionFile::open_with_compression(sim_fs.clone(), rx, ry, rz, true, 9)
+        .expect("failed to open with compression level 9");
+    assert!(region.is_compressed());
+    assert_eq!(region.compression_level(), 9);
+
+    let pos = ChunkPos::new(8, 16, 24);
+    let registry = BlockRegistry::standard();
+    let generator = WorldGenerator::new(12345, &registry);
+    let natural_chunk = generator.generate_chunk(pos);
+    let payload = ChunkPayload::new(natural_chunk.to_blocks(), ChunkStatus::default());
+
+    region
+        .commit_chunks(&[(pos, Some(payload.clone()))], CodecId::Zstd, 100)
+        .expect("commit chunks level 9 failed");
+
+    // 2. Reopen and verify header preserved flags and compression level
+    let reloaded = RegionFile::open(sim_fs.clone(), rx, ry, rz).expect("reopen failed");
+    assert!(reloaded.is_compressed());
+    assert_eq!(reloaded.compression_level(), 9);
+
+    let loaded_chunk = reloaded.read_chunk(pos).unwrap().unwrap();
+    assert_eq!(
+        loaded_chunk.blocks.get(LocalIdx::ZERO),
+        payload.blocks.get(LocalIdx::ZERO)
+    );
+}
+
+#[test]
+fn test_uncompressed_container_roundtrip() {
+    let sim_fs = SimFs::new();
+    let rx = 4;
+    let ry = 0;
+    let rz = 4;
+
+    // Initialize region with compression explicitly disabled
+    let mut region = RegionFile::open_with_compression(sim_fs.clone(), rx, ry, rz, false, 0)
+        .expect("failed to open uncompressed");
+    assert!(!region.is_compressed());
+    assert_eq!(region.compression_level(), 0);
+
+    let pos = ChunkPos::new(32, 0, 32);
+    let registry = BlockRegistry::standard();
+    let generator = WorldGenerator::new(999, &registry);
+    let natural_chunk = generator.generate_chunk(pos);
+    let payload = ChunkPayload::new(natural_chunk.to_blocks(), ChunkStatus::default());
+
+    region
+        .commit_chunks(&[(pos, Some(payload.clone()))], CodecId::Zstd, 200)
+        .expect("commit chunks uncompressed failed");
+
+    let reloaded = RegionFile::open(sim_fs, rx, ry, rz).expect("reopen uncompressed failed");
+    assert!(!reloaded.is_compressed());
+    assert_eq!(reloaded.compression_level(), 0);
+
+    let loaded_chunk = reloaded.read_chunk(pos).unwrap().unwrap();
+    assert_eq!(
+        loaded_chunk.blocks.get(LocalIdx::ZERO),
+        payload.blocks.get(LocalIdx::ZERO)
+    );
+}

@@ -361,9 +361,7 @@ impl PlayerPhysicsController {
             }
 
             // Gravity
-            if !self.on_ground {
-                self.vel.y = (self.vel.y - GRAVITY * dt).max(-60.0);
-            }
+            self.vel.y = (self.vel.y - GRAVITY * dt).max(-60.0);
 
             let wish_disp = self.vel.as_dvec3() * f64::from(dt);
 
@@ -691,7 +689,7 @@ mod tests {
         let colliders = |bx: i32, by: i32, bz: i32, out: &mut Vec<Aabb>| {
             if by == 63 && bx.abs() <= 4 && bz.abs() <= 2 {
                 out.push(Aabb::from_block(bx, by, bz));
-            } else if bx == 1 && by == 64 && bz.abs() <= 2 {
+            } else if (1..=4).contains(&bx) && by == 64 && bz.abs() <= 2 {
                 out.push(Aabb::from_sub_box(bx, by, bz, [0, 0, 0], [16, 8, 16]));
             }
         };

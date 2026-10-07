@@ -110,7 +110,23 @@ impl ServerWorld {
         registries: &telos_content::FrozenRegistries,
         save_dir: impl AsRef<Path>,
     ) -> std::io::Result<Self> {
-        let storage = WorldStorage::open_or_create(save_dir, registries)?;
+        Self::with_content_storage_and_compression(seed, registries, save_dir, true, 3)
+    }
+
+    /// Creates a persistent `ServerWorld` with `.tlr` region container saving, full save-ID mapping, and explicit compression settings.
+    pub fn with_content_storage_and_compression(
+        seed: u64,
+        registries: &telos_content::FrozenRegistries,
+        save_dir: impl AsRef<Path>,
+        compression_enabled: bool,
+        compression_level: u32,
+    ) -> std::io::Result<Self> {
+        let storage = WorldStorage::open_or_create_with_compression(
+            save_dir,
+            registries,
+            compression_enabled,
+            compression_level,
+        )?;
         let registry = registries.block_registry().clone();
         let generator = WorldGenerator::new(seed, &registry);
         Ok(Self {
@@ -137,7 +153,12 @@ impl ServerWorld {
         let registry = registries.block_registry().clone();
         let generator = WorldGenerator::with_kind(config.seed, &registry, config.generator);
         let storage = if let Some(ref dir) = config.save_directory {
-            Some(WorldStorage::open_or_create(dir, registries)?)
+            Some(WorldStorage::open_or_create_with_compression(
+                dir,
+                registries,
+                config.region_compression,
+                config.region_compression_level,
+            )?)
         } else {
             None
         };

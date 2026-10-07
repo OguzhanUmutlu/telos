@@ -26,16 +26,74 @@ pub struct RegionFile<I: RegionIo> {
 }
 
 impl<I: RegionIo> RegionFile<I> {
-    /// Opens an existing region file or initializes a new one if empty.
-    #[allow(clippy::similar_names)]
+    /// Opens an existing region file or initializes a new one with default compression (Zstd level 3).
     pub fn open(io: I, rx: i32, ry: i32, rz: i32) -> Result<Self> {
+        Self::open_with_compression(io, rx, ry, rz, true, 3)
+    }
+
+    /// Returns true if this region container is configured to compress non-uniform chunks.
+    #[must_use]
+    pub fn is_compressed(&self) -> bool {
+        self.active_slot
+            .preamble
+            .flags
+            .contains(crate::format::header::RegionFlags::COMPRESSED)
+    }
+
+    /// Returns the Zstandard compression level (1..=22, or 0 if uncompressed) for this container.
+    #[must_use]
+    pub fn compression_level(&self) -> u32 {
+        self.active_slot.preamble.compression_level
+    }
+
+    /// Sets container compression parameters for future commits.
+    pub fn set_compression(&mut self, compressed: bool, level: u32) {
+        if compressed {
+            self.active_slot
+                .preamble
+                .flags
+                .insert(crate::format::header::RegionFlags::COMPRESSED);
+            self.active_slot.preamble.compression_level = level.clamp(1, 22);
+        } else {
+            self.active_slot
+                .preamble
+                .flags
+                .remove(crate::format::header::RegionFlags::COMPRESSED);
+            self.active_slot.preamble.compression_level = 0;
+        }
+    }
+
+    /// Opens an existing region file or initializes a new one with explicit compression settings.
+    #[allow(clippy::similar_names)]
+    pub fn open_with_compression(
+        io: I,
+        rx: i32,
+        ry: i32,
+        rz: i32,
+        compressed: bool,
+        compression_level: u32,
+    ) -> Result<Self> {
         let region_pos = RegionPos::new(rx, ry, rz);
         let len = io.len()?;
 
         if len == 0 {
             // Newly created container: write both initial header slots and sync
-            let slot_a = HeaderSlot::new_empty(rx, ry, rz, 1);
-            let slot_b = HeaderSlot::new_empty(rx, ry, rz, 0);
+            let slot_a = HeaderSlot::new_empty_with_compression(
+                rx,
+                ry,
+                rz,
+                1,
+                compressed,
+                compression_level,
+            );
+            let slot_b = HeaderSlot::new_empty_with_compression(
+                rx,
+                ry,
+                rz,
+                0,
+                compressed,
+                compression_level,
+            );
 
             let bytes_a = slot_a.encode();
             let bytes_b = slot_b.encode();
@@ -373,11 +431,24 @@ impl<I: RegionIo> RegionFile<I> {
 
             // Non-uniform chunk: encode, compress, and allocate
             let raw_bytes = payload.encode();
-            let stored_bytes = compress(codec, &raw_bytes)?;
+            let (effective_codec, stored_bytes) = if self.is_compressed() {
+                let level = i32::try_from(self.compression_level()).unwrap_or(3);
+                (
+                    CodecId::Zstd,
+                    crate::compression::compress_with_level(CodecId::Zstd, &raw_bytes, level)?,
+                )
+            } else if codec == CodecId::Zstd {
+                (
+                    CodecId::Raw,
+                    crate::compression::compress_with_level(CodecId::Raw, &raw_bytes, 0)?,
+                )
+            } else {
+                (codec, compress(codec, &raw_bytes)?)
+            };
 
             let frame = PayloadFrame {
                 kind: 1,
-                codec,
+                codec: effective_codec,
                 dict_id: 0,
                 chunk_pos: (pos.x(), pos.y(), pos.z()),
                 stored_len: stored_bytes.len() as u32,
@@ -407,7 +478,7 @@ impl<I: RegionIo> RegionFile<I> {
                             mtime: timestamp,
                             checksum,
                             flags: EntryFlags::PRESENT | EntryFlags::PACKED,
-                            codec,
+                            codec: effective_codec,
                             dict_id: 0,
                             data_version: 1,
                             inline_data: None,
@@ -444,7 +515,7 @@ impl<I: RegionIo> RegionFile<I> {
                         mtime: timestamp,
                         checksum,
                         flags: EntryFlags::PRESENT | EntryFlags::PACKED,
-                        codec,
+                        codec: effective_codec,
                         dict_id: 0,
                         data_version: 1,
                         inline_data: None,
@@ -459,6 +530,11 @@ impl<I: RegionIo> RegionFile<I> {
                     .allocator
                     .allocate_contiguous(span as u32, &mut occupied_in_commit)?;
 
+                let target_len = span * SECTOR_SIZE;
+                if disk_bytes.len() < target_len {
+                    disk_bytes.resize(target_len, 0);
+                }
+
                 writes_to_perform.push((u64::from(sector) * (SECTOR_SIZE as u64), disk_bytes));
 
                 let entry = Entry {
@@ -469,7 +545,7 @@ impl<I: RegionIo> RegionFile<I> {
                     mtime: timestamp,
                     checksum,
                     flags: EntryFlags::PRESENT,
-                    codec,
+                    codec: effective_codec,
                     dict_id: 0,
                     data_version: 1,
                     inline_data: None,
