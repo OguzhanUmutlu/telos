@@ -157,6 +157,48 @@ impl BlockPos {
         Self(self.0 + face.normal_ivec())
     }
 
+    /// Returns this position shifted along +Y by `dy` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn up(self, dy: i32) -> Self {
+        Self::new(self.0.x, self.0.y + dy, self.0.z)
+    }
+
+    /// Returns this position shifted along -Y by `dy` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn down(self, dy: i32) -> Self {
+        Self::new(self.0.x, self.0.y - dy, self.0.z)
+    }
+
+    /// Returns this position shifted along -Z (north) by `dz` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn north(self, dz: i32) -> Self {
+        Self::new(self.0.x, self.0.y, self.0.z - dz)
+    }
+
+    /// Returns this position shifted along +Z (south) by `dz` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn south(self, dz: i32) -> Self {
+        Self::new(self.0.x, self.0.y, self.0.z + dz)
+    }
+
+    /// Returns this position shifted along -X (west) by `dx` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn west(self, dx: i32) -> Self {
+        Self::new(self.0.x - dx, self.0.y, self.0.z)
+    }
+
+    /// Returns this position shifted along +X (east) by `dx` blocks.
+    #[inline]
+    #[must_use]
+    pub const fn east(self, dx: i32) -> Self {
+        Self::new(self.0.x + dx, self.0.y, self.0.z)
+    }
+
     /// Decomposes this block position into its containing `ChunkPos` and chunk-local `LocalPos`.
     ///
     /// This uses arithmetic right shift (`>> 5`), which correctly handles negative numbers:

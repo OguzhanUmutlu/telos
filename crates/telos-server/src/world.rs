@@ -886,3 +886,13 @@ impl telos_sim::fluid::FluidWorldReader for ServerWorld {
         &self.registry
     }
 }
+
+impl telos_sim::NavWorldReader for ServerWorld {
+    fn get_block(&self, pos: BlockPos) -> BlockStateId {
+        self.get_loaded_block(pos)
+    }
+
+    fn registry(&self) -> &BlockRegistry {
+        &self.registry
+    }
+}

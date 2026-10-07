@@ -19,6 +19,7 @@ pub mod hunger;
 pub mod inventory;
 pub mod logic;
 pub mod movement;
+pub mod nav;
 pub mod particle;
 pub mod potion;
 pub mod prediction;
@@ -41,9 +42,9 @@ pub use enchantment::{
     CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
 };
 pub use entity::{
-    AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,
-    Position, Rotation, SimulationFrozen, Velocity, mob_ai_system, mob_hurt_decay_system,
-    mob_movement_system,
+    AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PathFollower,
+    PlayerPositions, Position, Rotation, SimulationFrozen, Velocity, mob_ai_system,
+    mob_hurt_decay_system, mob_movement_system,
 };
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{
@@ -67,6 +68,10 @@ pub use logic::{
 pub use movement::{
     MAX_LEGAL_SPEED, MoveMode, MoveState, angles_to_direction, dequantize_pitch, dequantize_yaw,
     quantize_pitch, quantize_yaw, simulate_movement_step,
+};
+pub use nav::{
+    ChunkPortalGraph, ChunkPortals, LocalAStar, NavPath, NavWorldReader, PathProfile, is_hazard,
+    is_passable, is_solid_ground, is_walkable_node, octile_heuristic, update_mob_navigation_paths,
 };
 pub use particle::{Particle, ParticleGpu, ParticleKind, ParticleSystem};
 pub use potion::{BrewingRecipe, BrewingRegistry, PotionType};

@@ -285,6 +285,31 @@ impl Mob {
     }
 }
 
+/// Navigation follower component managing waypoint progression, jump impulses, and steering.
+#[derive(Debug, Clone, Component, Default)]
+pub struct PathFollower {
+    /// Active planned navigation path.
+    pub path: Option<crate::nav::NavPath>,
+    /// Target entity network ID currently tracked.
+    pub target_entity: Option<u32>,
+    /// Last target position when path was computed.
+    pub last_target_pos: Option<telos_core::coords::BlockPos>,
+    /// Consecutive ticks mob position remained stuck near the same coordinates.
+    pub stuck_ticks: u32,
+    /// Last recorded position for stuck detection.
+    pub last_pos: DVec3,
+    /// Cooldown ticks remaining before next repath query is permitted.
+    pub repath_cooldown: u32,
+}
+
+impl PathFollower {
+    /// Creates a new default `PathFollower`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Hurt animation and invulnerability cooldown timer (counts down each tick).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Component, Default)]
 pub struct HurtTime(pub u8);
@@ -310,6 +335,8 @@ pub struct MobBundle {
     pub hurt_time: HurtTime,
     /// AI decision controller.
     pub mob: Mob,
+    /// 3D navigation path follower.
+    pub path_follower: PathFollower,
 }
 
 impl MobBundle {
@@ -329,6 +356,7 @@ impl MobBundle {
             combat: CombatTracker::default(),
             hurt_time: HurtTime::default(),
             mob: Mob::new_hostile(seed),
+            path_follower: PathFollower::default(),
         }
     }
 
@@ -348,6 +376,7 @@ impl MobBundle {
             combat: CombatTracker::default(),
             hurt_time: HurtTime::default(),
             mob: Mob::new_passive(seed),
+            path_follower: PathFollower::default(),
         }
     }
 
@@ -367,6 +396,7 @@ impl MobBundle {
             combat: CombatTracker::default(),
             hurt_time: HurtTime::default(),
             mob: Mob::new_passive(seed),
+            path_follower: PathFollower::default(),
         }
     }
 }
@@ -375,7 +405,7 @@ impl MobBundle {
 #[derive(Debug, Clone, Resource, Default)]
 pub struct PlayerPositions(pub Vec<(u32, DVec3)>);
 
-/// System that executes artificial intelligence state machines for all active mobs.
+/// System that executes artificial intelligence state machines and waypoint steering for all active mobs.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -383,12 +413,34 @@ pub struct PlayerPositions(pub Vec<(u32, DVec3)>);
     clippy::needless_pass_by_value
 )]
 pub fn mob_ai_system(
-    mut mobs: Query<(&mut Mob, &mut Rotation, &mut Velocity, &Position), Without<SimulationFrozen>>,
+    mut mobs: Query<
+        (
+            &mut Mob,
+            &mut PathFollower,
+            &mut Rotation,
+            &mut Velocity,
+            &Position,
+        ),
+        Without<SimulationFrozen>,
+    >,
     players: Option<Res<PlayerPositions>>,
 ) {
     let player_list = players.as_ref().map_or(&[][..], |p| p.0.as_slice());
 
-    for (mut mob, mut rot, mut vel, pos) in &mut mobs {
+    for (mut mob, mut follower, mut rot, mut vel, pos) in &mut mobs {
+        // Stuck detection
+        if pos.0.distance_squared(follower.last_pos) < 0.0025 {
+            follower.stuck_ticks += 1;
+            if follower.stuck_ticks >= 20 {
+                follower.path = None;
+                follower.stuck_ticks = 0;
+                follower.repath_cooldown = 0;
+            }
+        } else {
+            follower.stuck_ticks = 0;
+            follower.last_pos = pos.0;
+        }
+
         match mob.kind {
             MobKind::Hostile => {
                 // Find nearest player within 24 blocks detection radius
@@ -407,28 +459,85 @@ pub fn mob_ai_system(
                     mob.ai_state = AiState::Chasing {
                         target_net_id: target_id,
                     };
+                    follower.target_entity = Some(target_id);
 
-                    let dx = target_pos.x - pos.0.x;
-                    let dz = target_pos.z - pos.0.z;
-                    let horiz_dist = (dx * dx + dz * dz).sqrt();
+                    let speed = mob.base_speed;
+                    let mut followed_path = false;
 
-                    if horiz_dist > 0.05 {
-                        let nx = dx / horiz_dist;
-                        let nz = dz / horiz_dist;
-                        vel.0.x = (nx * f64::from(mob.base_speed)) as f32;
-                        vel.0.z = (nz * f64::from(mob.base_speed)) as f32;
+                    // Follow planned navigation waypoints if available
+                    if let Some(ref mut path) = follower.path {
+                        if let Some(wp) = path.current_waypoint() {
+                            let wp_center = DVec3::new(
+                                f64::from(wp.x()) + 0.5,
+                                f64::from(wp.y()),
+                                f64::from(wp.z()) + 0.5,
+                            );
+                            let dx = wp_center.x - pos.0.x;
+                            let dz = wp_center.z - pos.0.z;
+                            let horiz_dist = (dx * dx + dz * dz).sqrt();
 
-                        let angle_rad = dz.atan2(dx);
-                        let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
-                        rot.yaw = yaw_deg;
-                        rot.head_yaw = yaw_deg;
+                            if horiz_dist < 0.45 && (pos.0.y - wp_center.y).abs() < 1.25 {
+                                path.advance();
+                            }
+
+                            if let Some(active_wp) = path.current_waypoint() {
+                                let active_center = DVec3::new(
+                                    f64::from(active_wp.x()) + 0.5,
+                                    f64::from(active_wp.y()),
+                                    f64::from(active_wp.z()) + 0.5,
+                                );
+                                let adx = active_center.x - pos.0.x;
+                                let adz = active_center.z - pos.0.z;
+                                let adist = (adx * adx + adz * adz).sqrt();
+
+                                if adist > 0.05 {
+                                    let nx = adx / adist;
+                                    let nz = adz / adist;
+                                    vel.0.x = (nx * f64::from(speed)) as f32;
+                                    vel.0.z = (nz * f64::from(speed)) as f32;
+
+                                    let cur_y = pos.0.y.floor() as i32;
+                                    if active_wp.y() > cur_y && vel.0.y.abs() < 0.1 {
+                                        vel.0.y = 0.42;
+                                    }
+
+                                    let angle_rad = adz.atan2(adx);
+                                    let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                                    rot.yaw = yaw_deg;
+                                    rot.head_yaw = yaw_deg;
+                                    followed_path = true;
+                                }
+                            }
+                        }
+                        if path.is_finished() {
+                            follower.path = None;
+                        }
+                    }
+
+                    // Direct steering fallback if no waypoint path
+                    if !followed_path {
+                        let dx = target_pos.x - pos.0.x;
+                        let dz = target_pos.z - pos.0.z;
+                        let horiz_dist = (dx * dx + dz * dz).sqrt();
+
+                        if horiz_dist > 0.05 {
+                            let nx = dx / horiz_dist;
+                            let nz = dz / horiz_dist;
+                            vel.0.x = (nx * f64::from(speed)) as f32;
+                            vel.0.z = (nz * f64::from(speed)) as f32;
+
+                            let angle_rad = dz.atan2(dx);
+                            let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                            rot.yaw = yaw_deg;
+                            rot.head_yaw = yaw_deg;
+                        }
                     }
                 } else {
                     // No players nearby -> wander peacefully or idle
+                    follower.target_entity = None;
                     match mob.ai_state {
                         AiState::Idle { mut timer } => {
                             if timer == 0 {
-                                // Pick new wander target using deterministic PRNG
                                 mob.rng_seed = mob
                                     .rng_seed
                                     .wrapping_mul(6_364_136_223_846_793_005)
@@ -438,6 +547,7 @@ pub fn mob_ai_system(
                                     (((mob.rng_seed >> 16) & 0xFFFF) as f64 / 65535.0) * 16.0 - 8.0;
                                 let target = DVec3::new(pos.0.x + rx, pos.0.y, pos.0.z + rz);
                                 mob.ai_state = AiState::Wandering { target, timer: 100 };
+                                follower.path = None;
                             } else {
                                 timer -= 1;
                                 mob.ai_state = AiState::Idle { timer };
@@ -446,28 +556,81 @@ pub fn mob_ai_system(
                             }
                         }
                         AiState::Wandering { target, mut timer } => {
-                            let dx = target.x - pos.0.x;
-                            let dz = target.z - pos.0.z;
-                            let dist_sq = dx * dx + dz * dz;
+                            let speed = mob.base_speed * 0.6;
+                            let mut followed_path = false;
 
-                            if dist_sq < 0.25 || timer == 0 {
-                                mob.ai_state = AiState::Idle { timer: 60 };
-                                vel.0.x = 0.0;
-                                vel.0.z = 0.0;
-                            } else {
-                                timer -= 1;
-                                mob.ai_state = AiState::Wandering { target, timer };
-                                let horiz_dist = dist_sq.sqrt();
-                                let nx = dx / horiz_dist;
-                                let nz = dz / horiz_dist;
-                                let speed = mob.base_speed * 0.6;
-                                vel.0.x = (nx * f64::from(speed)) as f32;
-                                vel.0.z = (nz * f64::from(speed)) as f32;
+                            if let Some(ref mut path) = follower.path {
+                                if let Some(wp) = path.current_waypoint() {
+                                    let wp_center = DVec3::new(
+                                        f64::from(wp.x()) + 0.5,
+                                        f64::from(wp.y()),
+                                        f64::from(wp.z()) + 0.5,
+                                    );
+                                    let dx = wp_center.x - pos.0.x;
+                                    let dz = wp_center.z - pos.0.z;
+                                    let horiz_dist = (dx * dx + dz * dz).sqrt();
 
-                                let angle_rad = dz.atan2(dx);
-                                let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
-                                rot.yaw = yaw_deg;
-                                rot.head_yaw = yaw_deg;
+                                    if horiz_dist < 0.45 && (pos.0.y - wp_center.y).abs() < 1.25 {
+                                        path.advance();
+                                    }
+
+                                    if let Some(active_wp) = path.current_waypoint() {
+                                        let active_center = DVec3::new(
+                                            f64::from(active_wp.x()) + 0.5,
+                                            f64::from(active_wp.y()),
+                                            f64::from(active_wp.z()) + 0.5,
+                                        );
+                                        let adx = active_center.x - pos.0.x;
+                                        let adz = active_center.z - pos.0.z;
+                                        let adist = (adx * adx + adz * adz).sqrt();
+
+                                        if adist > 0.05 {
+                                            let nx = adx / adist;
+                                            let nz = adz / adist;
+                                            vel.0.x = (nx * f64::from(speed)) as f32;
+                                            vel.0.z = (nz * f64::from(speed)) as f32;
+
+                                            let cur_y = pos.0.y.floor() as i32;
+                                            if active_wp.y() > cur_y && vel.0.y.abs() < 0.1 {
+                                                vel.0.y = 0.42;
+                                            }
+
+                                            let angle_rad = adz.atan2(adx);
+                                            let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                                            rot.yaw = yaw_deg;
+                                            rot.head_yaw = yaw_deg;
+                                            followed_path = true;
+                                        }
+                                    }
+                                }
+                                if path.is_finished() {
+                                    follower.path = None;
+                                }
+                            }
+
+                            if !followed_path {
+                                let dx = target.x - pos.0.x;
+                                let dz = target.z - pos.0.z;
+                                let dist_sq = dx * dx + dz * dz;
+
+                                if dist_sq < 0.25 || timer == 0 {
+                                    mob.ai_state = AiState::Idle { timer: 60 };
+                                    vel.0.x = 0.0;
+                                    vel.0.z = 0.0;
+                                } else {
+                                    timer -= 1;
+                                    mob.ai_state = AiState::Wandering { target, timer };
+                                    let horiz_dist = dist_sq.sqrt();
+                                    let nx = dx / horiz_dist;
+                                    let nz = dz / horiz_dist;
+                                    vel.0.x = (nx * f64::from(speed)) as f32;
+                                    vel.0.z = (nz * f64::from(speed)) as f32;
+
+                                    let angle_rad = dz.atan2(dx);
+                                    let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                                    rot.yaw = yaw_deg;
+                                    rot.head_yaw = yaw_deg;
+                                }
                             }
                         }
                         _ => {
@@ -511,6 +674,7 @@ pub fn mob_ai_system(
                         let rz = (((mob.rng_seed >> 16) & 0xFFFF) as f64 / 65535.0) * 12.0 - 6.0;
                         let target = DVec3::new(pos.0.x + rx, pos.0.y, pos.0.z + rz);
                         mob.ai_state = AiState::Wandering { target, timer: 80 };
+                        follower.path = None;
                     } else {
                         timer -= 1;
                         mob.ai_state = AiState::Idle { timer };
@@ -519,27 +683,81 @@ pub fn mob_ai_system(
                     }
                 }
                 AiState::Wandering { target, mut timer } => {
-                    let dx = target.x - pos.0.x;
-                    let dz = target.z - pos.0.z;
-                    let dist_sq = dx * dx + dz * dz;
+                    let speed = mob.base_speed;
+                    let mut followed_path = false;
 
-                    if dist_sq < 0.25 || timer == 0 {
-                        mob.ai_state = AiState::Idle { timer: 80 };
-                        vel.0.x = 0.0;
-                        vel.0.z = 0.0;
-                    } else {
-                        timer -= 1;
-                        mob.ai_state = AiState::Wandering { target, timer };
-                        let horiz_dist = dist_sq.sqrt();
-                        let nx = dx / horiz_dist;
-                        let nz = dz / horiz_dist;
-                        vel.0.x = (nx * f64::from(mob.base_speed)) as f32;
-                        vel.0.z = (nz * f64::from(mob.base_speed)) as f32;
+                    if let Some(ref mut path) = follower.path {
+                        if let Some(wp) = path.current_waypoint() {
+                            let wp_center = DVec3::new(
+                                f64::from(wp.x()) + 0.5,
+                                f64::from(wp.y()),
+                                f64::from(wp.z()) + 0.5,
+                            );
+                            let dx = wp_center.x - pos.0.x;
+                            let dz = wp_center.z - pos.0.z;
+                            let horiz_dist = (dx * dx + dz * dz).sqrt();
 
-                        let angle_rad = dz.atan2(dx);
-                        let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
-                        rot.yaw = yaw_deg;
-                        rot.head_yaw = yaw_deg;
+                            if horiz_dist < 0.45 && (pos.0.y - wp_center.y).abs() < 1.25 {
+                                path.advance();
+                            }
+
+                            if let Some(active_wp) = path.current_waypoint() {
+                                let active_center = DVec3::new(
+                                    f64::from(active_wp.x()) + 0.5,
+                                    f64::from(active_wp.y()),
+                                    f64::from(active_wp.z()) + 0.5,
+                                );
+                                let adx = active_center.x - pos.0.x;
+                                let adz = active_center.z - pos.0.z;
+                                let adist = (adx * adx + adz * adz).sqrt();
+
+                                if adist > 0.05 {
+                                    let nx = adx / adist;
+                                    let nz = adz / adist;
+                                    vel.0.x = (nx * f64::from(speed)) as f32;
+                                    vel.0.z = (nz * f64::from(speed)) as f32;
+
+                                    let cur_y = pos.0.y.floor() as i32;
+                                    if active_wp.y() > cur_y && vel.0.y.abs() < 0.1 {
+                                        vel.0.y = 0.42;
+                                    }
+
+                                    let angle_rad = adz.atan2(adx);
+                                    let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                                    rot.yaw = yaw_deg;
+                                    rot.head_yaw = yaw_deg;
+                                    followed_path = true;
+                                }
+                            }
+                        }
+                        if path.is_finished() {
+                            follower.path = None;
+                        }
+                    }
+
+                    if !followed_path {
+                        let dx = target.x - pos.0.x;
+                        let dz = target.z - pos.0.z;
+                        let dist_sq = dx * dx + dz * dz;
+
+                        if dist_sq < 0.25 || timer == 0 {
+                            mob.ai_state = AiState::Idle { timer: 80 };
+                            vel.0.x = 0.0;
+                            vel.0.z = 0.0;
+                        } else {
+                            timer -= 1;
+                            mob.ai_state = AiState::Wandering { target, timer };
+                            let horiz_dist = dist_sq.sqrt();
+                            let nx = dx / horiz_dist;
+                            let nz = dz / horiz_dist;
+                            vel.0.x = (nx * f64::from(speed)) as f32;
+                            vel.0.z = (nz * f64::from(speed)) as f32;
+
+                            let angle_rad = dz.atan2(dx);
+                            let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                            rot.yaw = yaw_deg;
+                            rot.head_yaw = yaw_deg;
+                        }
                     }
                 }
                 AiState::Chasing { .. } => {

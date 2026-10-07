@@ -32,5 +32,9 @@ harness = false
 name = "fluid_bench"
 harness = false
 
+[[bench]]
+name = "nav_bench"
+harness = false
+
 [lints]
 workspace = true

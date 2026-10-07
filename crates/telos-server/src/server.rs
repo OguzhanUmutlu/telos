@@ -2088,25 +2088,58 @@ impl Server {
                 .remove::<SimulationFrozen>();
         }
 
+        // Update 3D A* navigation paths for active mobs
+        let default_world = self.worlds.default_world();
+        telos_sim::update_mob_navigation_paths(default_world, &mut self.ecs_world);
+
         self.sim_schedule.run(&mut self.ecs_world);
 
-        // Terrain floor clamp for mobs
+        // Voxel terrain collision and floor adherence for mobs
+        let default_world = self.worlds.default_world_mut();
         let mut mob_query = self
             .ecs_world
             .query::<(&NetEntity, &mut Position, &mut Velocity)>();
         let mut fallen_mobs = Vec::new();
         for (net, mut pos, mut vel) in mob_query.iter_mut(&mut self.ecs_world) {
             #[allow(clippy::cast_possible_truncation)]
-            let surface_y = self
-                .worlds
-                .default_world_mut()
-                .get_surface_y(pos.0.x.floor() as i32, pos.0.z.floor() as i32);
-            let floor_y = f64::from(surface_y) + 1.0;
+            let bx = pos.0.x.floor() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let by = pos.0.y.floor() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let bz = pos.0.z.floor() as i32;
 
-            if pos.0.y < floor_y {
-                pos.0.y = floor_y;
-                vel.0.y = 0.0;
+            let foot_block = default_world.get_loaded_block(BlockPos::new(bx, by, bz));
+            let ground_block = default_world.get_loaded_block(BlockPos::new(bx, by - 1, bz));
+            let reg = default_world.registry();
+
+            if telos_sim::is_solid_ground(ground_block, reg) {
+                let floor_y = f64::from(by);
+                if pos.0.y <= floor_y + 0.15 && vel.0.y <= 0.0 {
+                    pos.0.y = floor_y;
+                    vel.0.y = 0.0;
+                }
+            } else if telos_sim::is_solid_ground(foot_block, reg) {
+                // Step-up over 1-block obstacle if headroom is clear
+                let head_block = default_world.get_loaded_block(BlockPos::new(bx, by + 1, bz));
+                if telos_sim::is_solid_ground(head_block, reg) {
+                    // Blocked by 2+ block tall obstacle
+                    vel.0.x = 0.0;
+                    vel.0.z = 0.0;
+                } else {
+                    let floor_y = f64::from(by + 1);
+                    pos.0.y = floor_y;
+                    vel.0.y = 0.0;
+                }
+            } else {
+                // Fallback to surface height if floating above unloaded chunks
+                let surface_y = default_world.get_surface_y(bx, bz);
+                let floor_y = f64::from(surface_y) + 1.0;
+                if pos.0.y < floor_y {
+                    pos.0.y = floor_y;
+                    vel.0.y = 0.0;
+                }
             }
+
             if pos.0.y < -100.0 {
                 fallen_mobs.push(net.net_id);
             }
