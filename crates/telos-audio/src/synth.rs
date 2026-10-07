@@ -236,6 +236,31 @@ pub fn synthesize_entity_hurt(pitch: f32) -> Arc<[f32]> {
     samples.into()
 }
 
+/// Synthesizes a crisp, procedural pop chime for picking up dropped items (mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_item_pickup() -> Arc<[f32]> {
+    let duration_sec = 0.08;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let attack = (t / 0.001).min(1.0);
+        let decay = (-35.0 * t).exp();
+        let env = attack * decay;
+
+        let freq = 800.0 + 500.0 * (t / duration_sec);
+        let phase = 2.0 * std::f32::consts::PI * freq * t;
+        let tone = phase.sin();
+        let harmonic = (phase * 2.0).sin() * 0.25;
+        let sample = (tone + harmonic) * env * 0.75;
+
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +289,16 @@ mod tests {
     #[test]
     fn test_thunder_bounds() {
         let buf = synthesize_thunder();
+        assert!(!buf.is_empty());
+        for &s in buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+    }
+
+    #[test]
+    fn test_item_pickup_bounds() {
+        let buf = synthesize_item_pickup();
         assert!(!buf.is_empty());
         for &s in buf.iter() {
             assert!(!s.is_nan());

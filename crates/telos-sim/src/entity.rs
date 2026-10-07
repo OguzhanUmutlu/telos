@@ -7,6 +7,7 @@ use bevy_ecs::system::{Query, Res, Resource};
 use glam::{DVec3, Vec3};
 
 use crate::attributes::{CombatTracker, Health};
+use crate::inventory::ItemStack;
 
 /// Marker component indicating an entity is outside active simulation distance and frozen in place.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,6 +26,8 @@ pub enum EntityType {
     Pig = 2,
     /// Passive bovine farm animal.
     Cow = 3,
+    /// Dropped floating item stack.
+    Item = 4,
 }
 
 impl EntityType {
@@ -36,6 +39,7 @@ impl EntityType {
             1 => Some(Self::Zombie),
             2 => Some(Self::Pig),
             3 => Some(Self::Cow),
+            4 => Some(Self::Item),
             _ => None,
         }
     }
@@ -54,6 +58,7 @@ impl EntityType {
             Self::Zombie => "Zombie",
             Self::Pig => "Pig",
             Self::Cow => "Cow",
+            Self::Item => "Item",
         }
     }
 
@@ -77,8 +82,111 @@ impl EntityType {
                 half_size: Vec3::new(0.45, 0.7, 0.45),
                 y_offset: 0.7,
             },
+            Self::Item => EntityAabb {
+                half_size: Vec3::new(0.125, 0.125, 0.125),
+                y_offset: 0.125,
+            },
         }
     }
+}
+
+/// Lifetime before a dropped item entity despawns (6000 ticks = 5 minutes at 20 TPS).
+pub const ITEM_DESPAWN_TICKS: u16 = 6000;
+/// Default pickup delay when dropped by a player (10 ticks = 0.5s).
+pub const PLAYER_DROP_PICKUP_DELAY: u16 = 10;
+/// Proximity radius for merging matching item entities (1.5 blocks).
+pub const ITEM_MERGE_RADIUS: f64 = 1.5;
+/// Proximity radius for player inventory pickup (1.5 blocks).
+pub const ITEM_PICKUP_RADIUS: f64 = 1.5;
+
+/// Dropped item entity component tracking its inventory stack, pickup delay, and age.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Component)]
+pub struct ItemEntity {
+    /// Item stack represented by this entity.
+    pub stack: ItemStack,
+    /// Delay in ticks before a survival player can pick up this item (e.g. 10 on drop).
+    pub pickup_delay: u16,
+    /// Lifetime in ticks since creation. Despawns when reaching `ITEM_DESPAWN_TICKS`.
+    pub age: u16,
+}
+
+impl ItemEntity {
+    /// Creates a new `ItemEntity` with given stack and pickup delay.
+    #[must_use]
+    pub const fn new(stack: ItemStack, pickup_delay: u16) -> Self {
+        Self {
+            stack,
+            pickup_delay,
+            age: 0,
+        }
+    }
+}
+
+/// Performs a single-tick physics simulation step for a dropped item entity against terrain collision.
+#[allow(clippy::cast_possible_truncation)]
+pub fn tick_item_physics_step(
+    pos: &mut DVec3,
+    vel: &mut Vec3,
+    mut is_solid: impl FnMut(i32, i32, i32) -> bool,
+) {
+    // 1. Gravity acceleration (0.04 blocks/tick^2 downward)
+    vel.y -= 0.04;
+
+    // 2. Air resistance / damping
+    vel.x *= 0.98;
+    vel.y *= 0.98;
+    vel.z *= 0.98;
+
+    // 3. Candidate target position
+    let next_x = pos.x + f64::from(vel.x);
+    let next_y = pos.y + f64::from(vel.y);
+    let next_z = pos.z + f64::from(vel.z);
+
+    // Floor voxel coordinate check
+    let block_x = next_x.floor() as i32;
+    let block_y = next_y.floor() as i32;
+    let block_z = next_z.floor() as i32;
+
+    if is_solid(block_x, block_y, block_z) {
+        // Floor contact: resting on top of the solid block
+        pos.y = f64::from(block_y + 1);
+        vel.y = 0.0;
+        // Ground friction
+        vel.x *= 0.6;
+        vel.z *= 0.6;
+
+        // Advance horizontal coordinates if passing through air
+        let check_above_x = is_solid(next_x.floor() as i32, block_y + 1, pos.z.floor() as i32);
+        if check_above_x {
+            vel.x = 0.0;
+        } else {
+            pos.x = next_x;
+        }
+        let check_above_z = is_solid(pos.x.floor() as i32, block_y + 1, next_z.floor() as i32);
+        if check_above_z {
+            vel.z = 0.0;
+        } else {
+            pos.z = next_z;
+        }
+    } else {
+        // In air: free movement
+        pos.x = next_x;
+        pos.y = next_y;
+        pos.z = next_z;
+    }
+}
+
+/// Attempts to merge `source` into `target`. Returns true if items were transferred.
+pub fn merge_item_stacks(target: &mut ItemStack, source: &mut ItemStack) -> bool {
+    if source.is_empty() || target.item != source.item || target.count >= 64 {
+        return false;
+    }
+    let space = 64 - target.count;
+    let transfer = source.count.min(space);
+    target.count += transfer;
+    source.count -= transfer;
+    source.normalize();
+    transfer > 0
 }
 
 /// Network identifier and entity type marker component.
@@ -952,9 +1060,12 @@ mod tests {
         assert_eq!(EntityType::from_u8(1), Some(EntityType::Zombie));
         assert_eq!(EntityType::from_u8(2), Some(EntityType::Pig));
         assert_eq!(EntityType::from_u8(3), Some(EntityType::Cow));
-        assert_eq!(EntityType::from_u8(4), None);
+        assert_eq!(EntityType::from_u8(4), Some(EntityType::Item));
+        assert_eq!(EntityType::from_u8(5), None);
         assert_eq!(EntityType::Zombie.to_u8(), 1);
+        assert_eq!(EntityType::Item.to_u8(), 4);
         assert_eq!(EntityType::Pig.name(), "Pig");
+        assert_eq!(EntityType::Item.name(), "Item");
     }
 
     #[test]

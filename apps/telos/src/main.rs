@@ -2419,6 +2419,12 @@ impl App {
                             .collect();
                     }
                     S2cMessage::InventoryBulk(bulk) => {
+                        let had_items = self
+                            .inventory_sim
+                            .slots
+                            .iter()
+                            .map(|s| s.count)
+                            .sum::<u16>();
                         for (i, slot) in bulk.slots.iter().enumerate() {
                             if i < self.inventory_sim.slots.len() {
                                 self.inventory_sim.slots[i] =
@@ -2427,6 +2433,15 @@ impl App {
                         }
                         self.inventory_sim.carried =
                             telos_sim::ItemStack::new(bulk.carried.item, bulk.carried.count);
+                        let now_items = self
+                            .inventory_sim
+                            .slots
+                            .iter()
+                            .map(|s| s.count)
+                            .sum::<u16>();
+                        if now_items > had_items && self.current_screen == AppScreen::InGame {
+                            self.audio.play_item_pickup(self.camera.position);
+                        }
                         let selected_item = self.inventory_sim.selected_item();
                         if selected_item.count > 0 {
                             self.selected_block_state = BlockStateId::new(selected_item.item);
@@ -2435,8 +2450,18 @@ impl App {
                     S2cMessage::InventorySlot(slot_msg) => {
                         let idx = slot_msg.slot as usize;
                         if idx < self.inventory_sim.slots.len() {
+                            let old_count = self.inventory_sim.slots[idx].count;
+                            let old_item = self.inventory_sim.slots[idx].item;
                             self.inventory_sim.slots[idx] =
                                 telos_sim::ItemStack::new(slot_msg.item, slot_msg.count);
+                            if (slot_msg.count > old_count
+                                || (old_count == 0
+                                    && slot_msg.count > 0
+                                    && old_item != slot_msg.item))
+                                && self.current_screen == AppScreen::InGame
+                            {
+                                self.audio.play_item_pickup(self.camera.position);
+                            }
                             if idx == self.selected_hotbar_slot && slot_msg.count > 0 {
                                 self.selected_block_state = BlockStateId::new(slot_msg.item);
                             }
@@ -2453,6 +2478,9 @@ impl App {
                     }
                     S2cMessage::SpawnEntity(spawn) => {
                         self.entity_store.on_spawn(spawn);
+                    }
+                    S2cMessage::SpawnItem(spawn) => {
+                        self.entity_store.on_spawn_item(spawn);
                     }
                     S2cMessage::DespawnEntity(despawn) => {
                         self.entity_store.on_despawn(despawn.net_ids.as_slice());
@@ -8288,12 +8316,31 @@ impl ApplicationHandler for App {
                         KeyCode::Digit7 if pressed => self.handle_inventory_swap_hotbar(6),
                         KeyCode::Digit8 if pressed => self.handle_inventory_swap_hotbar(7),
                         KeyCode::Digit9 if pressed => self.handle_inventory_swap_hotbar(8),
+                        KeyCode::KeyQ if pressed => {
+                            if let Some(hovered) = self.inventory_hovered_slot {
+                                if hovered < 9 {
+                                    self.selected_hotbar_slot = hovered;
+                                }
+                                let entire_stack = self.controller.sprint;
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::DropItem { entire_stack },
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                            }
+                        }
                         _ => {}
                     }
                     return;
                 }
 
                 match code {
+                    KeyCode::KeyQ if pressed => {
+                        let entire_stack = self.controller.sprint;
+                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                            command: PlayerCommandKind::DropItem { entire_stack },
+                        });
+                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                    }
                     KeyCode::KeyE if pressed => {
                         self.inventory_open = true;
                         self.controller.mouse_captured = false;

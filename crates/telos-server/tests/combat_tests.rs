@@ -81,6 +81,20 @@ fn setup_server_and_player() -> (Server, MemoryConnection<C2sMessage, S2cMessage
     while let Ok(Some(_)) = client_conn.try_recv() {}
 
     let surface_y = f64::from(server.world().get_surface_y(128, 160));
+    let sy = surface_y as i32;
+    for x in 120..=136 {
+        for z in 150..=175 {
+            let _ = server
+                .world_mut()
+                .set_block(BlockPos::new(x, sy, z), BlockStateId::new(1));
+            for y in 1..=4 {
+                let _ = server
+                    .world_mut()
+                    .set_block(BlockPos::new(x, sy + y, z), BlockStateId::AIR);
+            }
+        }
+    }
+
     (server, client_conn, session_id, surface_y)
 }
 
@@ -295,6 +309,26 @@ fn test_zombie_death_drops_rotten_flesh() {
         .total_xp;
     assert_eq!(new_xp, initial_xp + 5, "Killing zombie should award 5 XP");
 
+    // Move player to dropped loot to pick it up
+    if let Some(&pos) = server.item_positions.values().next() {
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    on_ground: true,
+                })),
+            )
+            .unwrap();
+        for _ in 0..12 {
+            server.tick();
+        }
+    }
+
     // Verify rotten_flesh is in player's inventory
     let item_reg = server.registries().item_registry();
     let rf_id = item_reg
@@ -369,6 +403,26 @@ fn test_pig_death_drops_porkchop() {
         .unwrap()
         .total_xp;
     assert_eq!(new_xp, initial_xp + 2, "Killing pig should award 2 XP");
+
+    // Move player to dropped loot to pick it up
+    if let Some(&pos) = server.item_positions.values().next() {
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    on_ground: true,
+                })),
+            )
+            .unwrap();
+        for _ in 0..12 {
+            server.tick();
+        }
+    }
 
     let item_reg = server.registries().item_registry();
     let pc_id = item_reg

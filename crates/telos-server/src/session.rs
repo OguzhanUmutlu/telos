@@ -93,6 +93,8 @@ pub struct PlayerSession {
     pub move_mode: MoveMode,
     /// Accumulated fall distance in blocks for fall damage calculation.
     pub fall_distance: f32,
+    /// Currently selected hotbar slot index (0..=8).
+    pub selected_slot: u8,
     /// Name of the world/dimension this session currently resides in.
     pub world_name: String,
 }
@@ -173,6 +175,7 @@ impl PlayerSession {
             teleport_id_counter: 0,
             awaiting_teleport: None,
             move_mode: MoveMode::Walk,
+            selected_slot: 0,
             world_name: "overworld".to_string(),
         }
     }

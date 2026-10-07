@@ -681,6 +681,28 @@ fn handle_drop_click(inv: &mut Inventory, slot_idx: usize, button: ClickButton) 
     }
 }
 
+/// Returns the item stack dropped when a block with `block_id` is broken in survival mode.
+#[must_use]
+pub const fn block_to_drop_item(block_id: u32) -> Option<ItemStack> {
+    match block_id {
+        0 | 4 | 6 | 8 | 9 | 31..=34 | 37..=50 | 80 => None, // Air, bedrock, fluids, leaves, glass, spawners drop nothing
+        1 | 35 | 79 => Some(ItemStack::new(4, 1)), // Stone / Cobblestone / Mossy Cobblestone -> Cobblestone
+        2 | 3 => Some(ItemStack::new(2, 1)),       // Dirt / Grass Block -> Dirt
+        5 => Some(ItemStack::new(12, 1)),          // Sand
+        7 => Some(ItemStack::new(7, 1)),           // Planks
+        10 => Some(ItemStack::new(10, 1)),         // Slab
+        11 => Some(ItemStack::new(11, 1)),         // Stairs
+        12 => Some(ItemStack::new(54, 1)),         // Coal ore -> Coal
+        13 => Some(ItemStack::new(52, 1)),         // Iron ore -> Iron Ingot
+        14 => Some(ItemStack::new(53, 1)),         // Gold ore -> Gold Ingot
+        15 => Some(ItemStack::new(20, 1)),         // Diamond ore -> Diamond
+        36 => Some(ItemStack::new(36, 1)),         // Obsidian
+        74..=76 => Some(ItemStack::new(5, 1)),     // Logs -> Wood Log
+        81 => Some(ItemStack::new(66, 1)),         // Chest
+        other => Some(ItemStack::new(other, 1)),   // Default self-drop
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

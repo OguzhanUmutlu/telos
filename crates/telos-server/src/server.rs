@@ -1,6 +1,6 @@
 //! Authoritative game server ticking at 20 TPS with session management and chunk streaming.
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use hashbrown::HashMap;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -18,10 +18,10 @@ use telos_protocol::messages::{
     C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload,
     NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate,
     S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent,
-    S2cPlayerMovementAck, S2cRegistryData, S2cSpawnEntity, S2cUniformChunk, S2cUpdateEffects,
-    S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnEntity, S2cSpawnItem,
+    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -29,11 +29,13 @@ use telos_sim::command::{
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
     ARMOR_SLOTS, AiState, AttackCooldown, AttributeKind, Attributes, CombatTracker, DamageType,
-    EffectInstance, EnchantmentKind, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
-    ItemStack, Mob, MobBundle, MoveMode, NetEntity, PlayerPositions, Position, PotionType,
-    Rotation, SimParams, SimulationFrozen, StatusEffectKind, StatusEffects, TargetablePlayer,
-    Velocity, WeatherKind, WeatherState, apply_mitigated_damage, build_sim_schedule,
-    calculate_total_epf,
+    EffectInstance, EnchantmentKind, EntityType, Experience, Health, Hunger, HurtTime,
+    ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS, ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack,
+    Mob, MobBundle, MoveMode, NetEntity, PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position,
+    PotionType, Rotation, SimParams, SimulationFrozen, StatusEffectKind, StatusEffects,
+    TargetablePlayer, Velocity, WeatherKind, WeatherState, apply_mitigated_damage,
+    block_to_drop_item, build_sim_schedule, calculate_total_epf, merge_item_stacks,
+    tick_item_physics_step,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -106,6 +108,10 @@ pub struct Server {
     pub mob_positions: HashMap<u32, DVec3>,
     /// Last known yaw of mobs for delta rotation broadcasting.
     pub mob_yaws: HashMap<u32, f32>,
+    /// Active dropped item entities keyed by their network ID.
+    pub tracked_items: HashMap<u32, bevy_ecs::entity::Entity>,
+    /// Last known positions of items for delta move broadcasting.
+    pub item_positions: HashMap<u32, DVec3>,
     /// Tick count when natural mob spawning last ran.
     pub last_mob_spawn_tick: u64,
     /// Active monster spawners tracked by the server.
@@ -285,6 +291,8 @@ impl Server {
             tracked_mobs: HashMap::new(),
             mob_positions: HashMap::new(),
             mob_yaws: HashMap::new(),
+            tracked_items: HashMap::new(),
+            item_positions: HashMap::new(),
             last_mob_spawn_tick: 0,
             active_spawners: HashMap::new(),
             command_dispatcher,
@@ -347,7 +355,9 @@ impl Server {
         let bundle = match entity_type {
             EntityType::Pig => MobBundle::new_pig(net_id, pos, seed),
             EntityType::Cow => MobBundle::new_cow(net_id, pos, seed),
-            EntityType::Zombie | EntityType::Player => MobBundle::new_zombie(net_id, pos, seed),
+            EntityType::Zombie | EntityType::Player | EntityType::Item => {
+                MobBundle::new_zombie(net_id, pos, seed)
+            }
         };
         let health = bundle.health.cur;
         let entity = self
@@ -389,6 +399,82 @@ impl Server {
             self.ecs_world.despawn(entity);
             self.mob_positions.remove(&net_id);
             self.mob_yaws.remove(&net_id);
+
+            let despawn_msg = S2cMessage::DespawnEntity(S2cDespawnEntity {
+                net_ids: BoundedVec::new(vec![net_id]).expect("single net_id"),
+            });
+
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(despawn_msg.clone()));
+                }
+            }
+        }
+    }
+
+    /// Spawns a dropped item entity in the specified world at `pos` with initial `vel`.
+    pub fn spawn_item_entity(
+        &mut self,
+        world_name: &str,
+        pos: DVec3,
+        vel: Vec3,
+        stack: ItemStack,
+        pickup_delay: u16,
+    ) -> u32 {
+        if stack.is_empty() {
+            return 0;
+        }
+
+        let net_id = self.next_entity_id;
+        self.next_entity_id += 1;
+
+        let item_component = ItemEntity::new(stack, pickup_delay);
+        let entity = self
+            .ecs_world
+            .spawn((
+                NetEntity {
+                    net_id,
+                    entity_type: EntityType::Item,
+                },
+                Position(pos),
+                Velocity(vel),
+                item_component,
+            ))
+            .id();
+
+        self.tracked_items.insert(net_id, entity);
+        self.item_positions.insert(net_id, pos);
+
+        let spawn_msg = S2cMessage::SpawnItem(S2cSpawnItem {
+            net_id,
+            item_id: stack.item,
+            count: stack.count,
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+            vel_x: vel.x,
+            vel_y: vel.y,
+            vel_z: vel.z,
+        });
+
+        for s in self.sessions.values_mut() {
+            if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                let _ = s
+                    .connection
+                    .send(Lane::Control, Payload::Msg(spawn_msg.clone()));
+            }
+        }
+
+        net_id
+    }
+
+    /// Despawns a dropped item entity by its network ID.
+    pub fn despawn_item_entity(&mut self, net_id: u32) {
+        if let Some(entity) = self.tracked_items.remove(&net_id) {
+            self.ecs_world.despawn(entity);
+            self.item_positions.remove(&net_id);
 
             let despawn_msg = S2cMessage::DespawnEntity(S2cDespawnEntity {
                 net_ids: BoundedVec::new(vec![net_id]).expect("single net_id"),
@@ -458,60 +544,51 @@ impl Server {
             EntityType::Zombie => (5, vec![("rotten_flesh", count_1_to_2)]),
             EntityType::Pig => (2, vec![("porkchop", count_1_to_3)]),
             EntityType::Cow => (2, vec![("beef", count_1_to_3), ("leather", count_0_to_2)]),
-            EntityType::Player => (0, Vec::new()),
+            EntityType::Player | EntityType::Item => (0, Vec::new()),
         };
 
-        // 4. Award XP and loot directly to killer if within reach
+        // 4. Award XP to killer if within reach
         if let Some(sid) = killer_session_id
             && let Some(session) = self.sessions.get_mut(&sid)
         {
             let dist = mob_pos.map_or(0.0, |p| session.position.distance(p));
             if dist <= 5.0
                 && let Some(ecs_ent) = session.ecs_entity
+                && let Some(mut xp) = self.ecs_world.get_mut::<Experience>(ecs_ent)
             {
-                if let Some(mut xp) = self.ecs_world.get_mut::<Experience>(ecs_ent) {
-                    xp.add_xp(xp_reward);
-                }
+                xp.add_xp(xp_reward);
+            }
+        }
 
-                if let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(ecs_ent) {
-                    let mut inventory_changed = false;
-                    for (item_name, count) in drops {
-                        if count > 0 {
-                            let ident = telos_core::ident::Identifier::new("telos", item_name).ok();
-                            if let Some(ident) = ident
-                                && let Some(item_id) =
-                                    self.registries.item_registry().get_by_ident(&ident)
-                                && inv.try_add_item(item_id, count) > 0
-                            {
-                                inventory_changed = true;
-                            }
-                        }
-                    }
-
-                    if inventory_changed {
-                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                        for slot in &inv.slots {
-                            slot_vec.push(SlotData {
-                                item: slot.item,
-                                count: slot.count,
-                            });
-                        }
-                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                            carried: SlotData {
-                                item: inv.carried.item,
-                                count: inv.carried.count,
-                            },
-                        });
-                        let _ = session
-                            .connection
-                            .send(Lane::Control, Payload::Msg(bulk_msg));
+        // 5. Spawn dropped item entities in world at mob position
+        if let Some(pos) = mob_pos {
+            let mut rng_pop = self.tick_count.wrapping_add(u64::from(net_id));
+            for (item_name, count) in drops {
+                if count > 0 {
+                    let ident = telos_core::ident::Identifier::new("telos", item_name).ok();
+                    if let Some(ident) = ident
+                        && let Some(item_id) = self.registries.item_registry().get_by_ident(&ident)
+                    {
+                        rng_pop = rng_pop
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1);
+                        let angle = (rng_pop % 360) as f32;
+                        let rad = angle.to_radians();
+                        let speed = 0.15f32;
+                        let vel = glam::Vec3::new(rad.cos() * speed, 0.25, rad.sin() * speed);
+                        self.spawn_item_entity(
+                            "overworld",
+                            pos + DVec3::new(0.0, 0.5, 0.0),
+                            vel,
+                            ItemStack::new(item_id, count),
+                            10,
+                        );
                     }
                 }
             }
         }
 
-        // 5. Despawn mob
+        // 6. Despawn mob
         self.despawn_mob(net_id);
     }
 
@@ -520,6 +597,243 @@ impl Server {
         let mob_ids: Vec<u32> = self.tracked_mobs.keys().copied().collect();
         for id in mob_ids {
             self.despawn_mob(id);
+        }
+    }
+
+    /// Advances physics simulation, proximity stack merging, player pickup,
+    /// and despawn lifecycles for all active dropped item entities.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    pub fn tick_item_entities(&mut self) {
+        let item_entries: Vec<(u32, bevy_ecs::entity::Entity)> =
+            self.tracked_items.iter().map(|(&k, &v)| (k, v)).collect();
+
+        if item_entries.is_empty() {
+            return;
+        }
+
+        let mut to_despawn = Vec::new();
+
+        // 1. Physics step and aging
+        for (net_id, entity) in &item_entries {
+            let Some((pos, vel, mut item_comp)) =
+                self.ecs_world.get_entity(*entity).ok().and_then(|ent| {
+                    let p = *ent.get::<Position>()?;
+                    let v = *ent.get::<Velocity>()?;
+                    let i = *ent.get::<ItemEntity>()?;
+                    Some((p, v, i))
+                })
+            else {
+                continue;
+            };
+
+            // Increment age and decrement pickup delay
+            item_comp.age = item_comp.age.saturating_add(1);
+            item_comp.pickup_delay = item_comp.pickup_delay.saturating_sub(1);
+
+            if item_comp.age >= ITEM_DESPAWN_TICKS || item_comp.stack.is_empty() {
+                to_despawn.push(*net_id);
+                continue;
+            }
+
+            // Physics step against world terrain
+            let world = self.worlds.default_world();
+            let is_solid = |bx: i32, by: i32, bz: i32| -> bool {
+                let state = world.get_loaded_block(BlockPos::new(bx, by, bz));
+                state.0 != 0 && state.0 != 8 && state.0 != 9
+            };
+
+            let mut cur_pos = pos.0;
+            let mut cur_vel = vel.0;
+            tick_item_physics_step(&mut cur_pos, &mut cur_vel, is_solid);
+
+            // Write back updated components
+            if let Ok(mut ent) = self.ecs_world.get_entity_mut(*entity) {
+                if let Some(mut p) = ent.get_mut::<Position>() {
+                    p.0 = cur_pos;
+                }
+                if let Some(mut v) = ent.get_mut::<Velocity>() {
+                    v.0 = cur_vel;
+                }
+                if let Some(mut i) = ent.get_mut::<ItemEntity>() {
+                    *i = item_comp;
+                }
+            }
+        }
+
+        for id in to_despawn {
+            self.despawn_item_entity(id);
+        }
+
+        // 2. Proximity stack merging (matching items within 1.5 blocks)
+        let active_items: Vec<(u32, bevy_ecs::entity::Entity, DVec3, u32)> = self
+            .tracked_items
+            .iter()
+            .filter_map(|(&net_id, &entity)| {
+                let pos = self.ecs_world.get::<Position>(entity)?.0;
+                let item = self.ecs_world.get::<ItemEntity>(entity)?.stack.item;
+                Some((net_id, entity, pos, item))
+            })
+            .collect();
+
+        let mut merged_despawns = Vec::new();
+        for i in 0..active_items.len() {
+            let (net_a, ent_a, pos_a, item_a) = active_items[i];
+            if merged_despawns.contains(&net_a) {
+                continue;
+            }
+
+            for &(net_b, ent_b, pos_b, item_b) in active_items.iter().skip(i + 1) {
+                if merged_despawns.contains(&net_b) || item_a != item_b {
+                    continue;
+                }
+
+                if pos_a.distance_squared(pos_b) <= ITEM_MERGE_RADIUS * ITEM_MERGE_RADIUS {
+                    let stacks = {
+                        let sa = self.ecs_world.get::<ItemEntity>(ent_a).map(|e| e.stack);
+                        let sb = self.ecs_world.get::<ItemEntity>(ent_b).map(|e| e.stack);
+                        match (sa, sb) {
+                            (Some(a), Some(b)) => Some((a, b)),
+                            _ => None,
+                        }
+                    };
+                    if let Some((mut stack_a, mut stack_b)) = stacks
+                        && merge_item_stacks(&mut stack_a, &mut stack_b)
+                    {
+                        if let Some(mut comp_a) = self.ecs_world.get_mut::<ItemEntity>(ent_a) {
+                            comp_a.stack = stack_a;
+                        }
+                        if let Some(mut comp_b) = self.ecs_world.get_mut::<ItemEntity>(ent_b) {
+                            comp_b.stack = stack_b;
+                        }
+                        if stack_b.count == 0 {
+                            merged_despawns.push(net_b);
+                        }
+                    }
+                }
+            }
+        }
+
+        for id in merged_despawns {
+            self.despawn_item_entity(id);
+        }
+
+        // 3. Player proximity pickup check (survival players <= 1.5 blocks with pickup_delay == 0)
+        let mut picked_up_despawns = Vec::new();
+        let player_candidates: Vec<(u64, bevy_ecs::entity::Entity, DVec3)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.move_mode == MoveMode::Walk)
+            .filter_map(|(&sid, s)| s.ecs_entity.map(|e| (sid, e, s.position)))
+            .collect();
+
+        for (&net_id, &entity) in &self.tracked_items {
+            let Some((item_pos, item_comp)) =
+                self.ecs_world.get_entity(entity).ok().and_then(|ent| {
+                    let p = ent.get::<Position>()?.0;
+                    let i = *ent.get::<ItemEntity>()?;
+                    Some((p, i))
+                })
+            else {
+                continue;
+            };
+
+            if item_comp.pickup_delay > 0 || item_comp.stack.is_empty() {
+                continue;
+            }
+
+            for &(sid, player_ent, player_pos) in &player_candidates {
+                if player_pos.distance_squared(item_pos) <= ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS
+                {
+                    let mut stack_to_give = item_comp.stack;
+                    let inserted =
+                        if let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(player_ent) {
+                            inv.insert_into_storage_or_hotbar(&mut stack_to_give)
+                        } else {
+                            0
+                        };
+
+                    if inserted > 0 {
+                        if let Some(mut comp) = self.ecs_world.get_mut::<ItemEntity>(entity) {
+                            comp.stack = stack_to_give;
+                        }
+
+                        if let Some(inv) = self.ecs_world.get::<Inventory>(player_ent) {
+                            let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                            for slot in &inv.slots {
+                                slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                carried: SlotData {
+                                    item: inv.carried.item,
+                                    count: inv.carried.count,
+                                },
+                            });
+                            if let Some(session) = self.sessions.get_mut(&sid) {
+                                let _ = session
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(bulk_msg));
+                            }
+                        }
+
+                        let particle_msg = S2cMessage::ParticleEvent(S2cParticleEvent {
+                            effect: ParticleEffectKind::Smoke,
+                            x: item_pos.x as f32,
+                            y: item_pos.y as f32 + 0.2,
+                            z: item_pos.z as f32,
+                            count: 6,
+                            speed: 0.08,
+                            block_state_id: 0,
+                        });
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(particle_msg.clone()));
+                            }
+                        }
+
+                        if stack_to_give.is_empty() {
+                            picked_up_despawns.push(net_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        for id in picked_up_despawns {
+            self.despawn_item_entity(id);
+        }
+
+        // 4. Movement delta broadcast if item moved noticeably
+        for (&net_id, &entity) in &self.tracked_items {
+            if let Some(pos) = self.ecs_world.get::<Position>(entity) {
+                let prev_pos = self.item_positions.get(&net_id).copied().unwrap_or(pos.0);
+                if pos.0.distance_squared(prev_pos) > 0.001 {
+                    self.item_positions.insert(net_id, pos.0);
+                    let move_msg = S2cMessage::EntityMove(S2cEntityMove {
+                        net_id,
+                        x: pos.0.x,
+                        y: pos.0.y,
+                        z: pos.0.z,
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        head_yaw: 0.0,
+                        on_ground: false,
+                    });
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(move_msg.clone()));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1241,6 +1555,30 @@ impl Server {
                                     }
                                 }
 
+                                // Send active items to joining client
+                                for (&net_id, &entity) in &self.tracked_items {
+                                    if let (Some(pos), Some(vel), Some(item)) = (
+                                        self.ecs_world.get::<Position>(entity),
+                                        self.ecs_world.get::<Velocity>(entity),
+                                        self.ecs_world.get::<ItemEntity>(entity),
+                                    ) {
+                                        let spawn_msg = S2cMessage::SpawnItem(S2cSpawnItem {
+                                            net_id,
+                                            item_id: item.stack.item,
+                                            count: item.stack.count,
+                                            x: pos.0.x,
+                                            y: pos.0.y,
+                                            z: pos.0.z,
+                                            vel_x: vel.0.x,
+                                            vel_y: vel.0.y,
+                                            vel_z: vel.0.z,
+                                        });
+                                        let _ = session
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(spawn_msg));
+                                    }
+                                }
+
                                 // Send initial movement state to synchronize client prediction
                                 let initial_ack =
                                     S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
@@ -1480,6 +1818,65 @@ impl Server {
                         && let Some(mut effects) = self.ecs_world.get_mut::<StatusEffects>(entity)
                     {
                         effects.apply(effect);
+                    }
+                }
+                PlayerCommandKind::DropItem { entire_stack } => {
+                    let (selected_slot, world_name, pitch) = match self.sessions.get(&session_id) {
+                        Some(s) => (s.selected_slot, s.world_name.clone(), s.pitch),
+                        None => (0, "overworld".to_string(), 0.0),
+                    };
+                    let drop_info = if let Some(entity) = entity
+                        && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+                    {
+                        let slot_idx = selected_slot as usize;
+                        if slot_idx < inv.slots.len() && !inv.slots[slot_idx].is_empty() {
+                            let slot = &mut inv.slots[slot_idx];
+                            let drop_count = if entire_stack { slot.count } else { 1 };
+                            let item_id = slot.item;
+                            slot.count -= drop_count;
+                            slot.normalize();
+                            Some((item_id, drop_count, slot.item, slot.count))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some((drop_item, drop_count, remaining_item, remaining_count)) =
+                        drop_info
+                    {
+                        let yaw_rad = session_yaw.to_radians();
+                        let pitch_rad = pitch.to_radians();
+                        let throw_speed = 0.3f32;
+                        let forward_x = -yaw_rad.sin() * pitch_rad.cos();
+                        let forward_y = -pitch_rad.sin() + 0.1;
+                        let forward_z = -yaw_rad.cos() * pitch_rad.cos();
+                        let vel = glam::Vec3::new(
+                            forward_x * throw_speed,
+                            forward_y * throw_speed + 0.1,
+                            forward_z * throw_speed,
+                        );
+
+                        let drop_pos = session_pos + DVec3::new(0.0, 1.3, 0.0);
+                        self.spawn_item_entity(
+                            &world_name,
+                            drop_pos,
+                            vel,
+                            ItemStack::new(drop_item, drop_count),
+                            PLAYER_DROP_PICKUP_DELAY,
+                        );
+
+                        let slot_update = S2cMessage::InventorySlot(S2cInventorySlot {
+                            slot: u16::from(selected_slot),
+                            item: remaining_item,
+                            count: remaining_count,
+                        });
+                        if let Some(session) = self.sessions.get_mut(&session_id) {
+                            let _ = session
+                                .connection
+                                .send(Lane::Control, Payload::Msg(slot_update));
+                        }
                     }
                 }
             }
@@ -2000,6 +2397,7 @@ impl Server {
         }
 
         // 4. Process block actions (authoritative validation & simulation)
+        let mut dropped_items_to_spawn = Vec::new();
         for (session_id, action) in block_actions {
             let Some(session) = self.sessions.get(&session_id) else {
                 continue;
@@ -2106,6 +2504,23 @@ impl Server {
                                 old_state,
                                 actor_net_id: Some(u64::from(session.entity_id)),
                             });
+
+                            if session.move_mode == MoveMode::Walk
+                                && let Some(drop_stack) = block_to_drop_item(old_state.0)
+                            {
+                                let spawn_pos = DVec3::new(
+                                    f64::from(target_pos.x()) + 0.5,
+                                    f64::from(target_pos.y()) + 0.25,
+                                    f64::from(target_pos.z()) + 0.5,
+                                );
+                                let vel = glam::Vec3::new(0.0, 0.1, 0.0);
+                                dropped_items_to_spawn.push((
+                                    session_world_name.clone(),
+                                    spawn_pos,
+                                    vel,
+                                    drop_stack,
+                                ));
+                            }
                         }
                         BlockActionKind::Place { .. } => {
                             self.event_queue.push(GameEvent::BlockPlaced {
@@ -2206,6 +2621,10 @@ impl Server {
             }
         }
 
+        for (w_name, pos, vel, stack) in dropped_items_to_spawn {
+            self.spawn_item_entity(&w_name, pos, vel, stack, 0);
+        }
+
         // 4c. Process player movement inputs and authoritative simulation
         for session in self.sessions.values_mut() {
             if session.phase != ConnectionPhase::Play {
@@ -2219,6 +2638,7 @@ impl Server {
                     break;
                 };
 
+                session.selected_slot = frame.hotbar;
                 if session.awaiting_teleport.is_none() {
                     telos_sim::simulate_movement_step(
                         &mut session.move_state,
@@ -2876,6 +3296,9 @@ impl Server {
                 }
             }
         }
+
+        // 9b. Advance dropped item physics, merging, and player pickup
+        self.tick_item_entities();
 
         // 10. Tick deterministic logic simulation engine across all loaded worlds
         for (world_name, world) in self.worlds.iter_mut() {

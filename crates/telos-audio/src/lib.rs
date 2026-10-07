@@ -15,6 +15,6 @@ pub use source::SoundBuffer;
 pub use spatial::{Listener, calculate_spatial_gains};
 pub use synth::{
     SYNTH_SAMPLE_RATE, synthesize_block_break, synthesize_block_place, synthesize_entity_hurt,
-    synthesize_footstep, synthesize_rain_loop, synthesize_thunder,
+    synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop, synthesize_thunder,
 };
 pub use telos_content::sound::{BlockSoundGroup, SoundCategory, SoundEvent};

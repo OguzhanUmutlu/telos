@@ -19,8 +19,8 @@ pub use play::{
     PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
     S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
     S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity, S2cUniformChunk,
-    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity, S2cSpawnItem,
+    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
     decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
@@ -240,6 +240,8 @@ pub enum S2cMessage {
     ParticleEvent(S2cParticleEvent),
     /// Play phase entity status effects synchronization.
     UpdateEffects(S2cUpdateEffects),
+    /// Play phase dropped item entity spawn.
+    SpawnItem(S2cSpawnItem),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -276,7 +278,8 @@ impl S2cMessage {
             | Self::CommandSuggestions(_)
             | Self::PlayerMovementAck(_)
             | Self::ParticleEvent(_)
-            | Self::UpdateEffects(_) => Some(ConnectionPhase::Play),
+            | Self::UpdateEffects(_)
+            | Self::SpawnItem(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -311,6 +314,7 @@ impl S2cMessage {
             Self::PlayerMovementAck(_) => 20,
             Self::ParticleEvent(_) => 21,
             Self::UpdateEffects(_) => 22,
+            Self::SpawnItem(_) => 23,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -345,6 +349,7 @@ impl S2cMessage {
             Self::PlayerMovementAck(m) => m.encode(buf),
             Self::ParticleEvent(m) => m.encode(buf),
             Self::UpdateEffects(m) => m.encode(buf),
+            Self::SpawnItem(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

@@ -15,7 +15,7 @@ use telos_protocol::messages::{
     LodPayload, ParticleEffectKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame,
     S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent,
-    S2cRegistryData, S2cUniformChunk,
+    S2cRegistryData, S2cSpawnItem, S2cUniformChunk,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -184,6 +184,7 @@ fn test_c2s_messages_roundtrip() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_s2c_messages_roundtrip() {
     let messages = vec![
         S2cMessage::HelloReply(S2cHelloReply {
@@ -264,6 +265,17 @@ fn test_s2c_messages_roundtrip() {
             count: 12,
             speed: 0.25,
             block_state_id: 15,
+        }),
+        S2cMessage::SpawnItem(S2cSpawnItem {
+            net_id: 88,
+            item_id: 5,
+            count: 3,
+            x: 10.0,
+            y: 65.0,
+            z: -12.0,
+            vel_x: 0.05,
+            vel_y: 0.1,
+            vel_z: -0.05,
         }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,

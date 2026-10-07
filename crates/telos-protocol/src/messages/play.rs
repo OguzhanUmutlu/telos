@@ -1460,6 +1460,11 @@ pub enum PlayerCommandKind {
         /// Potion type ID.
         potion_type: u8,
     },
+    /// Drop item currently held in player's selected hotbar slot.
+    DropItem {
+        /// If true, drops entire stack; if false, drops a single item.
+        entire_stack: bool,
+    },
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1834,6 +1839,10 @@ impl C2sPlayerCommand {
                 buf.push(11);
                 buf.push(potion_type);
             }
+            PlayerCommandKind::DropItem { entire_stack } => {
+                buf.push(12);
+                buf.push(u8::from(entire_stack));
+            }
         }
     }
 
@@ -1968,6 +1977,14 @@ impl C2sPlayerCommand {
                 let potion_type = cursor[0];
                 *cursor = &cursor[1..];
                 PlayerCommandKind::DrinkPotion { potion_type }
+            }
+            12 => {
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let entire_stack = cursor[0] != 0;
+                *cursor = &cursor[1..];
+                PlayerCommandKind::DropItem { entire_stack }
             }
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
@@ -2506,6 +2523,95 @@ impl S2cUpdateEffects {
     }
 }
 
+/// Server spawns a dropped item entity in the client's simulation area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cSpawnItem {
+    /// Network ID of the item entity.
+    pub net_id: u32,
+    /// Item identifier.
+    pub item_id: u32,
+    /// Number of items in the stack.
+    pub count: u16,
+    /// World position X.
+    pub x: f64,
+    /// World position Y.
+    pub y: f64,
+    /// World position Z.
+    pub z: f64,
+    /// Initial velocity X.
+    pub vel_x: f32,
+    /// Initial velocity Y.
+    pub vel_y: f32,
+    /// Initial velocity Z.
+    pub vel_z: f32,
+}
+
+impl S2cSpawnItem {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.net_id, buf);
+        encode_varint(self.item_id, buf);
+        encode_varint(u32::from(self.count), buf);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.vel_x.to_le_bytes());
+        buf.extend_from_slice(&self.vel_y.to_le_bytes());
+        buf.extend_from_slice(&self.vel_z.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_id = decode_varint(cursor)?;
+        let item_id = decode_varint(cursor)?;
+        let count_raw = decode_varint(cursor)?;
+        if count_raw == 0 || count_raw > 64 {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_item.count",
+                reason: "Item count must be 1..=64".to_string(),
+            });
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let count = count_raw as u16;
+
+        if cursor.len() < 36 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f64::from_le_bytes(cursor[0..8].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        let vel_x = f32::from_le_bytes(cursor[24..28].try_into().unwrap());
+        let vel_y = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
+        let vel_z = f32::from_le_bytes(cursor[32..36].try_into().unwrap());
+        *cursor = &cursor[36..];
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_item.pos",
+                reason: "Coordinates must be finite".to_string(),
+            });
+        }
+        if !vel_x.is_finite() || !vel_y.is_finite() || !vel_z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_item.vel",
+                reason: "Velocity components must be finite".to_string(),
+            });
+        }
+
+        Ok(Self {
+            net_id,
+            item_id,
+            count,
+            x,
+            y,
+            z,
+            vel_x,
+            vel_y,
+            vel_z,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2778,5 +2884,40 @@ mod tests {
         let decoded_cmd =
             C2sPlayerCommand::decode(&mut cursor).expect("failed to decode C2sPlayerCommand");
         assert_eq!(cmd_effect, decoded_cmd);
+    }
+
+    #[test]
+    fn test_spawn_item_codec_round_trip() {
+        let msg = S2cSpawnItem {
+            net_id: 42,
+            item_id: 4,
+            count: 16,
+            x: 10.5,
+            y: 64.25,
+            z: -20.75,
+            vel_x: 0.1,
+            vel_y: 0.2,
+            vel_z: -0.15,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded = S2cSpawnItem::decode(&mut cursor).expect("failed to decode S2cSpawnItem");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_drop_item_command_codec_round_trip() {
+        let cmd = C2sPlayerCommand {
+            command: PlayerCommandKind::DropItem { entire_stack: true },
+        };
+        let mut buf = Vec::new();
+        cmd.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded =
+            C2sPlayerCommand::decode(&mut cursor).expect("failed to decode C2sPlayerCommand");
+        assert_eq!(cmd, decoded);
+        assert!(cursor.is_empty());
     }
 }

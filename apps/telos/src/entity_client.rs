@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use glam::{DVec3, Quat, Vec2, Vec3};
 use hashbrown::HashMap;
-use telos_protocol::messages::{S2cEntityMove, S2cSpawnEntity};
+use telos_protocol::messages::{S2cEntityMove, S2cSpawnEntity, S2cSpawnItem};
 use telos_sim::EntityType;
 
 /// GPU vertex format for instanced dynamic entity rendering.
@@ -93,6 +93,10 @@ pub struct ClientEntity {
     pub health: f32,
     /// Maximum health points.
     pub max_health: f32,
+    /// Item ID if this entity is a dropped item (`EntityType::Item`).
+    pub item_id: u32,
+    /// Item stack count if this entity is a dropped item.
+    pub item_count: u16,
     /// Ring buffer of historical entity snapshots for interpolation.
     pub snapshots: VecDeque<EntitySnapshot>,
 }
@@ -127,6 +131,42 @@ impl ClientEntity {
             death_timer: 0.0,
             health: msg.health,
             max_health: msg.max_health,
+            item_id: 0,
+            item_count: 0,
+            snapshots,
+        }
+    }
+
+    /// Creates a new `ClientEntity` representing a dropped item entity initialized from an `S2cSpawnItem` packet.
+    #[must_use]
+    pub fn from_spawn_item(msg: S2cSpawnItem, now: f64) -> Self {
+        let pos = DVec3::new(msg.x, msg.y, msg.z);
+        let snap = EntitySnapshot {
+            timestamp: now,
+            pos,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+        };
+        let mut snapshots = VecDeque::with_capacity(16);
+        snapshots.push_back(snap);
+        Self {
+            net_id: msg.net_id,
+            entity_type: EntityType::Item,
+            pos,
+            target_pos: pos,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            target_yaw: 0.0,
+            walk_time: 0.0,
+            hurt_timer: 0.0,
+            attack_swing_timer: 0.0,
+            death_timer: 0.0,
+            health: 5.0,
+            max_health: 5.0,
+            item_id: msg.item_id,
+            item_count: msg.count,
             snapshots,
         }
     }
@@ -171,6 +211,14 @@ impl ClientEntityStore {
     pub fn on_spawn(&mut self, msg: S2cSpawnEntity) {
         self.entities
             .insert(msg.net_id, ClientEntity::from_spawn(msg, self.current_time));
+    }
+
+    /// Handles an incoming `S2cSpawnItem` packet.
+    pub fn on_spawn_item(&mut self, msg: S2cSpawnItem) {
+        self.entities.insert(
+            msg.net_id,
+            ClientEntity::from_spawn_item(msg, self.current_time),
+        );
     }
 
     /// Handles an incoming `S2cDespawnEntity` packet.
@@ -323,13 +371,19 @@ impl ClientEntityStore {
                 entity.snapshots.pop_front();
             }
 
-            // Accumulate walk animation when entity moves horizontally
-            let delta = entity.pos - prev_pos;
-            let horiz_dist_sq = delta.x * delta.x + delta.z * delta.z;
-            if horiz_dist_sq > 1e-6 {
+            // Accumulate walk animation when entity moves horizontally, or spin items
+            if entity.entity_type == EntityType::Item {
                 entity.walk_time += dt;
+                entity.yaw = (entity.yaw + 90.0 * dt) % 360.0;
+                entity.target_yaw = entity.yaw;
             } else {
-                entity.walk_time = (entity.walk_time - dt * 2.0).max(0.0);
+                let delta = entity.pos - prev_pos;
+                let horiz_dist_sq = delta.x * delta.x + delta.z * delta.z;
+                if horiz_dist_sq > 1e-6 {
+                    entity.walk_time += dt;
+                } else {
+                    entity.walk_time = (entity.walk_time - dt * 2.0).max(0.0);
+                }
             }
         }
     }
@@ -342,7 +396,7 @@ impl ClientEntityStore {
         let mut closest_hit: Option<(u32, f32)> = None;
 
         for entity in self.entities.values() {
-            if entity.death_timer > 0.0 {
+            if entity.death_timer > 0.0 || entity.entity_type == EntityType::Item {
                 continue;
             }
             let aabb = entity.entity_type.default_aabb();
@@ -380,7 +434,7 @@ impl ClientEntityStore {
                 0.0
             };
             let layer = match entity.entity_type {
-                EntityType::Zombie | EntityType::Player => 0,
+                EntityType::Zombie | EntityType::Player | EntityType::Item => 0,
                 EntityType::Pig => 1,
                 EntityType::Cow => 2,
             };
@@ -419,9 +473,41 @@ impl ClientEntityStore {
                         out_vertices,
                     );
                 }
+                EntityType::Item => {
+                    build_item_mesh(entity, sky, block, hurt_tint, out_vertices);
+                }
             }
         }
     }
+}
+
+fn build_item_mesh(
+    entity: &ClientEntity,
+    sky: u8,
+    block: u8,
+    hurt_tint: f32,
+    out: &mut Vec<EntityVertexGpu>,
+) {
+    let bob_y = (entity.walk_time * 3.0).sin() * 0.08 + 0.12;
+    let item_pos = entity.pos + DVec3::new(0.0, f64::from(bob_y), 0.0);
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians());
+
+    // Small 4x4x4 pixel (0.25m) floating item box centered horizontally
+    emit_cuboid(
+        item_pos,
+        body_quat,
+        0.0,
+        Vec3::new(0.0, 2.0 * S, 0.0),
+        Vec3::ZERO,
+        Vec3::new(-2.0 * S, 0.0, -2.0 * S),
+        Vec3::new(2.0 * S, 4.0 * S, 2.0 * S),
+        (0.0, 0.0, 4.0, 4.0, 4.0),
+        sky,
+        block,
+        0,
+        hurt_tint,
+        out,
+    );
 }
 
 // ----------------------------------------------------------------------------
@@ -1165,5 +1251,43 @@ mod tests {
         // 5. Update past 1.0s total -> entity cleanly removed from store
         store.update(0.6);
         assert!(store.get(10).is_none());
+    }
+
+    #[test]
+    fn test_item_entity_spawn_bob_and_mesh() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn_item(S2cSpawnItem {
+            net_id: 42,
+            item_id: 1, // stone
+            count: 64,
+            x: 10.0,
+            y: 65.0,
+            z: 20.0,
+            vel_x: 0.0,
+            vel_y: 0.0,
+            vel_z: 0.0,
+        });
+
+        assert_eq!(store.count(), 1);
+        let item = store.get(42).unwrap();
+        assert_eq!(item.entity_type, EntityType::Item);
+        assert_eq!(item.item_id, 1);
+        assert_eq!(item.item_count, 64);
+
+        // Raycasting should NOT hit item entities
+        let hit = store.raycast(DVec3::new(10.0, 65.0, 15.0), Vec3::new(0.0, 0.0, 1.0), 10.0);
+        assert!(hit.is_none());
+
+        // Update 0.5s: yaw advances by 45 degrees (90 deg/s)
+        store.update(0.5);
+        let item_updated = store.get(42).unwrap();
+        assert!((item_updated.yaw - 45.0).abs() < 1e-3);
+        assert!((item_updated.walk_time - 0.5).abs() < 1e-4);
+
+        // Build mesh: 1 item cuboid emits 36 vertices (6 faces * 6 vertices)
+        let mut vertices = Vec::new();
+        store.build_mesh(|_| (15, 0), &mut vertices);
+        assert_eq!(vertices.len(), 36);
     }
 }

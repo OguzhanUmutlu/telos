@@ -5,7 +5,7 @@ use crate::source::SoundBuffer;
 use crate::spatial::{Listener, calculate_spatial_gains};
 use crate::synth::{
     SYNTH_SAMPLE_RATE, synthesize_block_break, synthesize_block_place, synthesize_entity_hurt,
-    synthesize_footstep, synthesize_rain_loop, synthesize_thunder,
+    synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop, synthesize_thunder,
 };
 use glam::Vec3;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
@@ -264,6 +264,13 @@ impl AudioEngine {
             16.0,
             160.0,
         );
+    }
+
+    /// Dispatches a procedural item pickup chime sound at the player position.
+    pub fn play_item_pickup(&mut self, pos: Vec3) {
+        let samples = synthesize_item_pickup();
+        let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
+        self.play_sound_3d(SoundCategory::Players, &buffer, pos, 0.8, 1.0, 1.0, 16.0);
     }
 
     /// Loads and caches an in-memory OGG/WAV sound buffer.
