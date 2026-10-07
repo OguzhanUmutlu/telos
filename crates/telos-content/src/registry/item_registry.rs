@@ -122,6 +122,18 @@ impl ItemRegistry {
         self.get(id).and_then(ItemDef::armor_slot)
     }
 
+    /// Returns the armor defense value for an item ID.
+    #[must_use]
+    pub fn armor_defense(&self, id: u32) -> u32 {
+        self.get(id).map_or(0, ItemDef::armor_defense)
+    }
+
+    /// Returns the armor toughness value for an item ID.
+    #[must_use]
+    pub fn armor_toughness(&self, id: u32) -> f32 {
+        self.get(id).map_or(0.0, ItemDef::armor_toughness)
+    }
+
     /// Returns the placed block identifier if this item is a block item.
     #[must_use]
     pub fn placed_block(&self, id: u32) -> Option<&str> {

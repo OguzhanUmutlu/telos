@@ -43,9 +43,9 @@ pub use enchantment::{
     CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
 };
 pub use entity::{
-    AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PathFollower,
-    PlayerPositions, Position, Rotation, SimulationFrozen, Velocity, mob_ai_system,
-    mob_hurt_decay_system, mob_movement_system,
+    AiState, AttackCooldown, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity,
+    PathFollower, PlayerPositions, Position, Rotation, SimulationFrozen, TargetablePlayer,
+    Velocity, has_line_of_sight, mob_ai_system, mob_hurt_decay_system, mob_movement_system,
 };
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{

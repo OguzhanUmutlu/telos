@@ -507,6 +507,10 @@ impl LanguageCatalog {
             ("item.telos.wooden_pickaxe", "Wooden Pickaxe"),
             ("item.telos.stone_pickaxe", "Stone Pickaxe"),
             ("item.telos.iron_sword", "Iron Sword"),
+            ("item.telos.rotten_flesh", "Rotten Flesh"),
+            ("item.telos.porkchop", "Raw Porkchop"),
+            ("item.telos.beef", "Raw Beef"),
+            ("item.telos.leather", "Leather"),
         ];
 
         for (k, v) in en_pairs {

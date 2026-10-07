@@ -1274,5 +1274,37 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
                 item_type: ItemTypeDef::Generic,
             },
         ),
+        (
+            "rotten_flesh",
+            ItemDef {
+                name: "Rotten Flesh".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "porkchop",
+            ItemDef {
+                name: "Raw Porkchop".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "beef",
+            ItemDef {
+                name: "Raw Beef".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "leather",
+            ItemDef {
+                name: "Leather".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
     ]
 }

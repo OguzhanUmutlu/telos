@@ -1320,6 +1320,7 @@ struct App {
     mouse_cursor_pos: [f32; 2],
     inventory_hovered_slot: Option<usize>,
     shift_held: bool,
+    player_hurt_timer: f32,
 
     // Day/Night & Celestial Rendering
     client_time_of_day: f32,
@@ -1768,6 +1769,7 @@ impl App {
             mouse_cursor_pos: [0.0, 0.0],
             inventory_hovered_slot: None,
             shift_held: false,
+            player_hurt_timer: 0.0,
 
             client_time_of_day: 6000.0,
             client_world_age: 0,
@@ -1999,6 +2001,17 @@ impl App {
                 cursor: self.chat_state.cursor_pos as u32,
             });
             let _ = self.client_conn.send(Lane::Control, Payload::Msg(req));
+        }
+    }
+
+    fn update_player_hurt_tilt(&mut self, dt: f32) {
+        if self.player_hurt_timer > 0.0 {
+            self.player_hurt_timer = (self.player_hurt_timer - dt).max(0.0);
+            let progress = (self.player_hurt_timer / 0.4).clamp(0.0, 1.0);
+            let tilt_deg = (progress * std::f32::consts::PI).sin() * 12.0;
+            self.camera.roll = tilt_deg.to_radians();
+        } else {
+            self.camera.roll = 0.0;
         }
     }
 
@@ -2315,6 +2328,10 @@ impl App {
                         self.client_time_of_day = server_time;
                     }
                     S2cMessage::UpdateStats(stats) => {
+                        if stats.health < self.hud_state.health {
+                            self.player_hurt_timer = 0.4;
+                            self.audio.play_procedural_hurt(self.camera.position, 1.0);
+                        }
                         self.hud_state.health = stats.health;
                         self.hud_state.max_health = stats.max_health;
                         self.hud_state.food = stats.food;
@@ -3431,6 +3448,7 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
+        self.update_player_hurt_tilt(dt);
 
         if self.current_screen == AppScreen::InGame {
             if !self.is_paused {
@@ -5773,6 +5791,7 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
+        self.update_player_hurt_tilt(dt);
 
         if self.current_screen == AppScreen::InGame && !self.is_paused {
             let input_state = PlayerInputState {

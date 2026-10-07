@@ -337,14 +337,18 @@ pub fn update_mob_navigation_paths<W: NavWorldReader>(
 
         match mob.kind {
             crate::entity::MobKind::Hostile => {
-                // Find nearest player within 24 blocks
+                // Find nearest targetable player within 24 blocks
                 let mut target_player = None;
                 let mut min_dsq = 24.0 * 24.0;
-                for &(pid, ppos) in &player_list {
-                    let dsq = pos.0.distance_squared(ppos);
+
+                for player in &player_list {
+                    if !player.targetable {
+                        continue;
+                    }
+                    let dsq = pos.0.distance_squared(player.pos);
                     if dsq < min_dsq {
                         min_dsq = dsq;
-                        target_player = Some((pid, ppos));
+                        target_player = Some((player.net_id, player.pos));
                     }
                 }
 

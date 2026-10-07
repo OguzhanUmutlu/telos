@@ -28,11 +28,12 @@ use telos_sim::command::{
 };
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
-    AttributeKind, Attributes, CombatTracker, DamageType, EffectInstance, EnchantmentKind,
-    EntityType, Experience, Health, Hunger, HurtTime, Inventory, ItemStack, MobBundle, MoveMode,
-    NetEntity, PlayerPositions, Position, PotionType, Rotation, SimParams, SimulationFrozen,
-    StatusEffectKind, StatusEffects, Velocity, WeatherKind, WeatherState, apply_mitigated_damage,
-    build_sim_schedule,
+    ARMOR_SLOTS, AiState, AttackCooldown, AttributeKind, Attributes, CombatTracker, DamageType,
+    EffectInstance, EnchantmentKind, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
+    ItemStack, Mob, MobBundle, MoveMode, NetEntity, PlayerPositions, Position, PotionType,
+    Rotation, SimParams, SimulationFrozen, StatusEffectKind, StatusEffects, TargetablePlayer,
+    Velocity, WeatherKind, WeatherState, apply_mitigated_damage, build_sim_schedule,
+    calculate_total_epf,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -391,6 +392,117 @@ impl Server {
         }
     }
 
+    /// Handles mob death transitions, broadcasting death animation and particles,
+    /// awarding experience, dropping loot, and despawning the mob.
+    pub fn handle_mob_death(&mut self, net_id: u32, killer_session_id: Option<u64>) {
+        let Some(&entity) = self.tracked_mobs.get(&net_id) else {
+            return;
+        };
+
+        let entity_type = self
+            .ecs_world
+            .get::<NetEntity>(entity)
+            .map_or(EntityType::Zombie, |n| n.entity_type);
+        let mob_pos = self.ecs_world.get::<Position>(entity).map(|p| p.0);
+
+        // 1. Broadcast death animation status (status: 3)
+        let death_msg = S2cMessage::EntityStatus(S2cEntityStatus { net_id, status: 3 });
+        for s in self.sessions.values_mut() {
+            if s.phase == ConnectionPhase::Play {
+                let _ = s
+                    .connection
+                    .send(Lane::Control, Payload::Msg(death_msg.clone()));
+            }
+        }
+
+        // 2. Broadcast death smoke poof particle burst
+        if let Some(pos) = mob_pos {
+            #[allow(clippy::cast_possible_truncation)]
+            let smoke_msg = S2cMessage::ParticleEvent(S2cParticleEvent {
+                effect: ParticleEffectKind::Smoke,
+                x: pos.x as f32,
+                y: (pos.y + 0.5) as f32,
+                z: pos.z as f32,
+                count: 20,
+                speed: 0.15,
+                block_state_id: 0,
+            });
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(smoke_msg.clone()));
+                }
+            }
+        }
+
+        // 3. Loot drops and XP determination
+        let drop_seed = self.tick_count.wrapping_add(u64::from(net_id));
+        let count_1_to_2 = (drop_seed % 2 + 1) as u16;
+        let count_1_to_3 = (drop_seed % 3 + 1) as u16;
+        let count_0_to_2 = ((drop_seed >> 2) % 3) as u16;
+
+        let (xp_reward, drops): (u32, Vec<(&str, u16)>) = match entity_type {
+            EntityType::Zombie => (5, vec![("rotten_flesh", count_1_to_2)]),
+            EntityType::Pig => (2, vec![("porkchop", count_1_to_3)]),
+            EntityType::Cow => (2, vec![("beef", count_1_to_3), ("leather", count_0_to_2)]),
+            EntityType::Player => (0, Vec::new()),
+        };
+
+        // 4. Award XP and loot directly to killer if within reach
+        if let Some(sid) = killer_session_id
+            && let Some(session) = self.sessions.get_mut(&sid)
+        {
+            let dist = mob_pos.map_or(0.0, |p| session.position.distance(p));
+            if dist <= 5.0
+                && let Some(ecs_ent) = session.ecs_entity
+            {
+                if let Some(mut xp) = self.ecs_world.get_mut::<Experience>(ecs_ent) {
+                    xp.add_xp(xp_reward);
+                }
+
+                if let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(ecs_ent) {
+                    let mut inventory_changed = false;
+                    for (item_name, count) in drops {
+                        if count > 0 {
+                            let ident = telos_core::ident::Identifier::new("telos", item_name).ok();
+                            if let Some(ident) = ident
+                                && let Some(item_id) =
+                                    self.registries.item_registry().get_by_ident(&ident)
+                                && inv.try_add_item(item_id, count) > 0
+                            {
+                                inventory_changed = true;
+                            }
+                        }
+                    }
+
+                    if inventory_changed {
+                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                        for slot in &inv.slots {
+                            slot_vec.push(SlotData {
+                                item: slot.item,
+                                count: slot.count,
+                            });
+                        }
+                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            carried: SlotData {
+                                item: inv.carried.item,
+                                count: inv.carried.count,
+                            },
+                        });
+                        let _ = session
+                            .connection
+                            .send(Lane::Control, Payload::Msg(bulk_msg));
+                    }
+                }
+            }
+        }
+
+        // 5. Despawn mob
+        self.despawn_mob(net_id);
+    }
+
     /// Clears and despawns all currently active mobs.
     pub fn clear_mobs(&mut self) {
         let mob_ids: Vec<u32> = self.tracked_mobs.keys().copied().collect();
@@ -702,6 +814,17 @@ impl Server {
         self.sessions.len()
     }
 
+    /// Returns a reference to a player session by its ID.
+    #[must_use]
+    pub fn get_session(&self, id: u64) -> Option<&PlayerSession> {
+        self.sessions.get(&id)
+    }
+
+    /// Returns a mutable reference to a player session by its ID.
+    pub fn get_session_mut(&mut self, id: u64) -> Option<&mut PlayerSession> {
+        self.sessions.get_mut(&id)
+    }
+
     /// Registers a new incoming connection and returns its unique `session_id`.
     pub fn add_connection(&mut self, conn: Box<dyn Connection<S2cMessage, C2sMessage>>) -> u64 {
         let session_id = self.next_session_id;
@@ -907,6 +1030,7 @@ impl Server {
                                         Experience::default(),
                                         Attributes::player_default(),
                                         StatusEffects::new(),
+                                        HurtTime::default(),
                                         inv.clone(),
                                     ))
                                     .id();
@@ -1327,29 +1451,7 @@ impl Server {
                 }
 
                 if is_dead {
-                    // Broadcast death status (status = 3)
-                    let death_msg = S2cMessage::EntityStatus(S2cEntityStatus {
-                        net_id: interact.target_net_id,
-                        status: 3,
-                    });
-                    for s in self.sessions.values_mut() {
-                        if s.phase == ConnectionPhase::Play {
-                            let _ = s
-                                .connection
-                                .send(Lane::Control, Payload::Msg(death_msg.clone()));
-                        }
-                    }
-
-                    // Award experience to attacking player
-                    if let Some(player_ecs) =
-                        self.sessions.get(&session_id).and_then(|s| s.ecs_entity)
-                        && let Some(mut xp) = self.ecs_world.get_mut::<Experience>(player_ecs)
-                    {
-                        xp.add_xp(5);
-                    }
-
-                    // Despawn mob
-                    self.despawn_mob(interact.target_net_id);
+                    self.handle_mob_death(interact.target_net_id, Some(session_id));
                 }
             }
         }
@@ -2045,11 +2147,15 @@ impl Server {
             }
         }
 
-        let player_pos_list: Vec<(u32, DVec3)> = self
+        let player_pos_list: Vec<TargetablePlayer> = self
             .sessions
             .values()
             .filter(|s| s.phase == ConnectionPhase::Play)
-            .map(|s| (s.entity_id, s.position))
+            .map(|s| TargetablePlayer {
+                net_id: s.entity_id,
+                pos: s.position,
+                targetable: s.move_mode == MoveMode::Walk && !s.move_state.flying,
+            })
             .collect();
         self.ecs_world
             .insert_resource(PlayerPositions(player_pos_list));
@@ -2093,6 +2199,179 @@ impl Server {
         telos_sim::update_mob_navigation_paths(default_world, &mut self.ecs_world);
 
         self.sim_schedule.run(&mut self.ecs_world);
+
+        // 5a. Authoritative mob melee attacks on survival players
+        let mut attacks_to_resolve = Vec::new();
+        {
+            let mut mob_attack_query =
+                self.ecs_world
+                    .query::<(&NetEntity, &Position, &Mob, &mut AttackCooldown)>();
+
+            for (net, pos, mob, mut cooldown) in mob_attack_query.iter_mut(&mut self.ecs_world) {
+                if mob.kind != telos_sim::MobKind::Hostile || !cooldown.can_attack() {
+                    continue;
+                }
+
+                let target_player_id = match mob.ai_state {
+                    AiState::Chasing { target_net_id } => Some(target_net_id),
+                    _ => None,
+                };
+
+                let Some(target_id) = target_player_id else {
+                    continue;
+                };
+
+                if let Some(target_session) =
+                    self.sessions.values().find(|s| s.entity_id == target_id)
+                {
+                    if target_session.phase != ConnectionPhase::Play {
+                        continue;
+                    }
+                    if target_session.move_mode != MoveMode::Walk
+                        || target_session.move_state.flying
+                    {
+                        continue;
+                    }
+
+                    let dist = target_session.position.distance(pos.0);
+                    if dist <= f64::from(cooldown.reach) {
+                        cooldown.reset();
+                        attacks_to_resolve.push((
+                            net.net_id,
+                            target_session.session_id,
+                            pos.0,
+                            cooldown.damage,
+                        ));
+                    }
+                }
+            }
+        }
+
+        for (mob_net_id, target_session_id, mob_pos, mob_damage) in attacks_to_resolve {
+            let Some(target_session) = self.sessions.get_mut(&target_session_id) else {
+                continue;
+            };
+            let player_net_id = target_session.entity_id;
+            let target_ecs = target_session.ecs_entity;
+            let player_pos = target_session.position;
+
+            if let Some(ecs_ent) = target_ecs {
+                let mut total_armor = 0.0f32;
+                let mut total_toughness = 0.0f32;
+                let mut pieces = Vec::new();
+
+                if let Some(inv) = self.ecs_world.get::<Inventory>(ecs_ent) {
+                    for i in ARMOR_SLOTS {
+                        let slot = &inv.slots[i];
+                        if !slot.is_empty() {
+                            #[allow(clippy::cast_precision_loss)]
+                            {
+                                total_armor +=
+                                    self.registries.item_registry().armor_defense(slot.item) as f32;
+                            }
+                            total_toughness +=
+                                self.registries.item_registry().armor_toughness(slot.item);
+                            pieces.push(slot.enchantments);
+                        }
+                    }
+                }
+                let total_epf = calculate_total_epf(&pieces, DamageType::Attack);
+
+                let resistance = self
+                    .ecs_world
+                    .get::<StatusEffects>(ecs_ent)
+                    .and_then(|eff| eff.amplifier(StatusEffectKind::Resistance))
+                    .map_or(0, |amp| amp + 1);
+
+                let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                if let Ok((mut health, mut tracker)) = query.get_mut(&mut self.ecs_world, ecs_ent) {
+                    apply_mitigated_damage(
+                        &mut health,
+                        &mut tracker,
+                        mob_damage,
+                        DamageType::Attack,
+                        total_armor,
+                        total_toughness,
+                        resistance,
+                        total_epf,
+                    );
+                }
+
+                if let Some(mut hurt_time) = self.ecs_world.get_mut::<HurtTime>(ecs_ent) {
+                    hurt_time.0 = 10;
+                }
+            }
+
+            // Directional knockback impulse
+            let diff = player_pos - mob_pos;
+            let horiz_dist = (diff.x * diff.x + diff.z * diff.z).sqrt().max(0.01);
+            #[allow(clippy::cast_possible_truncation)]
+            let kb_x = (diff.x / horiz_dist * 0.35) as f32;
+            let kb_y = 0.25f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let kb_z = (diff.z / horiz_dist * 0.35) as f32;
+
+            if let Some(session) = self.sessions.get_mut(&target_session_id) {
+                session.move_state.vel.x += kb_x;
+                session.move_state.vel.y += kb_y;
+                session.move_state.vel.z += kb_z;
+
+                let ack_msg = S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
+                    client_tick_ack: session.last_processed_client_tick,
+                    #[allow(clippy::cast_possible_truncation)]
+                    server_tick: self.tick_count as u32,
+                    x: session.move_state.pos.x,
+                    y: session.move_state.pos.y,
+                    z: session.move_state.pos.z,
+                    vx: session.move_state.vel.x,
+                    vy: session.move_state.vel.y,
+                    vz: session.move_state.vel.z,
+                    yaw: session.move_state.yaw,
+                    pitch: session.move_state.pitch,
+                    on_ground: session.move_state.on_ground,
+                    flying: session.move_state.flying,
+                    teleport_id: session.awaiting_teleport.unwrap_or(0),
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(ack_msg));
+            }
+
+            // Broadcast attack swing (status: 4) for mob & hurt flash (status: 2) for player
+            let swing_msg = S2cMessage::EntityStatus(S2cEntityStatus {
+                net_id: mob_net_id,
+                status: 4,
+            });
+            let hurt_msg = S2cMessage::EntityStatus(S2cEntityStatus {
+                net_id: player_net_id,
+                status: 2,
+            });
+
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(swing_msg.clone()));
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(hurt_msg.clone()));
+                }
+            }
+        }
+
+        // Check for dead mobs
+        let mut dead_mobs = Vec::new();
+        {
+            let mut dead_query = self.ecs_world.query::<(&NetEntity, &Health)>();
+            for (net, health) in dead_query.iter(&self.ecs_world) {
+                if !health.is_alive() {
+                    dead_mobs.push(net.net_id);
+                }
+            }
+        }
+        for mob_id in dead_mobs {
+            self.handle_mob_death(mob_id, None);
+        }
 
         // Voxel terrain collision and floor adherence for mobs
         let default_world = self.worlds.default_world_mut();

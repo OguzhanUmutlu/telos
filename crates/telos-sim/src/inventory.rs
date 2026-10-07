@@ -369,6 +369,12 @@ impl Inventory {
         inserted
     }
 
+    /// Attempts to add an item to storage or hotbar, returning the number of items successfully added.
+    pub fn try_add_item(&mut self, item: u32, count: u16) -> u16 {
+        let mut stack = ItemStack::new(item, count);
+        self.insert_into_storage_or_hotbar(&mut stack)
+    }
+
     /// Returns any items remaining in crafting inputs (40..44) into storage or hotbar.
     ///
     /// Clears the crafting result slot (44).

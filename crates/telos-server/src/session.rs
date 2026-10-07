@@ -132,7 +132,7 @@ impl PlayerSession {
             vertical_span: config.vertical_view_distance as i32,
         };
 
-        let move_state = MoveState::new(spawn_pos, -90.0, 0.0, true);
+        let move_state = MoveState::new(spawn_pos, -90.0, 0.0, false);
 
         Self {
             session_id,
@@ -172,7 +172,7 @@ impl PlayerSession {
             last_processed_client_tick: 0,
             teleport_id_counter: 0,
             awaiting_teleport: None,
-            move_mode: MoveMode::NoClipFly,
+            move_mode: MoveMode::Walk,
             world_name: "overworld".to_string(),
         }
     }

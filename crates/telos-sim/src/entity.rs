@@ -314,6 +314,108 @@ impl PathFollower {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Component, Default)]
 pub struct HurtTime(pub u8);
 
+/// Combat attack cooldown component controlling attack damage, reach, and cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Component)]
+pub struct AttackCooldown {
+    /// Ticks remaining before the entity can execute another attack.
+    pub current: u32,
+    /// Cooldown reset interval in ticks.
+    pub interval: u32,
+    /// Base melee damage inflicted per hit.
+    pub damage: f32,
+    /// Maximum reach distance in blocks to land an attack.
+    pub reach: f32,
+}
+
+impl AttackCooldown {
+    /// Creates a new `AttackCooldown` configuration.
+    #[must_use]
+    pub const fn new(interval: u32, damage: f32, reach: f32) -> Self {
+        Self {
+            current: 0,
+            interval,
+            damage,
+            reach,
+        }
+    }
+
+    /// Advances the cooldown timer by one tick, clamping at 0.
+    pub fn tick(&mut self) {
+        if self.current > 0 {
+            self.current -= 1;
+        }
+    }
+
+    /// Returns `true` if the cooldown has elapsed and an attack can be performed.
+    #[must_use]
+    pub const fn can_attack(&self) -> bool {
+        self.current == 0
+    }
+
+    /// Resets the cooldown timer to the full interval.
+    pub fn reset(&mut self) {
+        self.current = self.interval;
+    }
+}
+
+impl Default for AttackCooldown {
+    fn default() -> Self {
+        Self {
+            current: 0,
+            interval: 20,
+            damage: 3.0,
+            reach: 1.8,
+        }
+    }
+}
+
+/// Tests whether an unobstructed direct line-of-sight exists between `from` and `to`.
+///
+/// Raycasts voxels between eye positions and returns `true` if no solid obstacle intervenes.
+#[must_use]
+pub fn has_line_of_sight<F>(from: Vec3, to: Vec3, is_solid: F) -> bool
+where
+    F: FnMut(telos_core::coords::BlockPos) -> bool,
+{
+    let diff = to - from;
+    let dist = diff.length();
+    if dist < 1e-4 {
+        return true;
+    }
+    let hit = telos_core::raycast::raycast_voxels(from, diff, dist, is_solid);
+    match hit {
+        None => true,
+        Some(h) => h.distance >= dist - 0.05,
+    }
+}
+
+/// Player targeting information for mob sensory perception and combat AI.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TargetablePlayer {
+    /// Network ID of the player.
+    pub net_id: u32,
+    /// Double-precision world position of the player feet.
+    pub pos: DVec3,
+    /// Whether the player can be targeted by hostile mobs (e.g. survival mode, not flying).
+    pub targetable: bool,
+}
+
+impl TargetablePlayer {
+    /// Creates a new `TargetablePlayer`.
+    #[must_use]
+    pub const fn new(net_id: u32, pos: DVec3, targetable: bool) -> Self {
+        Self {
+            net_id,
+            pos,
+            targetable,
+        }
+    }
+}
+
+/// Resource holding current active player positions and targetability for AI spatial awareness.
+#[derive(Debug, Clone, Resource, Default)]
+pub struct PlayerPositions(pub Vec<TargetablePlayer>);
+
 /// Complete component bundle representing a spawned mob in the ECS world.
 #[derive(Debug, Clone, Bundle)]
 pub struct MobBundle {
@@ -337,6 +439,8 @@ pub struct MobBundle {
     pub mob: Mob,
     /// 3D navigation path follower.
     pub path_follower: PathFollower,
+    /// Attack cooldown and melee damage properties.
+    pub attack_cooldown: AttackCooldown,
 }
 
 impl MobBundle {
@@ -357,6 +461,7 @@ impl MobBundle {
             hurt_time: HurtTime::default(),
             mob: Mob::new_hostile(seed),
             path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(20, 3.0, 1.8),
         }
     }
 
@@ -377,6 +482,7 @@ impl MobBundle {
             hurt_time: HurtTime::default(),
             mob: Mob::new_passive(seed),
             path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
         }
     }
 
@@ -397,20 +503,18 @@ impl MobBundle {
             hurt_time: HurtTime::default(),
             mob: Mob::new_passive(seed),
             path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
         }
     }
 }
-
-/// Resource holding current active player positions for AI spatial awareness.
-#[derive(Debug, Clone, Resource, Default)]
-pub struct PlayerPositions(pub Vec<(u32, DVec3)>);
 
 /// System that executes artificial intelligence state machines and waypoint steering for all active mobs.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::too_many_lines,
-    clippy::needless_pass_by_value
+    clippy::needless_pass_by_value,
+    clippy::type_complexity
 )]
 pub fn mob_ai_system(
     mut mobs: Query<
@@ -420,6 +524,7 @@ pub fn mob_ai_system(
             &mut Rotation,
             &mut Velocity,
             &Position,
+            Option<&mut AttackCooldown>,
         ),
         Without<SimulationFrozen>,
     >,
@@ -427,7 +532,11 @@ pub fn mob_ai_system(
 ) {
     let player_list = players.as_ref().map_or(&[][..], |p| p.0.as_slice());
 
-    for (mut mob, mut follower, mut rot, mut vel, pos) in &mut mobs {
+    for (mut mob, mut follower, mut rot, mut vel, pos, mut attack_cooldown) in &mut mobs {
+        if let Some(ref mut cd) = attack_cooldown {
+            cd.tick();
+        }
+
         // Stuck detection
         if pos.0.distance_squared(follower.last_pos) < 0.0025 {
             follower.stuck_ticks += 1;
@@ -443,93 +552,117 @@ pub fn mob_ai_system(
 
         match mob.kind {
             MobKind::Hostile => {
-                // Find nearest player within 24 blocks detection radius
-                let mut nearest_player = None;
-                let mut min_dist_sq = 24.0 * 24.0;
+                // Determine target player
+                let mut target_player = None;
 
-                for &(player_id, player_pos) in player_list {
-                    let dsq = pos.0.distance_squared(player_pos);
-                    if dsq < min_dist_sq {
-                        min_dist_sq = dsq;
-                        nearest_player = Some((player_id, player_pos));
+                // Check existing target if chasing
+                if let AiState::Chasing { target_net_id } = mob.ai_state
+                    && let Some(tp) = player_list
+                        .iter()
+                        .find(|p| p.net_id == target_net_id && p.targetable)
+                {
+                    let dsq = pos.0.distance_squared(tp.pos);
+                    if dsq <= 24.0 * 24.0 {
+                        target_player = Some((tp.net_id, tp.pos));
                     }
                 }
 
-                if let Some((target_id, target_pos)) = nearest_player {
+                // If no current valid target, acquire nearest targetable player within 16 blocks
+                if target_player.is_none() {
+                    let mut min_dist_sq = 16.0 * 16.0;
+                    for p in player_list {
+                        if !p.targetable {
+                            continue;
+                        }
+                        let dsq = pos.0.distance_squared(p.pos);
+                        if dsq < min_dist_sq {
+                            min_dist_sq = dsq;
+                            target_player = Some((p.net_id, p.pos));
+                        }
+                    }
+                }
+
+                if let Some((target_id, target_pos)) = target_player {
                     mob.ai_state = AiState::Chasing {
                         target_net_id: target_id,
                     };
                     follower.target_entity = Some(target_id);
 
                     let speed = mob.base_speed;
-                    let mut followed_path = false;
+                    let dx = target_pos.x - pos.0.x;
+                    let dz = target_pos.z - pos.0.z;
+                    let dy = (target_pos.y - pos.0.y).abs();
+                    let horiz_dist = (dx * dx + dz * dz).sqrt();
 
-                    // Follow planned navigation waypoints if available
-                    if let Some(ref mut path) = follower.path {
-                        if let Some(wp) = path.current_waypoint() {
-                            let wp_center = DVec3::new(
-                                f64::from(wp.x()) + 0.5,
-                                f64::from(wp.y()),
-                                f64::from(wp.z()) + 0.5,
-                            );
-                            let dx = wp_center.x - pos.0.x;
-                            let dz = wp_center.z - pos.0.z;
-                            let horiz_dist = (dx * dx + dz * dz).sqrt();
+                    let reach = attack_cooldown.as_ref().map_or(1.8, |cd| cd.reach);
 
-                            if horiz_dist < 0.45 && (pos.0.y - wp_center.y).abs() < 1.25 {
-                                path.advance();
-                            }
-
-                            if let Some(active_wp) = path.current_waypoint() {
-                                let active_center = DVec3::new(
-                                    f64::from(active_wp.x()) + 0.5,
-                                    f64::from(active_wp.y()),
-                                    f64::from(active_wp.z()) + 0.5,
-                                );
-                                let adx = active_center.x - pos.0.x;
-                                let adz = active_center.z - pos.0.z;
-                                let adist = (adx * adx + adz * adz).sqrt();
-
-                                if adist > 0.05 {
-                                    let nx = adx / adist;
-                                    let nz = adz / adist;
-                                    vel.0.x = (nx * f64::from(speed)) as f32;
-                                    vel.0.z = (nz * f64::from(speed)) as f32;
-
-                                    let cur_y = pos.0.y.floor() as i32;
-                                    if active_wp.y() > cur_y && vel.0.y.abs() < 0.1 {
-                                        vel.0.y = 0.42;
-                                    }
-
-                                    let angle_rad = adz.atan2(adx);
-                                    let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
-                                    rot.yaw = yaw_deg;
-                                    rot.head_yaw = yaw_deg;
-                                    followed_path = true;
-                                }
-                            }
-                        }
-                        if path.is_finished() {
-                            follower.path = None;
-                        }
+                    // Always face the target when chasing
+                    if horiz_dist > 0.01 {
+                        let angle_rad = dz.atan2(dx);
+                        let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
+                        rot.yaw = yaw_deg;
+                        rot.head_yaw = yaw_deg;
                     }
 
-                    // Direct steering fallback if no waypoint path
-                    if !followed_path {
-                        let dx = target_pos.x - pos.0.x;
-                        let dz = target_pos.z - pos.0.z;
-                        let horiz_dist = (dx * dx + dz * dz).sqrt();
+                    // If within melee reach, halt horizontal movement so mob doesn't overshoot
+                    if horiz_dist <= f64::from(reach) && dy <= 1.5 {
+                        vel.0.x = 0.0;
+                        vel.0.z = 0.0;
+                    } else {
+                        let mut followed_path = false;
 
-                        if horiz_dist > 0.05 {
+                        // Follow planned navigation waypoints if available
+                        if let Some(ref mut path) = follower.path {
+                            if let Some(wp) = path.current_waypoint() {
+                                let wp_center = DVec3::new(
+                                    f64::from(wp.x()) + 0.5,
+                                    f64::from(wp.y()),
+                                    f64::from(wp.z()) + 0.5,
+                                );
+                                let wdx = wp_center.x - pos.0.x;
+                                let wdz = wp_center.z - pos.0.z;
+                                let wh_dist = (wdx * wdx + wdz * wdz).sqrt();
+
+                                if wh_dist < 0.45 && (pos.0.y - wp_center.y).abs() < 1.25 {
+                                    path.advance();
+                                }
+
+                                if let Some(active_wp) = path.current_waypoint() {
+                                    let active_center = DVec3::new(
+                                        f64::from(active_wp.x()) + 0.5,
+                                        f64::from(active_wp.y()),
+                                        f64::from(active_wp.z()) + 0.5,
+                                    );
+                                    let adx = active_center.x - pos.0.x;
+                                    let adz = active_center.z - pos.0.z;
+                                    let adist = (adx * adx + adz * adz).sqrt();
+
+                                    if adist > 0.05 {
+                                        let nx = adx / adist;
+                                        let nz = adz / adist;
+                                        vel.0.x = (nx * f64::from(speed)) as f32;
+                                        vel.0.z = (nz * f64::from(speed)) as f32;
+
+                                        let cur_y = pos.0.y.floor() as i32;
+                                        if active_wp.y() > cur_y && vel.0.y.abs() < 0.1 {
+                                            vel.0.y = 0.42;
+                                        }
+
+                                        followed_path = true;
+                                    }
+                                }
+                            }
+                            if path.is_finished() {
+                                follower.path = None;
+                            }
+                        }
+
+                        // Direct steering fallback if no waypoint path
+                        if !followed_path && horiz_dist > 0.05 {
                             let nx = dx / horiz_dist;
                             let nz = dz / horiz_dist;
                             vel.0.x = (nx * f64::from(speed)) as f32;
                             vel.0.z = (nz * f64::from(speed)) as f32;
-
-                            let angle_rad = dz.atan2(dx);
-                            let yaw_deg = angle_rad.to_degrees() as f32 - 90.0;
-                            rot.yaw = yaw_deg;
-                            rot.head_yaw = yaw_deg;
                         }
                     }
                 } else {
@@ -857,7 +990,11 @@ mod tests {
         let zombie = MobBundle::new_zombie(10, DVec3::new(0.0, 64.0, 0.0), 12345);
         let e = world.spawn(zombie).id();
 
-        world.insert_resource(PlayerPositions(vec![(1, DVec3::new(10.0, 64.0, 0.0))]));
+        world.insert_resource(PlayerPositions(vec![TargetablePlayer::new(
+            1,
+            DVec3::new(10.0, 64.0, 0.0),
+            true,
+        )]));
 
         let mut schedule = bevy_ecs::schedule::Schedule::default();
         schedule.add_systems(mob_ai_system);

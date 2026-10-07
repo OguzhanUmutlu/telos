@@ -137,6 +137,24 @@ impl ItemDef {
             _ => None,
         }
     }
+
+    /// Returns the armor defense value if this is an armor item.
+    #[must_use]
+    pub fn armor_defense(&self) -> u32 {
+        match &self.item_type {
+            ItemTypeDef::Armor { defense, .. } => *defense,
+            _ => 0,
+        }
+    }
+
+    /// Returns the armor toughness value if this is an armor item.
+    #[must_use]
+    pub fn armor_toughness(&self) -> f32 {
+        match &self.item_type {
+            ItemTypeDef::Armor { toughness, .. } => *toughness,
+            _ => 0.0,
+        }
+    }
 }
 
 #[cfg(test)]

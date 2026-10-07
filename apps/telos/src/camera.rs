@@ -73,6 +73,8 @@ pub struct Camera {
     pub yaw: f32,
     /// Pitch angle in radians (vertical look direction, clamped to ±89°).
     pub pitch: f32,
+    /// Roll angle in radians (camera tilt, e.g. hurt tilt).
+    pub roll: f32,
     /// Vertical field of view in radians.
     pub fov_y: f32,
     /// Near clipping plane distance.
@@ -89,6 +91,7 @@ impl Camera {
             position,
             yaw: -std::f32::consts::FRAC_PI_2, // Looking along -Z by default
             pitch: 0.0,
+            roll: 0.0,
             fov_y: 70.0f32.to_radians(),
             z_near: 0.1,
             z_far: 1000.0,
@@ -123,7 +126,16 @@ impl Camera {
     #[must_use]
     pub fn view_matrix(&self) -> Mat4 {
         let dir = self.forward();
-        Mat4::look_to_rh(self.position, dir, Vec3::Y)
+        let up = if self.roll.abs() > 1e-4 {
+            let cos_r = self.roll.cos();
+            let sin_r = self.roll.sin();
+            let base_right = self.forward().cross(Vec3::Y).normalize();
+            let base_up = base_right.cross(self.forward()).normalize();
+            (base_up * cos_r + base_right * sin_r).normalize()
+        } else {
+            Vec3::Y
+        };
+        Mat4::look_to_rh(self.position, dir, up)
     }
 
     /// Perspective projection matrix for the given aspect ratio ($W/H$) with reversed-Z (ADR-02).

@@ -85,6 +85,10 @@ pub struct ClientEntity {
     pub walk_time: f32,
     /// Hurt flash timer in seconds (decays to 0.0).
     pub hurt_timer: f32,
+    /// Attack swing animation timer in seconds (decays to 0.0).
+    pub attack_swing_timer: f32,
+    /// Death fall-over animation timer in seconds (decays to 0.0).
+    pub death_timer: f32,
     /// Current health points.
     pub health: f32,
     /// Maximum health points.
@@ -119,6 +123,8 @@ impl ClientEntity {
             target_yaw: msg.yaw,
             walk_time: 0.0,
             hurt_timer: 0.0,
+            attack_swing_timer: 0.0,
+            death_timer: 0.0,
             health: msg.health,
             max_health: msg.max_health,
             snapshots,
@@ -170,7 +176,11 @@ impl ClientEntityStore {
     /// Handles an incoming `S2cDespawnEntity` packet.
     pub fn on_despawn(&mut self, net_ids: &[u32]) {
         for &id in net_ids {
-            self.entities.remove(&id);
+            if let Some(entity) = self.entities.get(&id)
+                && entity.death_timer <= 0.0
+            {
+                self.entities.remove(&id);
+            }
         }
     }
 
@@ -198,12 +208,21 @@ impl ClientEntityStore {
     /// Handles an incoming `S2cEntityStatus` packet.
     pub fn on_status(&mut self, net_id: u32, status: u8) {
         if let Some(entity) = self.entities.get_mut(&net_id) {
-            if status == 2 {
-                // Hurt red flash
-                entity.hurt_timer = 0.5;
-            } else if status == 3 {
-                // Death
-                entity.hurt_timer = 1.0;
+            match status {
+                2 => {
+                    // Hurt red flash
+                    entity.hurt_timer = 0.5;
+                }
+                3 => {
+                    // Death: red flash and roll sideways over 1 second
+                    entity.hurt_timer = 1.0;
+                    entity.death_timer = 1.0;
+                }
+                4 => {
+                    // Attack swing animation
+                    entity.attack_swing_timer = 0.3;
+                }
+                _ => {}
             }
         }
     }
@@ -219,10 +238,20 @@ impl ClientEntityStore {
         // Standard 100 ms interpolation delay (2 server ticks at 20 TPS)
         let render_time = self.current_time - 0.100;
 
-        for entity in self.entities.values_mut() {
-            // Decay hurt flash timer
+        self.entities.retain(|_, entity| {
+            // Decay hurt flash and attack swing timers
             entity.hurt_timer = (entity.hurt_timer - dt).max(0.0);
+            entity.attack_swing_timer = (entity.attack_swing_timer - dt).max(0.0);
+            if entity.death_timer > 0.0 {
+                entity.death_timer = (entity.death_timer - dt).max(0.0);
+                if entity.death_timer <= 0.0 {
+                    return false;
+                }
+            }
+            true
+        });
 
+        for entity in self.entities.values_mut() {
             let prev_pos = entity.pos;
 
             // Interpolate or extrapolate from snapshot history
@@ -313,6 +342,9 @@ impl ClientEntityStore {
         let mut closest_hit: Option<(u32, f32)> = None;
 
         for entity in self.entities.values() {
+            if entity.death_timer > 0.0 {
+                continue;
+            }
             let aabb = entity.entity_type.default_aabb();
             if let Some(dist) = aabb.intersects_ray(entity.pos, ray_origin, ray_dir, max_dist) {
                 if let Some((_, closest_d)) = closest_hit {
@@ -336,7 +368,17 @@ impl ClientEntityStore {
     ) {
         for entity in self.entities.values() {
             let (sky, block) = get_light(entity.pos);
-            let hurt_tint = (entity.hurt_timer / 0.5).clamp(0.0, 1.0);
+            let hurt_tint = if entity.death_timer > 0.0 {
+                (entity.death_timer / 1.0).clamp(0.0, 1.0)
+            } else {
+                (entity.hurt_timer / 0.5).clamp(0.0, 1.0)
+            };
+            let body_roll = if entity.death_timer > 0.0 {
+                let progress = (1.0 - entity.death_timer / 1.0).clamp(0.0, 1.0);
+                progress * 90.0
+            } else {
+                0.0
+            };
             let layer = match entity.entity_type {
                 EntityType::Zombie | EntityType::Player => 0,
                 EntityType::Pig => 1,
@@ -345,13 +387,37 @@ impl ClientEntityStore {
 
             match entity.entity_type {
                 EntityType::Zombie | EntityType::Player => {
-                    build_humanoid_mesh(entity, sky, block, layer, hurt_tint, out_vertices);
+                    build_humanoid_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
                 }
                 EntityType::Pig => {
-                    build_pig_mesh(entity, sky, block, layer, hurt_tint, out_vertices);
+                    build_pig_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
                 }
                 EntityType::Cow => {
-                    build_cow_mesh(entity, sky, block, layer, hurt_tint, out_vertices);
+                    build_cow_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
                 }
             }
         }
@@ -364,15 +430,19 @@ impl ClientEntityStore {
 
 const S: f32 = 1.0 / 16.0;
 
+#[allow(clippy::too_many_lines)]
 fn build_humanoid_mesh(
     entity: &ClientEntity,
     sky: u8,
     block: u8,
     layer: u32,
     hurt_tint: f32,
+    body_roll: f32,
     out: &mut Vec<EntityVertexGpu>,
 ) {
-    let body_yaw = entity.yaw;
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians());
+    let death_lift = (body_roll / 90.0) * 0.25;
     let walk_anim = (entity.walk_time * 6.0).sin();
 
     // 1. Head: 8x8x8 centered at y=24..32, pivot at (0, 24, 0)
@@ -380,7 +450,8 @@ fn build_humanoid_mesh(
     let head_pitch = entity.pitch;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 24.0 * S, 0.0),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(-4.0 * S, 24.0 * S, -4.0 * S),
@@ -396,7 +467,8 @@ fn build_humanoid_mesh(
     // 2. Body: 8x12x4 at y=12..24, pivot at (0, 24, 0)
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 24.0 * S, 0.0),
         Vec3::ZERO,
         Vec3::new(-4.0 * S, 12.0 * S, -2.0 * S),
@@ -409,11 +481,19 @@ fn build_humanoid_mesh(
         out,
     );
 
+    let swing_offset = if entity.attack_swing_timer > 0.0 {
+        let progress = (1.0 - entity.attack_swing_timer / 0.3).clamp(0.0, 1.0);
+        (progress * std::f32::consts::PI).sin() * 40.0
+    } else {
+        0.0
+    };
+
     // 3. Right Arm: 4x12x4, pivot at (-5, 22, 0), outstretched forward (-90 deg pitch)
-    let r_arm_pitch = -90.0 + walk_anim * 8.0;
+    let r_arm_pitch = -90.0 + walk_anim * 8.0 - swing_offset;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-5.0 * S, 22.0 * S, 0.0),
         Vec3::new(r_arm_pitch, 0.0, 0.0),
         Vec3::new(-7.0 * S, 10.0 * S, -2.0 * S),
@@ -427,10 +507,11 @@ fn build_humanoid_mesh(
     );
 
     // 4. Left Arm: 4x12x4, pivot at (5, 22, 0), outstretched forward (-90 deg pitch)
-    let l_arm_pitch = -90.0 - walk_anim * 8.0;
+    let l_arm_pitch = -90.0 - walk_anim * 8.0 - swing_offset;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(5.0 * S, 22.0 * S, 0.0),
         Vec3::new(l_arm_pitch, 0.0, 0.0),
         Vec3::new(3.0 * S, 10.0 * S, -2.0 * S),
@@ -447,7 +528,8 @@ fn build_humanoid_mesh(
     let r_leg_pitch = walk_anim * 28.0;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-1.9 * S, 12.0 * S, 0.0),
         Vec3::new(r_leg_pitch, 0.0, 0.0),
         Vec3::new(-3.9 * S, 0.0, -2.0 * S),
@@ -464,7 +546,8 @@ fn build_humanoid_mesh(
     let l_leg_pitch = -walk_anim * 28.0;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(1.9 * S, 12.0 * S, 0.0),
         Vec3::new(l_leg_pitch, 0.0, 0.0),
         Vec3::new(0.1 * S, 0.0, -2.0 * S),
@@ -485,15 +568,19 @@ fn build_pig_mesh(
     block: u8,
     layer: u32,
     hurt_tint: f32,
+    body_roll: f32,
     out: &mut Vec<EntityVertexGpu>,
 ) {
-    let body_yaw = entity.yaw;
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians());
+    let death_lift = (body_roll / 90.0) * 0.25;
     let walk_anim = (entity.walk_time * 6.0).sin();
 
     // 1. Horizontal Body: 10x8x16 at y=6..14, z=-8..8
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 10.0 * S, 0.0),
         Vec3::ZERO,
         Vec3::new(-5.0 * S, 6.0 * S, -8.0 * S),
@@ -511,7 +598,8 @@ fn build_pig_mesh(
     let head_pitch = entity.pitch;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 12.0 * S, -6.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(-4.0 * S, 8.0 * S, -14.0 * S),
@@ -527,7 +615,8 @@ fn build_pig_mesh(
     // 3. Snout: 4x3x1 at y=9..12, z=-15..-14
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 12.0 * S, -6.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(-2.0 * S, 9.0 * S, -15.0 * S),
@@ -545,7 +634,8 @@ fn build_pig_mesh(
     // Front Right
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-3.0 * S, 6.0 * S, -5.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
         Vec3::new(-5.0 * S, 0.0, -7.0 * S),
@@ -560,7 +650,8 @@ fn build_pig_mesh(
     // Front Left
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(3.0 * S, 6.0 * S, -5.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
         Vec3::new(1.0 * S, 0.0, -7.0 * S),
@@ -575,7 +666,8 @@ fn build_pig_mesh(
     // Back Right
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-3.0 * S, 6.0 * S, 5.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
         Vec3::new(-5.0 * S, 0.0, 3.0 * S),
@@ -590,7 +682,8 @@ fn build_pig_mesh(
     // Back Left
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(3.0 * S, 6.0 * S, 5.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
         Vec3::new(1.0 * S, 0.0, 3.0 * S),
@@ -611,15 +704,19 @@ fn build_cow_mesh(
     block: u8,
     layer: u32,
     hurt_tint: f32,
+    body_roll: f32,
     out: &mut Vec<EntityVertexGpu>,
 ) {
-    let body_yaw = entity.yaw;
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians());
+    let death_lift = (body_roll / 90.0) * 0.25;
     let walk_anim = (entity.walk_time * 6.0).sin();
 
     // 1. Horizontal Body: 12x10x18 at y=12..22, z=-9..9
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 17.0 * S, 0.0),
         Vec3::ZERO,
         Vec3::new(-6.0 * S, 12.0 * S, -9.0 * S),
@@ -637,7 +734,8 @@ fn build_cow_mesh(
     let head_pitch = entity.pitch;
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 20.0 * S, -8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(-4.0 * S, 16.0 * S, -14.0 * S),
@@ -653,7 +751,8 @@ fn build_cow_mesh(
     // 3. Horns: 1x3x1 on each side of head
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 20.0 * S, -8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(-5.0 * S, 23.0 * S, -12.0 * S),
@@ -667,7 +766,8 @@ fn build_cow_mesh(
     );
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(0.0, 20.0 * S, -8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
         Vec3::new(4.0 * S, 23.0 * S, -12.0 * S),
@@ -685,7 +785,8 @@ fn build_cow_mesh(
     // Front Right
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-4.0 * S, 12.0 * S, -6.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
         Vec3::new(-6.0 * S, 0.0, -8.0 * S),
@@ -700,7 +801,8 @@ fn build_cow_mesh(
     // Front Left
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(4.0 * S, 12.0 * S, -6.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
         Vec3::new(2.0 * S, 0.0, -8.0 * S),
@@ -715,7 +817,8 @@ fn build_cow_mesh(
     // Back Right
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(-4.0 * S, 12.0 * S, 6.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
         Vec3::new(-6.0 * S, 0.0, 4.0 * S),
@@ -730,7 +833,8 @@ fn build_cow_mesh(
     // Back Left
     emit_cuboid(
         entity.pos,
-        body_yaw,
+        body_quat,
+        death_lift,
         Vec3::new(4.0 * S, 12.0 * S, 6.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
         Vec3::new(2.0 * S, 0.0, 4.0 * S),
@@ -751,7 +855,8 @@ fn build_cow_mesh(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn emit_cuboid(
     entity_pos: DVec3,
-    body_yaw: f32,
+    body_quat: Quat,
+    death_lift: f32,
     pivot: Vec3,
     rotation_deg: Vec3,
     min_pt: Vec3,
@@ -810,12 +915,11 @@ fn emit_cuboid(
         rotation_deg.x.to_radians(),
         rotation_deg.z.to_radians(),
     );
-    let body_quat = Quat::from_rotation_y((-body_yaw).to_radians());
 
     let transform_pt = |p: Vec3| -> [f32; 3] {
         let rotated_limb = pivot + limb_quat * (p - pivot);
         let rotated_body = body_quat * rotated_limb;
-        let world = entity_pos.as_vec3() + rotated_body;
+        let world = entity_pos.as_vec3() + rotated_body + Vec3::new(0.0, death_lift, 0.0);
         [world.x, world.y, world.z]
     };
 
@@ -1009,5 +1113,57 @@ mod tests {
         // Speed = 5.0 / 0.050 = 100.0 blocks/sec.
         // Bounded extra = 50 ms -> max extra pos = 5.0 + 100.0 * 0.05 = 10.0
         assert!(entity.pos.x <= 10.01);
+    }
+
+    #[test]
+    fn test_entity_status_attack_and_death_animations() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn(S2cSpawnEntity {
+            net_id: 10,
+            entity_type: 0, // Zombie
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+        });
+
+        // 1. Attack swing animation
+        store.on_status(10, 4);
+        let entity = store.get(10).unwrap();
+        assert!((entity.attack_swing_timer - 0.3).abs() < 1e-4);
+
+        // Raycast can hit living entity
+        let hit = store.raycast(DVec3::new(0.0, 64.0, -3.0), Vec3::new(0.0, 0.0, 1.0), 5.0);
+        assert_eq!(hit.map(|(id, _)| id), Some(10));
+
+        // 2. Death status
+        store.on_status(10, 3);
+        let entity = store.get(10).unwrap();
+        assert!((entity.death_timer - 1.0).abs() < 1e-4);
+        assert!((entity.hurt_timer - 1.0).abs() < 1e-4);
+
+        // Dying entity is excluded from combat raycasting
+        let hit_after_death =
+            store.raycast(DVec3::new(0.0, 64.0, -3.0), Vec3::new(0.0, 0.0, 1.0), 5.0);
+        assert!(hit_after_death.is_none());
+
+        // 3. Despawn packet arrives while dying - entity retained until animation finishes
+        store.on_despawn(&[10]);
+        assert!(store.get(10).is_some());
+
+        // 4. Update decays timers
+        store.update(0.5);
+        let entity = store.get(10).unwrap();
+        assert!((entity.death_timer - 0.5).abs() < 1e-4);
+        assert!(entity.attack_swing_timer.abs() < 1e-4);
+
+        // 5. Update past 1.0s total -> entity cleanly removed from store
+        store.update(0.6);
+        assert!(store.get(10).is_none());
     }
 }
