@@ -367,6 +367,14 @@ impl AquiferSampler {
             AquiferSample::Air
         }
     }
+
+    /// Samples the aquifer status at world block coordinate `(wx, wy, wz)` directly without precomputed cache.
+    #[must_use]
+    pub fn sample_world(&self, wx: i32, wy: i32, wz: i32) -> AquiferSample {
+        let chunk_pos = ChunkPos::new(wx.div_euclid(32), wy.div_euclid(32), wz.div_euclid(32));
+        let cache = self.prepare_chunk(chunk_pos);
+        self.sample(&cache, wx, wy, wz)
+    }
 }
 
 #[cfg(test)]

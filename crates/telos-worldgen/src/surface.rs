@@ -99,11 +99,22 @@ pub struct ResolvedBlocks {
     pub birch_leaves: BlockStateId,
     /// Spruce tree leaves.
     pub spruce_leaves: BlockStateId,
+
+    // Phase 49 Structures, Dungeons & Ruins
+    /// Cobblestone block state ID.
+    pub cobblestone: BlockStateId,
+    /// Mossy cobblestone block state ID.
+    pub mossy_cobblestone: BlockStateId,
+    /// Monster spawner block state ID.
+    pub monster_spawner: BlockStateId,
+    /// Chest container block state ID.
+    pub chest: BlockStateId,
 }
 
 impl ResolvedBlocks {
     /// Resolves required block state IDs from the registry.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn resolve(registry: &BlockRegistry) -> Self {
         let resolve_block = |name: &str, default_id: u32| {
             registry
@@ -162,6 +173,11 @@ impl ResolvedBlocks {
         let birch_leaves = resolve_block("birch_leaves", 77);
         let spruce_leaves = resolve_block("spruce_leaves", 78);
 
+        let cobblestone = resolve_block("cobblestone", 4);
+        let mossy_cobblestone = resolve_block("mossy_cobblestone", 79);
+        let monster_spawner = resolve_block("monster_spawner", 80);
+        let chest = resolve_block("chest", 81);
+
         Self {
             air,
             stone,
@@ -205,6 +221,10 @@ impl ResolvedBlocks {
             oak_leaves,
             birch_leaves,
             spruce_leaves,
+            cobblestone,
+            mossy_cobblestone,
+            monster_spawner,
+            chest,
         }
     }
 }

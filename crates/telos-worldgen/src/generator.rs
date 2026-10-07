@@ -145,6 +145,15 @@ impl WorldGenerator {
                 // 6b. Apply procedural multi-stage trees and foliage canopies
                 crate::tree::apply_trees(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
 
+                // 6c. Apply procedural structures, subterranean dungeons & surface ruins (Phase 49)
+                crate::structure::apply_structures(
+                    self.seed,
+                    pos,
+                    &self.blocks,
+                    &self.aquifer,
+                    &mut dense,
+                );
+
                 // 7. Construct compact paletted chunk representation with uniform elision
                 let packed_blocks = bulk::from_dense(&dense);
 

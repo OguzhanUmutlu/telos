@@ -15,6 +15,7 @@ pub mod generator;
 pub mod math;
 pub mod noise;
 pub mod ore;
+pub mod structure;
 pub mod surface;
 pub mod tree;
 
@@ -25,4 +26,8 @@ pub use decoration::apply_surface_decorations;
 pub use error::WorldGenError;
 pub use generator::{GeneratorKind, WorldGenerator};
 pub use ore::apply_ores;
+pub use structure::{
+    LootItem, LootTableKind, StructureBoundingBox, apply_dungeons, apply_ruins, apply_structures,
+    roll_chest_slots, roll_loot,
+};
 pub use tree::{TreeSpecies, apply_trees};

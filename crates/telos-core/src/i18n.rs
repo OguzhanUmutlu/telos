@@ -511,6 +511,22 @@ impl LanguageCatalog {
             ("item.telos.porkchop", "Raw Porkchop"),
             ("item.telos.beef", "Raw Beef"),
             ("item.telos.leather", "Leather"),
+            // Phase 49 Structure Blocks & Loot Items
+            ("block.telos.mossy_cobblestone", "Mossy Cobblestone"),
+            ("block.telos.monster_spawner", "Monster Spawner"),
+            ("block.telos.chest", "Chest"),
+            ("item.telos.mossy_cobblestone", "Mossy Cobblestone"),
+            ("item.telos.monster_spawner", "Monster Spawner"),
+            ("item.telos.chest", "Chest"),
+            ("item.telos.iron_ingot", "Iron Ingot"),
+            ("item.telos.gold_ingot", "Gold Ingot"),
+            ("item.telos.coal", "Coal"),
+            ("item.telos.string", "String"),
+            ("item.telos.gunpowder", "Gunpowder"),
+            ("item.telos.bread", "Bread"),
+            ("item.telos.wheat", "Wheat"),
+            ("item.telos.saddle", "Saddle"),
+            ("item.telos.name_tag", "Name Tag"),
         ];
 
         for (k, v) in en_pairs {

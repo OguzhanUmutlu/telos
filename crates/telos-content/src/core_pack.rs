@@ -1111,6 +1111,55 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 ..Default::default()
             },
         ),
+        // Procedural structures, dungeons & ruins (Phase 49)
+        (
+            "mossy_cobblestone",
+            "Mossy Cobblestone",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 2.0,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(64),
+                ..Default::default()
+            },
+        ),
+        (
+            "monster_spawner",
+            "Monster Spawner",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 5.0,
+                blast_resistance: 5.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(65),
+                ..Default::default()
+            },
+        ),
+        (
+            "chest",
+            "Chest",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Transparent,
+                hardness: 2.5,
+                blast_resistance: 2.5,
+                tool: Some("telos:axe".into()),
+                sound: Some("telos:wood".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(66),
+                ..Default::default()
+            },
+        ),
     ]
 }
 
@@ -1302,6 +1351,79 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
             "leather",
             ItemDef {
                 name: "Leather".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        // Dungeon & structure loot items (Phase 49)
+        (
+            "iron_ingot",
+            ItemDef {
+                name: "Iron Ingot".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "gold_ingot",
+            ItemDef {
+                name: "Gold Ingot".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "coal",
+            ItemDef {
+                name: "Coal".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "string",
+            ItemDef {
+                name: "String".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "gunpowder",
+            ItemDef {
+                name: "Gunpowder".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "bread",
+            ItemDef {
+                name: "Bread".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "wheat",
+            ItemDef {
+                name: "Wheat".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "saddle",
+            ItemDef {
+                name: "Saddle".into(),
+                max_stack_size: 1,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "name_tag",
+            ItemDef {
+                name: "Name Tag".into(),
                 max_stack_size: 64,
                 item_type: ItemTypeDef::Generic,
             },

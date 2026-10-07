@@ -76,6 +76,15 @@ fn register_world_command(dispatcher: &mut CommandDispatcher) {
     dispatcher.register(world_node);
 }
 
+/// Runtime state of an active monster spawner block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnerState {
+    /// Type of mob spawned by this block.
+    pub mob_type: EntityType,
+    /// Ticks remaining until next spawn attempt.
+    pub spawn_delay: u16,
+}
+
 /// Top-level authoritative server orchestrating worlds, simulation, and client streaming.
 pub struct Server {
     config: ServerConfig,
@@ -99,6 +108,8 @@ pub struct Server {
     pub mob_yaws: HashMap<u32, f32>,
     /// Tick count when natural mob spawning last ran.
     pub last_mob_spawn_tick: u64,
+    /// Active monster spawners tracked by the server.
+    pub active_spawners: HashMap<BlockPos, SpawnerState>,
     /// Authoritative command dispatcher and syntax tree.
     pub command_dispatcher: Arc<CommandDispatcher>,
     /// Central manager for sandboxed WebAssembly mods and scripts.
@@ -275,6 +286,7 @@ impl Server {
             mob_positions: HashMap::new(),
             mob_yaws: HashMap::new(),
             last_mob_spawn_tick: 0,
+            active_spawners: HashMap::new(),
             command_dispatcher,
             mod_manager,
             js_plugins,
@@ -606,6 +618,143 @@ impl Server {
                     EntityType::Cow
                 };
                 self.spawn_mob(mob_type, spawn_pos);
+            }
+        }
+    }
+
+    /// Registers an active monster spawner block at `pos`.
+    pub fn register_spawner(&mut self, pos: BlockPos, mob_type: EntityType) {
+        self.active_spawners.insert(
+            pos,
+            SpawnerState {
+                mob_type,
+                spawn_delay: 100,
+            },
+        );
+    }
+
+    /// Unregisters a monster spawner block at `pos`.
+    pub fn unregister_spawner(&mut self, pos: BlockPos) {
+        self.active_spawners.remove(&pos);
+    }
+
+    /// Ticks active monster spawners, checking player proximity and spawning mobs in dark conditions.
+    #[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)]
+    pub fn tick_monster_spawners(&mut self) {
+        if self.sessions.is_empty() || self.active_spawners.is_empty() {
+            return;
+        }
+
+        let players: Vec<DVec3> = self
+            .sessions
+            .values()
+            .filter(|s| s.phase == ConnectionPhase::Play)
+            .map(|s| s.position)
+            .collect();
+
+        if players.is_empty() {
+            return;
+        }
+
+        let mut to_remove = Vec::new();
+        let mut spawns = Vec::new();
+        let mut particle_events = Vec::new();
+
+        let default_world = self.worlds.default_world_mut();
+
+        for (&spawner_pos, state) in &mut self.active_spawners {
+            let cur_block = default_world.get_block(spawner_pos);
+            if !default_world.registry().is_spawner(cur_block) {
+                to_remove.push(spawner_pos);
+                continue;
+            }
+
+            let spawner_center = DVec3::new(
+                f64::from(spawner_pos.x()) + 0.5,
+                f64::from(spawner_pos.y()) + 0.5,
+                f64::from(spawner_pos.z()) + 0.5,
+            );
+
+            let is_player_near = players.iter().any(|&p| p.distance(spawner_center) <= 16.0);
+
+            if !is_player_near {
+                continue;
+            }
+
+            if state.spawn_delay > 0 {
+                state.spawn_delay -= 1;
+            }
+
+            if state.spawn_delay == 0 {
+                state.spawn_delay = 200;
+
+                let hash =
+                    self.tick_count.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (spawner_pos.x() as u64);
+                let dx = ((hash % 9) as i32) - 4;
+                let dz = (((hash >> 8) % 9) as i32) - 4;
+                let dy = (((hash >> 16) % 3) as i32) - 1;
+
+                let candidate_pos = BlockPos::new(
+                    spawner_pos.x() + dx,
+                    spawner_pos.y() + dy,
+                    spawner_pos.z() + dz,
+                );
+
+                let cand_block = default_world.get_block(candidate_pos);
+                let below_block = default_world.get_block(BlockPos::new(
+                    candidate_pos.x(),
+                    candidate_pos.y() - 1,
+                    candidate_pos.z(),
+                ));
+
+                let (_sky, block_light) = default_world.get_light(candidate_pos);
+
+                let is_cand_passable = cand_block == BlockStateId::AIR
+                    || !default_world
+                        .registry()
+                        .flags(cand_block)
+                        .contains(telos_voxel::state::StateFlags::OPAQUE_CUBE);
+                let is_below_solid = below_block != BlockStateId::AIR
+                    && default_world
+                        .registry()
+                        .flags(below_block)
+                        .contains(telos_voxel::state::StateFlags::OPAQUE_CUBE);
+
+                if is_cand_passable && is_below_solid && block_light <= 7 {
+                    let spawn_pos = DVec3::new(
+                        f64::from(candidate_pos.x()) + 0.5,
+                        f64::from(candidate_pos.y()),
+                        f64::from(candidate_pos.z()) + 0.5,
+                    );
+                    spawns.push((state.mob_type, spawn_pos));
+                }
+
+                particle_events.push(S2cParticleEvent {
+                    effect: ParticleEffectKind::Smoke,
+                    x: spawner_center.x as f32,
+                    y: spawner_center.y as f32,
+                    z: spawner_center.z as f32,
+                    count: 12,
+                    speed: 0.2,
+                    block_state_id: 0,
+                });
+            }
+        }
+
+        for pos in to_remove {
+            self.active_spawners.remove(&pos);
+        }
+
+        for (mob_type, pos) in spawns {
+            self.spawn_mob(mob_type, pos);
+        }
+
+        for p_msg in particle_events {
+            let msg = S2cMessage::ParticleEvent(p_msg);
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(msg.clone()));
+                }
             }
         }
     }
@@ -1968,6 +2117,19 @@ impl Server {
                         BlockActionKind::Interact => {}
                     }
 
+                    if world.registry().is_spawner(old_state) {
+                        self.active_spawners.remove(&target_pos);
+                    }
+                    if world.registry().is_spawner(new_state) {
+                        self.active_spawners.insert(
+                            target_pos,
+                            SpawnerState {
+                                mob_type: EntityType::Zombie,
+                                spawn_delay: 100,
+                            },
+                        );
+                    }
+
                     let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
                         x: target_pos.x(),
                         y: target_pos.y(),
@@ -2637,6 +2799,9 @@ impl Server {
             self.last_mob_spawn_tick = self.tick_count;
             self.tick_natural_spawner();
         }
+
+        // 7b. Monster mob spawners (runs every tick)
+        self.tick_monster_spawners();
 
         // 8. Distance despawning based on simulation distance ((sim_dist * 32.0) + 16.0 blocks)
         let active_players: Vec<DVec3> = self

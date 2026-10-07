@@ -586,6 +586,21 @@ impl BlockRegistry {
             ),
         );
 
+        // Procedural structures, dungeons & ruins (Phase 49)
+        let mossy_cobble_id = Identifier::new("telos", "mossy_cobblestone").unwrap();
+        reg.register(mossy_cobble_id, StateFlags::OPAQUE_CUBE);
+
+        let monster_spawner_id = Identifier::new("telos", "monster_spawner").unwrap();
+        reg.register(monster_spawner_id, StateFlags::OPAQUE_CUBE);
+
+        let chest_id = Identifier::new("telos", "chest").unwrap();
+        reg.register(
+            chest_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits() | StateFlags::LIGHT_BLOCKING.bits(),
+            ),
+        );
+
         reg.freeze();
         reg
     }
@@ -659,6 +674,22 @@ impl BlockRegistry {
     pub fn is_fluid(&self, id: BlockStateId) -> bool {
         self.flags(id).contains(StateFlags::FLUID)
             || matches!(self.shape(id), crate::shape::BlockShape::Fluid { .. })
+    }
+
+    /// Returns `true` if the given block state represents a monster spawner.
+    #[inline]
+    #[must_use]
+    pub fn is_spawner(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "monster_spawner")
+    }
+
+    /// Returns `true` if the given block state represents a chest container.
+    #[inline]
+    #[must_use]
+    pub fn is_chest(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "chest")
     }
 
     /// Returns `true` if the block state at `id` can be freely replaced by flowing fluids.
