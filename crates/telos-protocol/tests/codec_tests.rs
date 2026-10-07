@@ -11,11 +11,12 @@ use telos_protocol::error::ProtocolError;
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart,
-    C2sMessage, C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason,
-    LodPayload, ParticleEffectKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame,
-    S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent,
-    S2cRegistryData, S2cSpawnItem, S2cUniformChunk,
+    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect,
+    DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions,
+    S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cLoginSuccess, S2cMessage, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem,
+    S2cUniformChunk,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -165,6 +166,9 @@ fn test_c2s_messages_roundtrip() {
             z: 200,
             input_tick: 106,
         }),
+        C2sMessage::PlayerCommand(C2sPlayerCommand {
+            command: PlayerCommandKind::ShootBow { charge_ticks: 20 },
+        }),
         C2sMessage::Disconnect(Disconnect {
             reason: DisconnectReason::Normal,
             message: BoundedString::new("Quitting game").unwrap(),
@@ -276,6 +280,17 @@ fn test_s2c_messages_roundtrip() {
             vel_x: 0.05,
             vel_y: 0.1,
             vel_z: -0.05,
+        }),
+        S2cMessage::SpawnArrow(S2cSpawnArrow {
+            net_id: 99,
+            x: 12.5,
+            y: 66.0,
+            z: -14.25,
+            vel_x: 1.5,
+            vel_y: 0.25,
+            vel_z: -0.5,
+            yaw: 45.0,
+            pitch: -10.0,
         }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,

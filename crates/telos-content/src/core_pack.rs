@@ -1428,5 +1428,24 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
                 item_type: ItemTypeDef::Generic,
             },
         ),
+        // Ranged combat weapons & projectiles (Phase 51)
+        (
+            "bow",
+            ItemDef {
+                name: "Bow".into(),
+                max_stack_size: 1,
+                item_type: ItemTypeDef::RangedWeapon {
+                    weapon_type: "bow".into(),
+                },
+            },
+        ),
+        (
+            "arrow",
+            ItemDef {
+                name: "Arrow".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
     ]
 }

@@ -1321,6 +1321,8 @@ struct App {
     inventory_hovered_slot: Option<usize>,
     shift_held: bool,
     player_hurt_timer: f32,
+    bow_charging: bool,
+    bow_charge_ticks: u16,
 
     // Day/Night & Celestial Rendering
     client_time_of_day: f32,
@@ -1770,6 +1772,8 @@ impl App {
             inventory_hovered_slot: None,
             shift_held: false,
             player_hurt_timer: 0.0,
+            bow_charging: false,
+            bow_charge_ticks: 0,
 
             client_time_of_day: 6000.0,
             client_world_age: 0,
@@ -2482,10 +2486,19 @@ impl App {
                     S2cMessage::SpawnItem(spawn) => {
                         self.entity_store.on_spawn_item(spawn);
                     }
+                    S2cMessage::SpawnArrow(spawn) => {
+                        self.entity_store.on_spawn_arrow(spawn);
+                    }
                     S2cMessage::DespawnEntity(despawn) => {
                         self.entity_store.on_despawn(despawn.net_ids.as_slice());
                     }
                     S2cMessage::EntityMove(m) => {
+                        if m.on_ground
+                            && let Some(ent) = self.entity_store.get(m.net_id)
+                            && ent.entity_type == telos_sim::EntityType::Arrow
+                        {
+                            self.audio.play_arrow_hit(ent.pos.as_vec3(), false);
+                        }
                         self.entity_store.on_move(m);
                     }
                     S2cMessage::EntityStatus(s) => {
@@ -3531,6 +3544,32 @@ impl App {
                 while self.sim_time_acc >= 0.05 {
                     self.sim_time_acc -= 0.05;
                     self.tick_movement_prediction();
+
+                    if self.bow_charging {
+                        if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW
+                            && !self.inventory_open
+                            && !self.is_paused
+                        {
+                            self.bow_charge_ticks = self.bow_charge_ticks.saturating_add(1);
+                        } else {
+                            self.bow_charging = false;
+                            self.bow_charge_ticks = 0;
+                        }
+                    }
+                }
+
+                let base_fov = self.game_settings.video.fov.to_radians();
+                if self.bow_charging && self.bow_charge_ticks >= telos_sim::BOW_MIN_CHARGE_TICKS {
+                    #[allow(clippy::cast_precision_loss)]
+                    let charge_ratio = ((f32::from(self.bow_charge_ticks)
+                        - f32::from(telos_sim::BOW_MIN_CHARGE_TICKS))
+                        / (f32::from(telos_sim::BOW_FULL_CHARGE_TICKS)
+                            - f32::from(telos_sim::BOW_MIN_CHARGE_TICKS)))
+                    .clamp(0.0, 1.0);
+                    let zoom_mult = 1.0 - 0.15 * charge_ratio;
+                    self.camera.fov_y = base_fov * zoom_mult;
+                } else {
+                    self.camera.fov_y = base_fov;
                 }
             }
         } else if self.current_screen == AppScreen::MainMenu {
@@ -5864,6 +5903,20 @@ impl App {
 
             self.camera.position = self.physics.eye_pos();
 
+            let base_fov = self.game_settings.video.fov.to_radians();
+            if self.bow_charging && self.bow_charge_ticks >= telos_sim::BOW_MIN_CHARGE_TICKS {
+                #[allow(clippy::cast_precision_loss)]
+                let charge_ratio = ((f32::from(self.bow_charge_ticks)
+                    - f32::from(telos_sim::BOW_MIN_CHARGE_TICKS))
+                    / (f32::from(telos_sim::BOW_FULL_CHARGE_TICKS)
+                        - f32::from(telos_sim::BOW_MIN_CHARGE_TICKS)))
+                .clamp(0.0, 1.0);
+                let zoom_mult = 1.0 - 0.15 * charge_ratio;
+                self.camera.fov_y = base_fov * zoom_mult;
+            } else {
+                self.camera.fov_y = base_fov;
+            }
+
             // Raycast targeted block
             let ray_origin = self.camera.position;
             let ray_dir = self.camera.forward();
@@ -7693,6 +7746,21 @@ impl ApplicationHandler for App {
                     if let AppScreen::Settings { .. } = self.current_screen {
                         self.settings_screen.handle_mouse_up();
                     }
+                    if self.current_screen == AppScreen::InGame
+                        && button == MouseButton::Right
+                        && self.bow_charging
+                    {
+                        let charge_ticks = self.bow_charge_ticks;
+                        self.bow_charging = false;
+                        self.bow_charge_ticks = 0;
+                        if charge_ticks >= telos_sim::BOW_MIN_CHARGE_TICKS {
+                            let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                command: PlayerCommandKind::ShootBow { charge_ticks },
+                            });
+                            let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                            self.audio.play_bow_shoot(self.camera.position);
+                        }
+                    }
                     return;
                 }
 
@@ -8013,6 +8081,12 @@ impl ApplicationHandler for App {
                             }
                         }
                         MouseButton::Right => {
+                            if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW {
+                                self.bow_charging = true;
+                                self.bow_charge_ticks = 0;
+                                return;
+                            }
+
                             if let Some(hit) = self.targeted_block {
                                 let target_state = self.get_block_at(hit.pos);
                                 let is_lever = self

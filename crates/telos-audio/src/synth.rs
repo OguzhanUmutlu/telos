@@ -261,6 +261,78 @@ pub fn synthesize_item_pickup() -> Arc<[f32]> {
     samples.into()
 }
 
+/// Synthesizes a bow release twang sound buffer (mono, 44.1 kHz, ~0.12s).
+#[must_use]
+pub fn synthesize_bow_shoot() -> Arc<[f32]> {
+    let duration_sec = 0.12;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0x7351);
+
+    let mut phase = 0.0f32;
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let attack = (t / 0.003).min(1.0);
+        let decay = (-28.0 * t).exp();
+        let env = attack * decay;
+
+        let freq = 240.0 + 280.0 * (-40.0 * t).exp();
+        phase += 2.0 * std::f32::consts::PI * freq / SYNTH_SAMPLE_RATE as f32;
+
+        let tone = phase.sin();
+        let harmonic2 = (phase * 2.0).sin() * 0.35;
+        let harmonic3 = (phase * 3.0).sin() * 0.15;
+        let snap_noise = if t < 0.015 {
+            (rng.next_f32() - 0.5) * 0.4
+        } else {
+            0.0
+        };
+
+        let sample = (tone + harmonic2 + harmonic3 + snap_noise) * env * 0.8;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes an arrow impact sound buffer (mono, 44.1 kHz, ~0.08s).
+#[must_use]
+pub fn synthesize_arrow_hit(is_entity: bool) -> Arc<[f32]> {
+    let duration_sec = 0.08;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(if is_entity { 0x9812 } else { 0x4319 });
+
+    let mut phase = 0.0f32;
+    let mut filtered_noise = 0.0f32;
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let attack = (t / 0.001).min(1.0);
+        let decay = (-45.0 * t).exp();
+        let env = attack * decay;
+
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.4 * (raw_noise - filtered_noise);
+
+        let sample = if is_entity {
+            let freq = 60.0 + 120.0 * (-60.0 * t).exp();
+            phase += 2.0 * std::f32::consts::PI * freq / SYNTH_SAMPLE_RATE as f32;
+            let thud = phase.sin();
+            (thud * 0.5 + filtered_noise * 0.5) * env * 0.85
+        } else {
+            let freq = 120.0 + 680.0 * (-120.0 * t).exp();
+            phase += 2.0 * std::f32::consts::PI * freq / SYNTH_SAMPLE_RATE as f32;
+            let click = phase.sin();
+            (click * 0.6 + filtered_noise * 0.4) * env * 0.85
+        };
+
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +375,28 @@ mod tests {
         for &s in buf.iter() {
             assert!(!s.is_nan());
             assert!((-1.0..=1.0).contains(&s));
+        }
+    }
+
+    #[test]
+    fn test_bow_shoot_bounds() {
+        let buf = synthesize_bow_shoot();
+        assert!(!buf.is_empty());
+        for &s in buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+    }
+
+    #[test]
+    fn test_arrow_hit_bounds() {
+        for is_entity in [false, true] {
+            let buf = synthesize_arrow_hit(is_entity);
+            assert!(!buf.is_empty());
+            for &s in buf.iter() {
+                assert!(!s.is_nan());
+                assert!((-1.0..=1.0).contains(&s));
+            }
         }
     }
 }

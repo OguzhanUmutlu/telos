@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use glam::{DVec3, Quat, Vec2, Vec3};
 use hashbrown::HashMap;
-use telos_protocol::messages::{S2cEntityMove, S2cSpawnEntity, S2cSpawnItem};
+use telos_protocol::messages::{S2cEntityMove, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem};
 use telos_sim::EntityType;
 
 /// GPU vertex format for instanced dynamic entity rendering.
@@ -170,6 +170,40 @@ impl ClientEntity {
             snapshots,
         }
     }
+
+    /// Creates a new `ClientEntity` representing a flying projectile arrow initialized from an `S2cSpawnArrow` packet.
+    #[must_use]
+    pub fn from_spawn_arrow(msg: S2cSpawnArrow, now: f64) -> Self {
+        let pos = DVec3::new(msg.x, msg.y, msg.z);
+        let snap = EntitySnapshot {
+            timestamp: now,
+            pos,
+            yaw: msg.yaw,
+            pitch: msg.pitch,
+            head_yaw: msg.yaw,
+        };
+        let mut snapshots = VecDeque::with_capacity(16);
+        snapshots.push_back(snap);
+        Self {
+            net_id: msg.net_id,
+            entity_type: EntityType::Arrow,
+            pos,
+            target_pos: pos,
+            yaw: msg.yaw,
+            pitch: msg.pitch,
+            head_yaw: msg.yaw,
+            target_yaw: msg.yaw,
+            walk_time: 0.0,
+            hurt_timer: 0.0,
+            attack_swing_timer: 0.0,
+            death_timer: 0.0,
+            health: 1.0,
+            max_health: 1.0,
+            item_id: 0,
+            item_count: 0,
+            snapshots,
+        }
+    }
 }
 
 /// Storage container for remote entities tracked on the client.
@@ -218,6 +252,14 @@ impl ClientEntityStore {
         self.entities.insert(
             msg.net_id,
             ClientEntity::from_spawn_item(msg, self.current_time),
+        );
+    }
+
+    /// Handles an incoming `S2cSpawnArrow` packet.
+    pub fn on_spawn_arrow(&mut self, msg: S2cSpawnArrow) {
+        self.entities.insert(
+            msg.net_id,
+            ClientEntity::from_spawn_arrow(msg, self.current_time),
         );
     }
 
@@ -396,7 +438,10 @@ impl ClientEntityStore {
         let mut closest_hit: Option<(u32, f32)> = None;
 
         for entity in self.entities.values() {
-            if entity.death_timer > 0.0 || entity.entity_type == EntityType::Item {
+            if entity.death_timer > 0.0
+                || entity.entity_type == EntityType::Item
+                || entity.entity_type == EntityType::Arrow
+            {
                 continue;
             }
             let aabb = entity.entity_type.default_aabb();
@@ -434,7 +479,7 @@ impl ClientEntityStore {
                 0.0
             };
             let layer = match entity.entity_type {
-                EntityType::Zombie | EntityType::Player | EntityType::Item => 0,
+                EntityType::Zombie | EntityType::Player | EntityType::Item | EntityType::Arrow => 0,
                 EntityType::Pig => 1,
                 EntityType::Cow => 2,
             };
@@ -476,9 +521,37 @@ impl ClientEntityStore {
                 EntityType::Item => {
                     build_item_mesh(entity, sky, block, hurt_tint, out_vertices);
                 }
+                EntityType::Arrow => {
+                    build_arrow_mesh(entity, sky, block, hurt_tint, out_vertices);
+                }
             }
         }
     }
+}
+
+fn build_arrow_mesh(
+    entity: &ClientEntity,
+    sky: u8,
+    block: u8,
+    hurt_tint: f32,
+    out: &mut Vec<EntityVertexGpu>,
+) {
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians());
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        0.0,
+        Vec3::ZERO,
+        Vec3::new(entity.pitch, 0.0, 0.0),
+        Vec3::new(-0.025, -0.025, -0.3),
+        Vec3::new(0.025, 0.025, 0.3),
+        (0.0, 0.0, 1.0, 1.0, 8.0),
+        sky,
+        block,
+        0,
+        hurt_tint,
+        out,
+    );
 }
 
 fn build_item_mesh(
@@ -1286,6 +1359,38 @@ mod tests {
         assert!((item_updated.walk_time - 0.5).abs() < 1e-4);
 
         // Build mesh: 1 item cuboid emits 36 vertices (6 faces * 6 vertices)
+        let mut vertices = Vec::new();
+        store.build_mesh(|_| (15, 0), &mut vertices);
+        assert_eq!(vertices.len(), 36);
+    }
+
+    #[test]
+    fn test_arrow_entity_spawn_and_mesh() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn_arrow(S2cSpawnArrow {
+            net_id: 99,
+            x: 5.0,
+            y: 64.0,
+            z: 5.0,
+            vel_x: 0.0,
+            vel_y: 0.0,
+            vel_z: 1.0,
+            yaw: 180.0,
+            pitch: -10.0,
+        });
+
+        assert_eq!(store.count(), 1);
+        let arrow = store.get(99).unwrap();
+        assert_eq!(arrow.entity_type, EntityType::Arrow);
+        assert!((arrow.yaw - 180.0).abs() < 1e-4);
+        assert!((arrow.pitch - (-10.0)).abs() < 1e-4);
+
+        // Raycasting should NOT hit arrow entities
+        let hit = store.raycast(DVec3::new(5.0, 64.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 10.0);
+        assert!(hit.is_none());
+
+        // Build mesh: 1 arrow cuboid emits 36 vertices
         let mut vertices = Vec::new();
         store.build_mesh(|_| (15, 0), &mut vertices);
         assert_eq!(vertices.len(), 36);

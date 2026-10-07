@@ -85,6 +85,23 @@ pub const fn matching_armor_slot(item: u32) -> Option<usize> {
     }
 }
 
+/// Bow weapon item identifier (61).
+pub const ITEM_BOW: u32 = 61;
+/// Arrow projectile ammo item identifier (62).
+pub const ITEM_ARROW: u32 = 62;
+
+/// Returns true if the item is a bow.
+#[must_use]
+pub const fn is_bow(item: u32) -> bool {
+    item == ITEM_BOW
+}
+
+/// Returns true if the item is an arrow.
+#[must_use]
+pub const fn is_arrow(item: u32) -> bool {
+    item == ITEM_ARROW
+}
+
 /// Checks if a slot accepts the specified item.
 #[must_use]
 pub const fn is_slot_valid_for_item(slot: usize, item: u32) -> bool {
@@ -166,6 +183,8 @@ pub fn item_name(item: u32) -> &'static str {
         58 => "Wheat",
         59 => "Saddle",
         60 => "Name Tag",
+        61 => "Bow",
+        62 => "Arrow",
         _ => "Unknown Item",
     }
 }

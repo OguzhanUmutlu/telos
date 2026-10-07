@@ -527,6 +527,8 @@ impl LanguageCatalog {
             ("item.telos.wheat", "Wheat"),
             ("item.telos.saddle", "Saddle"),
             ("item.telos.name_tag", "Name Tag"),
+            ("item.telos.bow", "Bow"),
+            ("item.telos.arrow", "Arrow"),
         ];
 
         for (k, v) in en_pairs {

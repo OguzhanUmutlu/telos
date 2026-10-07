@@ -5,6 +5,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Query, Res, Resource};
 use glam::{DVec3, Vec3};
+use telos_core::coords::{BlockPos, Face};
 
 use crate::attributes::{CombatTracker, Health};
 use crate::inventory::ItemStack;
@@ -28,6 +29,8 @@ pub enum EntityType {
     Cow = 3,
     /// Dropped floating item stack.
     Item = 4,
+    /// Airborne or embedded projectile arrow.
+    Arrow = 5,
 }
 
 impl EntityType {
@@ -40,6 +43,7 @@ impl EntityType {
             2 => Some(Self::Pig),
             3 => Some(Self::Cow),
             4 => Some(Self::Item),
+            5 => Some(Self::Arrow),
             _ => None,
         }
     }
@@ -59,6 +63,7 @@ impl EntityType {
             Self::Pig => "Pig",
             Self::Cow => "Cow",
             Self::Item => "Item",
+            Self::Arrow => "Arrow",
         }
     }
 
@@ -85,6 +90,10 @@ impl EntityType {
             Self::Item => EntityAabb {
                 half_size: Vec3::new(0.125, 0.125, 0.125),
                 y_offset: 0.125,
+            },
+            Self::Arrow => EntityAabb {
+                half_size: Vec3::new(0.15, 0.15, 0.15),
+                y_offset: 0.15,
             },
         }
     }
@@ -187,6 +196,147 @@ pub fn merge_item_stacks(target: &mut ItemStack, source: &mut ItemStack) -> bool
     source.count -= transfer;
     source.normalize();
     transfer > 0
+}
+
+/// Minimum charging ticks before a bow can release an arrow (3 ticks = 0.15s).
+pub const BOW_MIN_CHARGE_TICKS: u16 = 3;
+/// Full charge duration for a bow (20 ticks = 1.0s).
+pub const BOW_FULL_CHARGE_TICKS: u16 = 20;
+/// Minimum release speed of an arrow in meters/second (10.0 m/s = 0.5 blocks/tick).
+pub const BOW_MIN_RELEASE_SPEED: f32 = 10.0;
+/// Maximum release speed of an arrow in meters/second (60.0 m/s = 3.0 blocks/tick).
+pub const BOW_MAX_RELEASE_SPEED: f32 = 60.0;
+/// Downward gravitational acceleration for arrows per tick (0.05 blocks/tick).
+pub const ARROW_GRAVITY: f64 = 0.05;
+/// Air drag multiplier applied to arrow velocity per tick.
+pub const ARROW_AIR_DRAG: f64 = 0.99;
+/// Lifetime in ticks before a stuck arrow despawns (1200 ticks = 60s).
+pub const ARROW_DESPAWN_STUCK_TICKS: u16 = 1200;
+/// Lifetime in ticks before a flying arrow despawns (600 ticks = 30s).
+pub const ARROW_DESPAWN_FLYING_TICKS: u16 = 600;
+/// Pickup proximity radius for stuck arrows (1.5 blocks).
+pub const ARROW_PICKUP_RADIUS: f64 = 1.5;
+
+/// Projectile arrow entity component tracking shooter, embedded state, age, and damage.
+#[derive(Debug, Clone, Copy, PartialEq, Component)]
+pub struct ArrowEntity {
+    /// Entity network ID of the shooter who fired this arrow, if known.
+    pub shooter_id: Option<u32>,
+    /// Whether the arrow is embedded into a solid block face.
+    pub in_ground: bool,
+    /// Struck block position if embedded.
+    pub stuck_block: Option<BlockPos>,
+    /// Lifetime in ticks since creation.
+    pub age: u16,
+    /// Base impact damage scaled by release velocity.
+    pub damage: f32,
+    /// Whether a survival player can pick up this arrow when stuck.
+    pub pickup_allowed: bool,
+}
+
+impl ArrowEntity {
+    /// Creates a new `ArrowEntity` with given shooter, base damage, and pickup flag.
+    #[must_use]
+    pub const fn new(shooter_id: Option<u32>, damage: f32, pickup_allowed: bool) -> Self {
+        Self {
+            shooter_id,
+            in_ground: false,
+            stuck_block: None,
+            age: 0,
+            damage,
+            pickup_allowed,
+        }
+    }
+}
+
+/// Result of advancing an arrow's physics for one tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArrowStepOutcome {
+    /// Arrow continues flying through the air.
+    Flying,
+    /// Arrow struck a solid voxel and embedded into its face.
+    HitBlock {
+        /// Coordinates of the struck block.
+        hit_block: BlockPos,
+        /// Face entered by the ray.
+        face: Face,
+        /// Exact intersection point in world space.
+        hit_pos: DVec3,
+    },
+    /// Arrow struck a living entity.
+    HitEntity {
+        /// Network ID of the struck entity.
+        target_id: u32,
+        /// Distance along the trajectory ray to the intersection point.
+        distance: f32,
+    },
+}
+
+/// Performs a single-tick physics simulation step for a projectile arrow.
+#[allow(clippy::cast_possible_truncation)]
+pub fn tick_arrow_physics_step<F, E>(
+    pos: &mut DVec3,
+    vel: &mut DVec3,
+    yaw: &mut f32,
+    pitch: &mut f32,
+    mut is_solid: F,
+    mut check_entities: E,
+) -> ArrowStepOutcome
+where
+    F: FnMut(BlockPos) -> bool,
+    E: FnMut(DVec3, Vec3, f32) -> Option<(u32, f32)>,
+{
+    // Apply gravity & drag to velocity
+    vel.y -= ARROW_GRAVITY;
+    *vel *= ARROW_AIR_DRAG;
+
+    let speed = vel.length();
+    if speed < 1e-4 {
+        return ArrowStepOutcome::Flying;
+    }
+
+    let dir_v3 = (*vel / speed).as_vec3();
+    let start_pos = *pos;
+    let max_dist = speed as f32;
+
+    // 1. Check entity collision along ray [0, max_dist]
+    let entity_hit = check_entities(start_pos, dir_v3, max_dist);
+
+    // 2. Check voxel collision along ray [0, max_dist]
+    let voxel_hit =
+        telos_core::raycast::raycast_voxels(start_pos.as_vec3(), dir_v3, max_dist, &mut is_solid);
+
+    // Determine which hit was closer
+    match (entity_hit, voxel_hit) {
+        (Some((entity_id, ent_dist)), Some(v_hit)) if ent_dist <= v_hit.distance => {
+            ArrowStepOutcome::HitEntity {
+                target_id: entity_id,
+                distance: ent_dist,
+            }
+        }
+        (Some((entity_id, ent_dist)), None) => ArrowStepOutcome::HitEntity {
+            target_id: entity_id,
+            distance: ent_dist,
+        },
+        (_, Some(v_hit)) => {
+            *pos = v_hit.hit_point.as_dvec3();
+            *vel = DVec3::ZERO;
+            ArrowStepOutcome::HitBlock {
+                hit_block: v_hit.pos,
+                face: v_hit.face,
+                hit_pos: *pos,
+            }
+        }
+        (None, None) => {
+            *pos += *vel;
+            // Update yaw and pitch aligned with new velocity vector
+            *yaw = (-vel.x).atan2(vel.z).to_degrees() as f32;
+            *pitch = (-vel.y)
+                .atan2((vel.x * vel.x + vel.z * vel.z).sqrt())
+                .to_degrees() as f32;
+            ArrowStepOutcome::Flying
+        }
+    }
 }
 
 /// Network identifier and entity type marker component.
@@ -1061,11 +1211,74 @@ mod tests {
         assert_eq!(EntityType::from_u8(2), Some(EntityType::Pig));
         assert_eq!(EntityType::from_u8(3), Some(EntityType::Cow));
         assert_eq!(EntityType::from_u8(4), Some(EntityType::Item));
-        assert_eq!(EntityType::from_u8(5), None);
+        assert_eq!(EntityType::from_u8(5), Some(EntityType::Arrow));
+        assert_eq!(EntityType::from_u8(6), None);
         assert_eq!(EntityType::Zombie.to_u8(), 1);
         assert_eq!(EntityType::Item.to_u8(), 4);
+        assert_eq!(EntityType::Arrow.to_u8(), 5);
         assert_eq!(EntityType::Pig.name(), "Pig");
         assert_eq!(EntityType::Item.name(), "Item");
+        assert_eq!(EntityType::Arrow.name(), "Arrow");
+    }
+
+    #[test]
+    fn test_arrow_physics_step() {
+        let mut pos = DVec3::new(0.0, 10.0, 0.0);
+        let mut vel = DVec3::new(1.0, 0.0, 0.0);
+        let mut yaw = 0.0_f32;
+        let mut pitch = 0.0_f32;
+
+        let outcome = tick_arrow_physics_step(
+            &mut pos,
+            &mut vel,
+            &mut yaw,
+            &mut pitch,
+            |_| false,
+            |_, _, _| None,
+        );
+        assert_eq!(outcome, ArrowStepOutcome::Flying);
+        assert!(pos.x > 0.0);
+        assert!(pos.y < 10.0);
+        assert!(vel.y < 0.0);
+
+        let mut pos2 = DVec3::new(0.0, 10.0, 0.0);
+        let mut vel2 = DVec3::new(2.0, 0.0, 0.0);
+        let outcome2 = tick_arrow_physics_step(
+            &mut pos2,
+            &mut vel2,
+            &mut yaw,
+            &mut pitch,
+            |b| b.x() == 1,
+            |_, _, _| None,
+        );
+        match outcome2 {
+            ArrowStepOutcome::HitBlock { hit_block, .. } => {
+                assert_eq!(hit_block.x(), 1);
+                assert_eq!(vel2, DVec3::ZERO);
+            }
+            _ => panic!("Expected block hit"),
+        }
+
+        let mut pos3 = DVec3::new(0.0, 10.0, 0.0);
+        let mut vel3 = DVec3::new(2.0, 0.0, 0.0);
+        let outcome3 = tick_arrow_physics_step(
+            &mut pos3,
+            &mut vel3,
+            &mut yaw,
+            &mut pitch,
+            |_| false,
+            |_, _, _| Some((42, 1.2)),
+        );
+        match outcome3 {
+            ArrowStepOutcome::HitEntity {
+                target_id,
+                distance,
+            } => {
+                assert_eq!(target_id, 42);
+                assert!((distance - 1.2).abs() < 1e-4);
+            }
+            _ => panic!("Expected entity hit"),
+        }
     }
 
     #[test]

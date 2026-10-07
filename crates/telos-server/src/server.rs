@@ -20,22 +20,25 @@ use telos_protocol::messages::{
     S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone,
     S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk,
     S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
 };
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
-    ARMOR_SLOTS, AiState, AttackCooldown, AttributeKind, Attributes, CombatTracker, DamageType,
-    EffectInstance, EnchantmentKind, EntityType, Experience, Health, Hunger, HurtTime,
-    ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS, ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack,
-    Mob, MobBundle, MoveMode, NetEntity, PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position,
-    PotionType, Rotation, SimParams, SimulationFrozen, StatusEffectKind, StatusEffects,
-    TargetablePlayer, Velocity, WeatherKind, WeatherState, apply_mitigated_damage,
-    block_to_drop_item, build_sim_schedule, calculate_total_epf, merge_item_stacks,
-    tick_item_physics_step,
+    ARMOR_SLOTS, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_PICKUP_RADIUS,
+    AiState, ArrowEntity, ArrowStepOutcome, AttackCooldown, AttributeKind, Attributes,
+    BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
+    CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience, Health,
+    Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
+    ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack, Mob, MobBundle, MoveMode, NetEntity,
+    PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position, PotionType, Rotation, SimParams,
+    SimulationFrozen, StatusEffectKind, StatusEffects, TargetablePlayer, Velocity, WeatherKind,
+    WeatherState, apply_mitigated_damage, block_to_drop_item, build_sim_schedule,
+    calculate_total_epf, merge_item_stacks, tick_arrow_physics_step, tick_item_physics_step,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -112,6 +115,10 @@ pub struct Server {
     pub tracked_items: HashMap<u32, bevy_ecs::entity::Entity>,
     /// Last known positions of items for delta move broadcasting.
     pub item_positions: HashMap<u32, DVec3>,
+    /// Active arrow entities keyed by their network ID.
+    pub tracked_arrows: HashMap<u32, bevy_ecs::entity::Entity>,
+    /// Last known positions of arrows for delta move broadcasting.
+    pub arrow_positions: HashMap<u32, DVec3>,
     /// Tick count when natural mob spawning last ran.
     pub last_mob_spawn_tick: u64,
     /// Active monster spawners tracked by the server.
@@ -293,6 +300,8 @@ impl Server {
             mob_yaws: HashMap::new(),
             tracked_items: HashMap::new(),
             item_positions: HashMap::new(),
+            tracked_arrows: HashMap::new(),
+            arrow_positions: HashMap::new(),
             last_mob_spawn_tick: 0,
             active_spawners: HashMap::new(),
             command_dispatcher,
@@ -355,7 +364,7 @@ impl Server {
         let bundle = match entity_type {
             EntityType::Pig => MobBundle::new_pig(net_id, pos, seed),
             EntityType::Cow => MobBundle::new_cow(net_id, pos, seed),
-            EntityType::Zombie | EntityType::Player | EntityType::Item => {
+            EntityType::Zombie | EntityType::Player | EntityType::Item | EntityType::Arrow => {
                 MobBundle::new_zombie(net_id, pos, seed)
             }
         };
@@ -490,6 +499,95 @@ impl Server {
         }
     }
 
+    /// Spawns an arrow entity into the world, broadcasts `S2cSpawnArrow`, and returns its `net_id`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_arrow_entity(
+        &mut self,
+        world_name: &str,
+        pos: DVec3,
+        vel: Vec3,
+        yaw: f32,
+        pitch: f32,
+        shooter_id: Option<u32>,
+        damage: f32,
+        pickup_allowed: bool,
+    ) -> u32 {
+        let net_id = self.next_entity_id;
+        self.next_entity_id += 1;
+
+        let arrow_comp = ArrowEntity {
+            shooter_id,
+            in_ground: false,
+            stuck_block: None,
+            age: 0,
+            damage,
+            pickup_allowed,
+        };
+
+        let entity = self
+            .ecs_world
+            .spawn((
+                NetEntity {
+                    net_id,
+                    entity_type: EntityType::Arrow,
+                },
+                Position(pos),
+                Velocity(vel),
+                Rotation {
+                    yaw,
+                    pitch,
+                    head_yaw: yaw,
+                },
+                arrow_comp,
+            ))
+            .id();
+
+        self.tracked_arrows.insert(net_id, entity);
+        self.arrow_positions.insert(net_id, pos);
+
+        let spawn_msg = S2cMessage::SpawnArrow(S2cSpawnArrow {
+            net_id,
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+            vel_x: vel.x,
+            vel_y: vel.y,
+            vel_z: vel.z,
+            yaw,
+            pitch,
+        });
+
+        for s in self.sessions.values_mut() {
+            if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                let _ = s
+                    .connection
+                    .send(Lane::Control, Payload::Msg(spawn_msg.clone()));
+            }
+        }
+
+        net_id
+    }
+
+    /// Despawns an arrow entity by its network ID.
+    pub fn despawn_arrow_entity(&mut self, net_id: u32) {
+        if let Some(entity) = self.tracked_arrows.remove(&net_id) {
+            self.ecs_world.despawn(entity);
+            self.arrow_positions.remove(&net_id);
+
+            let despawn_msg = S2cMessage::DespawnEntity(S2cDespawnEntity {
+                net_ids: BoundedVec::new(vec![net_id]).expect("single net_id"),
+            });
+
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(despawn_msg.clone()));
+                }
+            }
+        }
+    }
+
     /// Handles mob death transitions, broadcasting death animation and particles,
     /// awarding experience, dropping loot, and despawning the mob.
     pub fn handle_mob_death(&mut self, net_id: u32, killer_session_id: Option<u64>) {
@@ -544,7 +642,7 @@ impl Server {
             EntityType::Zombie => (5, vec![("rotten_flesh", count_1_to_2)]),
             EntityType::Pig => (2, vec![("porkchop", count_1_to_3)]),
             EntityType::Cow => (2, vec![("beef", count_1_to_3), ("leather", count_0_to_2)]),
-            EntityType::Player | EntityType::Item => (0, Vec::new()),
+            EntityType::Player | EntityType::Item | EntityType::Arrow => (0, Vec::new()),
         };
 
         // 4. Award XP to killer if within reach
@@ -831,6 +929,365 @@ impl Server {
                                 .connection
                                 .send(Lane::Control, Payload::Msg(move_msg.clone()));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Advances physics simulation, entity hit detection, block embedding, player pickup,
+    /// and despawn lifecycles for all active projectile arrow entities.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    pub fn tick_arrow_entities(&mut self) {
+        let arrow_entries: Vec<(u32, bevy_ecs::entity::Entity)> =
+            self.tracked_arrows.iter().map(|(&k, &v)| (k, v)).collect();
+
+        if arrow_entries.is_empty() {
+            return;
+        }
+
+        let mut to_despawn = Vec::new();
+        let mut embedded_moves = Vec::new();
+
+        // 1. Collect potential living target candidates (active mobs)
+        let mob_targets: Vec<(u32, DVec3, telos_sim::EntityAabb)> = self
+            .tracked_mobs
+            .iter()
+            .filter_map(|(&net_id, &entity)| {
+                let pos = self.ecs_world.get::<Position>(entity)?.0;
+                let net = self.ecs_world.get::<NetEntity>(entity)?;
+                Some((net_id, pos, net.entity_type.default_aabb()))
+            })
+            .collect();
+
+        // 2. Physics step, aging, and hit detection
+        for (net_id, entity) in &arrow_entries {
+            let Some((pos, vel, rot, mut arrow_comp)) =
+                self.ecs_world.get_entity(*entity).ok().and_then(|ent| {
+                    let p = *ent.get::<Position>()?;
+                    let v = *ent.get::<Velocity>()?;
+                    let r = *ent.get::<Rotation>()?;
+                    let a = *ent.get::<ArrowEntity>()?;
+                    Some((p, v, r, a))
+                })
+            else {
+                continue;
+            };
+
+            arrow_comp.age = arrow_comp.age.saturating_add(1);
+
+            // Despawn checks
+            if (!arrow_comp.in_ground && arrow_comp.age >= ARROW_DESPAWN_FLYING_TICKS)
+                || (arrow_comp.in_ground && arrow_comp.age >= ARROW_DESPAWN_STUCK_TICKS)
+            {
+                to_despawn.push(*net_id);
+                continue;
+            }
+
+            if arrow_comp.in_ground {
+                if let Ok(mut ent) = self.ecs_world.get_entity_mut(*entity)
+                    && let Some(mut a) = ent.get_mut::<ArrowEntity>()
+                {
+                    *a = arrow_comp;
+                }
+                continue;
+            }
+
+            // Flying arrow: physics step
+            let world = self.worlds.default_world();
+            let is_solid = |b: BlockPos| -> bool {
+                let state = world.get_loaded_block(b);
+                state.0 != 0 && state.0 != 8 && state.0 != 9
+            };
+
+            let check_entities =
+                |ray_origin: DVec3, ray_dir: Vec3, max_dist: f32| -> Option<(u32, f32)> {
+                    let mut closest: Option<(u32, f32)> = None;
+                    for (tid, tpos, taabb) in &mob_targets {
+                        if Some(*tid) == arrow_comp.shooter_id {
+                            continue;
+                        }
+                        if let Some(dist) =
+                            taabb.intersects_ray(*tpos, ray_origin, ray_dir, max_dist)
+                            && closest.as_ref().is_none_or(|&(_, d)| dist < d)
+                        {
+                            closest = Some((*tid, dist));
+                        }
+                    }
+                    closest
+                };
+
+            let mut cur_pos = pos.0;
+            let mut cur_vel = vel.0.as_dvec3();
+            let mut cur_yaw = rot.yaw;
+            let mut cur_pitch = rot.pitch;
+
+            let outcome = tick_arrow_physics_step(
+                &mut cur_pos,
+                &mut cur_vel,
+                &mut cur_yaw,
+                &mut cur_pitch,
+                is_solid,
+                check_entities,
+            );
+
+            match outcome {
+                ArrowStepOutcome::HitEntity { target_id, .. } => {
+                    if let Some(&target_entity) = self.tracked_mobs.get(&target_id) {
+                        let mut is_dead = false;
+                        let target_armor = self
+                            .ecs_world
+                            .get_mut::<Attributes>(target_entity)
+                            .map_or(0.0, |mut a| a.get_value(AttributeKind::Armor) as f32);
+                        let target_toughness = self
+                            .ecs_world
+                            .get_mut::<Attributes>(target_entity)
+                            .map_or(0.0, |mut a| {
+                                a.get_value(AttributeKind::ArmorToughness) as f32
+                            });
+                        let target_resistance = self
+                            .ecs_world
+                            .get::<StatusEffects>(target_entity)
+                            .and_then(|eff| eff.amplifier(StatusEffectKind::Resistance))
+                            .map_or(0, |amp| amp + 1);
+
+                        let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                        if let Ok((mut health, mut tracker)) =
+                            query.get_mut(&mut self.ecs_world, target_entity)
+                        {
+                            apply_mitigated_damage(
+                                &mut health,
+                                &mut tracker,
+                                arrow_comp.damage,
+                                DamageType::Attack,
+                                target_armor,
+                                target_toughness,
+                                target_resistance,
+                                0,
+                            );
+                            if !health.is_alive() {
+                                is_dead = true;
+                            }
+                        }
+
+                        self.event_queue.push(GameEvent::EntityDamage {
+                            target_net_id: target_id,
+                            damage: arrow_comp.damage,
+                            attacker_net_id: arrow_comp.shooter_id,
+                        });
+
+                        if let Some(mut hurt_time) =
+                            self.ecs_world.get_mut::<HurtTime>(target_entity)
+                        {
+                            hurt_time.0 = 10;
+                        }
+
+                        if let Some(mut target_vel) =
+                            self.ecs_world.get_mut::<Velocity>(target_entity)
+                        {
+                            let flight_dir = vel.0.normalize_or_zero();
+                            let kb = Vec3::new(flight_dir.x, 0.35, flight_dir.z) * 0.4;
+                            target_vel.0 += kb;
+                        }
+
+                        if let Some(mut mob) =
+                            self.ecs_world.get_mut::<telos_sim::Mob>(target_entity)
+                            && mob.kind == telos_sim::MobKind::Passive
+                        {
+                            mob.ai_state = telos_sim::AiState::Fleeing {
+                                away_from: cur_pos,
+                                timer: 60,
+                            };
+                        }
+
+                        let hurt_msg = S2cMessage::EntityStatus(S2cEntityStatus {
+                            net_id: target_id,
+                            status: 2,
+                        });
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(hurt_msg.clone()));
+                            }
+                        }
+
+                        if is_dead {
+                            let shooter_session = self.sessions.iter().find_map(|(&sid, s)| {
+                                if Some(s.entity_id) == arrow_comp.shooter_id {
+                                    Some(sid)
+                                } else {
+                                    None
+                                }
+                            });
+                            self.handle_mob_death(target_id, shooter_session);
+                        }
+                    }
+
+                    to_despawn.push(*net_id);
+                }
+                ArrowStepOutcome::HitBlock {
+                    hit_block, hit_pos, ..
+                } => {
+                    arrow_comp.in_ground = true;
+                    arrow_comp.stuck_block = Some(hit_block);
+                    if let Ok(mut ent) = self.ecs_world.get_entity_mut(*entity) {
+                        if let Some(mut p) = ent.get_mut::<Position>() {
+                            p.0 = hit_pos;
+                        }
+                        if let Some(mut v) = ent.get_mut::<Velocity>() {
+                            v.0 = Vec3::ZERO;
+                        }
+                        if let Some(mut a) = ent.get_mut::<ArrowEntity>() {
+                            *a = arrow_comp;
+                        }
+                    }
+                    self.arrow_positions.insert(*net_id, hit_pos);
+                    embedded_moves.push((*net_id, hit_pos, cur_yaw, cur_pitch));
+                }
+                ArrowStepOutcome::Flying => {
+                    if let Ok(mut ent) = self.ecs_world.get_entity_mut(*entity) {
+                        if let Some(mut p) = ent.get_mut::<Position>() {
+                            p.0 = cur_pos;
+                        }
+                        if let Some(mut v) = ent.get_mut::<Velocity>() {
+                            v.0 = cur_vel.as_vec3();
+                        }
+                        if let Some(mut r) = ent.get_mut::<Rotation>() {
+                            r.yaw = cur_yaw;
+                            r.pitch = cur_pitch;
+                        }
+                        if let Some(mut a) = ent.get_mut::<ArrowEntity>() {
+                            *a = arrow_comp;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Despawn arrows that hit entities or expired
+        for id in to_despawn {
+            self.despawn_arrow_entity(id);
+        }
+
+        // Broadcast embedded moves (on_ground = true)
+        for (net_id, pos, yaw, pitch) in embedded_moves {
+            let move_msg = S2cMessage::EntityMove(S2cEntityMove {
+                net_id,
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                yaw,
+                pitch,
+                head_yaw: yaw,
+                on_ground: true,
+            });
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s
+                        .connection
+                        .send(Lane::Control, Payload::Msg(move_msg.clone()));
+                }
+            }
+        }
+
+        // 3. Player proximity pickup check for stuck arrows
+        let mut picked_up_arrows = Vec::new();
+        let player_candidates: Vec<(u64, bevy_ecs::entity::Entity, DVec3)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.move_mode == MoveMode::Walk)
+            .filter_map(|(&sid, s)| s.ecs_entity.map(|e| (sid, e, s.position)))
+            .collect();
+
+        for (&net_id, &entity) in &self.tracked_arrows {
+            let Some((arrow_pos, arrow_comp)) =
+                self.ecs_world.get_entity(entity).ok().and_then(|ent| {
+                    let p = ent.get::<Position>()?.0;
+                    let a = *ent.get::<ArrowEntity>()?;
+                    Some((p, a))
+                })
+            else {
+                continue;
+            };
+
+            if !arrow_comp.in_ground || !arrow_comp.pickup_allowed {
+                continue;
+            }
+
+            for (sid, player_ent, player_pos) in &player_candidates {
+                if arrow_pos.distance(*player_pos) <= ARROW_PICKUP_RADIUS {
+                    let mut arrow_stack = ItemStack::new(ITEM_ARROW, 1);
+                    let inserted =
+                        if let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(*player_ent) {
+                            inv.insert_into_storage_or_hotbar(&mut arrow_stack)
+                        } else {
+                            0
+                        };
+                    if inserted > 0 {
+                        if let Some(inv) = self.ecs_world.get::<Inventory>(*player_ent)
+                            && let Some(session) = self.sessions.get_mut(sid)
+                        {
+                            for (slot_idx, slot) in inv.slots.iter().enumerate() {
+                                if slot.item == ITEM_ARROW {
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let _ = session.connection.send(
+                                        Lane::Control,
+                                        Payload::Msg(S2cMessage::InventorySlot(S2cInventorySlot {
+                                            slot: slot_idx as u16,
+                                            item: slot.item,
+                                            count: slot.count,
+                                        })),
+                                    );
+                                }
+                            }
+                        }
+                        picked_up_arrows.push(net_id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for id in picked_up_arrows {
+            self.despawn_arrow_entity(id);
+        }
+
+        // 4. Movement delta broadcast for flying arrows
+        for (&net_id, &entity) in &self.tracked_arrows {
+            let Some((pos, rot, arrow_comp)) =
+                self.ecs_world.get_entity(entity).ok().and_then(|ent| {
+                    let p = ent.get::<Position>()?.0;
+                    let r = *ent.get::<Rotation>()?;
+                    let a = *ent.get::<ArrowEntity>()?;
+                    Some((p, r, a))
+                })
+            else {
+                continue;
+            };
+
+            if arrow_comp.in_ground {
+                continue;
+            }
+
+            let prev_pos = self.arrow_positions.get(&net_id).copied().unwrap_or(pos);
+            if pos.distance_squared(prev_pos) > 0.001 {
+                self.arrow_positions.insert(net_id, pos);
+                let move_msg = S2cMessage::EntityMove(S2cEntityMove {
+                    net_id,
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                    yaw: rot.yaw,
+                    pitch: rot.pitch,
+                    head_yaw: rot.yaw,
+                    on_ground: false,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(move_msg.clone()));
                     }
                 }
             }
@@ -1579,6 +2036,49 @@ impl Server {
                                     }
                                 }
 
+                                // Send active arrows to joining client
+                                for (&net_id, &entity) in &self.tracked_arrows {
+                                    if let (Some(pos), Some(vel), Some(rot)) = (
+                                        self.ecs_world.get::<Position>(entity),
+                                        self.ecs_world.get::<Velocity>(entity),
+                                        self.ecs_world.get::<Rotation>(entity),
+                                    ) {
+                                        let spawn_msg = S2cMessage::SpawnArrow(S2cSpawnArrow {
+                                            net_id,
+                                            x: pos.0.x,
+                                            y: pos.0.y,
+                                            z: pos.0.z,
+                                            vel_x: vel.0.x,
+                                            vel_y: vel.0.y,
+                                            vel_z: vel.0.z,
+                                            yaw: rot.yaw,
+                                            pitch: rot.pitch,
+                                        });
+                                        let _ = session
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(spawn_msg));
+
+                                        if let Some(arrow) =
+                                            self.ecs_world.get::<ArrowEntity>(entity)
+                                            && arrow.in_ground
+                                        {
+                                            let move_msg = S2cMessage::EntityMove(S2cEntityMove {
+                                                net_id,
+                                                x: pos.0.x,
+                                                y: pos.0.y,
+                                                z: pos.0.z,
+                                                yaw: rot.yaw,
+                                                pitch: rot.pitch,
+                                                head_yaw: rot.yaw,
+                                                on_ground: true,
+                                            });
+                                            let _ = session
+                                                .connection
+                                                .send(Lane::Control, Payload::Msg(move_msg));
+                                        }
+                                    }
+                                }
+
                                 // Send initial movement state to synchronize client prediction
                                 let initial_ack =
                                     S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
@@ -1878,6 +2378,106 @@ impl Server {
                                 .send(Lane::Control, Payload::Msg(slot_update));
                         }
                     }
+                }
+                PlayerCommandKind::ShootBow { charge_ticks } => {
+                    if charge_ticks < BOW_MIN_CHARGE_TICKS {
+                        continue;
+                    }
+
+                    let (selected_slot, world_name, pitch, move_mode) = match self
+                        .sessions
+                        .get(&session_id)
+                    {
+                        Some(s) => (s.selected_slot, s.world_name.clone(), s.pitch, s.move_mode),
+                        None => continue,
+                    };
+
+                    let is_creative = move_mode == MoveMode::NoClipFly;
+                    let mut can_shoot = false;
+                    let mut arrow_slot_to_consume: Option<usize> = None;
+
+                    if let Some(entity) = entity
+                        && let Some(inv) = self.ecs_world.get::<Inventory>(entity)
+                    {
+                        let slot_idx = selected_slot as usize;
+                        if slot_idx < inv.slots.len() && inv.slots[slot_idx].item == ITEM_BOW {
+                            if is_creative {
+                                can_shoot = true;
+                            } else {
+                                for (idx, slot) in inv.slots.iter().enumerate() {
+                                    if slot.item == ITEM_ARROW && slot.count > 0 {
+                                        arrow_slot_to_consume = Some(idx);
+                                        can_shoot = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !can_shoot {
+                        continue;
+                    }
+
+                    // Consume arrow in survival mode
+                    if let Some(slot_idx) = arrow_slot_to_consume {
+                        let (rem_item, rem_count) = if let Some(entity) = entity
+                            && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+                        {
+                            let slot = &mut inv.slots[slot_idx];
+                            slot.count = slot.count.saturating_sub(1);
+                            slot.normalize();
+                            (slot.item, slot.count)
+                        } else {
+                            (0, 0)
+                        };
+
+                        #[allow(clippy::cast_possible_truncation)]
+                        let slot_update = S2cMessage::InventorySlot(S2cInventorySlot {
+                            slot: slot_idx as u16,
+                            item: rem_item,
+                            count: rem_count,
+                        });
+                        if let Some(session) = self.sessions.get_mut(&session_id) {
+                            let _ = session
+                                .connection
+                                .send(Lane::Control, Payload::Msg(slot_update));
+                        }
+                    }
+
+                    // Calculate release velocity from charge ticks
+                    #[allow(clippy::cast_precision_loss)]
+                    let charge_ratio = ((f32::from(charge_ticks)
+                        - f32::from(BOW_MIN_CHARGE_TICKS))
+                        / (f32::from(BOW_FULL_CHARGE_TICKS) - f32::from(BOW_MIN_CHARGE_TICKS)))
+                    .clamp(0.0, 1.0);
+
+                    let speed_mps = BOW_MIN_RELEASE_SPEED
+                        + charge_ratio * (BOW_MAX_RELEASE_SPEED - BOW_MIN_RELEASE_SPEED);
+                    let speed_per_tick = speed_mps / 20.0;
+                    let damage = (speed_per_tick * 3.0).ceil().max(2.0);
+
+                    let yaw_rad = session_yaw.to_radians();
+                    let pitch_rad = pitch.to_radians();
+                    let forward_x = -yaw_rad.sin() * pitch_rad.cos();
+                    let forward_y = -pitch_rad.sin();
+                    let forward_z = -yaw_rad.cos() * pitch_rad.cos();
+                    let dir = Vec3::new(forward_x, forward_y, forward_z).normalize_or_zero();
+                    let vel = dir * speed_per_tick;
+
+                    let launch_pos = session_pos + DVec3::new(0.0, 1.62, 0.0);
+                    let shooter_id = self.sessions.get(&session_id).map(|s| s.entity_id);
+
+                    self.spawn_arrow_entity(
+                        &world_name,
+                        launch_pos,
+                        vel,
+                        session_yaw,
+                        pitch,
+                        shooter_id,
+                        damage,
+                        !is_creative,
+                    );
                 }
             }
         }
@@ -3299,6 +3899,9 @@ impl Server {
 
         // 9b. Advance dropped item physics, merging, and player pickup
         self.tick_item_entities();
+
+        // 9c. Advance projectile arrow physics, hit detection, block embedding, and player pickup
+        self.tick_arrow_entities();
 
         // 10. Tick deterministic logic simulation engine across all loaded worlds
         for (world_name, world) in self.worlds.iter_mut() {

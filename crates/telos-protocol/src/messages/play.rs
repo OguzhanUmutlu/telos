@@ -1465,6 +1465,11 @@ pub enum PlayerCommandKind {
         /// If true, drops entire stack; if false, drops a single item.
         entire_stack: bool,
     },
+    /// Fire a charged arrow from a drawn bow.
+    ShootBow {
+        /// Number of ticks the bow was charged before release.
+        charge_ticks: u16,
+    },
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1843,6 +1848,10 @@ impl C2sPlayerCommand {
                 buf.push(12);
                 buf.push(u8::from(entire_stack));
             }
+            PlayerCommandKind::ShootBow { charge_ticks } => {
+                buf.push(13);
+                encode_varint(u32::from(charge_ticks), buf);
+            }
         }
     }
 
@@ -1985,6 +1994,18 @@ impl C2sPlayerCommand {
                 let entire_stack = cursor[0] != 0;
                 *cursor = &cursor[1..];
                 PlayerCommandKind::DropItem { entire_stack }
+            }
+            13 => {
+                let charge_raw = decode_varint(cursor)?;
+                if charge_raw > 1200 {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "shoot_bow.charge_ticks",
+                        reason: "Charge ticks must not exceed 1200".to_string(),
+                    });
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let charge_ticks = charge_raw as u16;
+                PlayerCommandKind::ShootBow { charge_ticks }
             }
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
@@ -2608,6 +2629,93 @@ impl S2cSpawnItem {
             vel_x,
             vel_y,
             vel_z,
+        })
+    }
+}
+
+/// Server spawns an airborne or embedded projectile arrow entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cSpawnArrow {
+    /// Network ID of the arrow entity.
+    pub net_id: u32,
+    /// World position X.
+    pub x: f64,
+    /// World position Y.
+    pub y: f64,
+    /// World position Z.
+    pub z: f64,
+    /// Initial velocity X.
+    pub vel_x: f32,
+    /// Initial velocity Y.
+    pub vel_y: f32,
+    /// Initial velocity Z.
+    pub vel_z: f32,
+    /// Orientation yaw in degrees.
+    pub yaw: f32,
+    /// Orientation pitch in degrees.
+    pub pitch: f32,
+}
+
+impl S2cSpawnArrow {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.net_id, buf);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.extend_from_slice(&self.z.to_le_bytes());
+        buf.extend_from_slice(&self.vel_x.to_le_bytes());
+        buf.extend_from_slice(&self.vel_y.to_le_bytes());
+        buf.extend_from_slice(&self.vel_z.to_le_bytes());
+        buf.extend_from_slice(&self.yaw.to_le_bytes());
+        buf.extend_from_slice(&self.pitch.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let net_id = decode_varint(cursor)?;
+
+        if cursor.len() < 44 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let x = f64::from_le_bytes(cursor[0..8].try_into().unwrap());
+        let y = f64::from_le_bytes(cursor[8..16].try_into().unwrap());
+        let z = f64::from_le_bytes(cursor[16..24].try_into().unwrap());
+        let vel_x = f32::from_le_bytes(cursor[24..28].try_into().unwrap());
+        let vel_y = f32::from_le_bytes(cursor[28..32].try_into().unwrap());
+        let vel_z = f32::from_le_bytes(cursor[32..36].try_into().unwrap());
+        let yaw = f32::from_le_bytes(cursor[36..40].try_into().unwrap());
+        let pitch = f32::from_le_bytes(cursor[40..44].try_into().unwrap());
+        *cursor = &cursor[44..];
+
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_arrow.pos",
+                reason: "Coordinates must be finite".to_string(),
+            });
+        }
+        if !vel_x.is_finite() || !vel_y.is_finite() || !vel_z.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_arrow.vel",
+                reason: "Velocity components must be finite".to_string(),
+            });
+        }
+        if !yaw.is_finite() || !pitch.is_finite() {
+            return Err(ProtocolError::InvalidValue {
+                field: "spawn_arrow.rotation",
+                reason: "Rotation angles must be finite".to_string(),
+            });
+        }
+
+        Ok(Self {
+            net_id,
+            x,
+            y,
+            z,
+            vel_x,
+            vel_y,
+            vel_z,
+            yaw,
+            pitch,
         })
     }
 }

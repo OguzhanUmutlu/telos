@@ -19,9 +19,9 @@ pub use play::{
     PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
     S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
     S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
-    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -242,6 +242,8 @@ pub enum S2cMessage {
     UpdateEffects(S2cUpdateEffects),
     /// Play phase dropped item entity spawn.
     SpawnItem(S2cSpawnItem),
+    /// Play phase projectile arrow entity spawn.
+    SpawnArrow(S2cSpawnArrow),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -279,7 +281,8 @@ impl S2cMessage {
             | Self::PlayerMovementAck(_)
             | Self::ParticleEvent(_)
             | Self::UpdateEffects(_)
-            | Self::SpawnItem(_) => Some(ConnectionPhase::Play),
+            | Self::SpawnItem(_)
+            | Self::SpawnArrow(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -315,6 +318,7 @@ impl S2cMessage {
             Self::ParticleEvent(_) => 21,
             Self::UpdateEffects(_) => 22,
             Self::SpawnItem(_) => 23,
+            Self::SpawnArrow(_) => 24,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -350,6 +354,7 @@ impl S2cMessage {
             Self::ParticleEvent(m) => m.encode(buf),
             Self::UpdateEffects(m) => m.encode(buf),
             Self::SpawnItem(m) => m.encode(buf),
+            Self::SpawnArrow(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

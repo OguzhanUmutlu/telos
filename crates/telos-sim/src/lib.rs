@@ -43,11 +43,14 @@ pub use enchantment::{
     CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
 };
 pub use entity::{
-    AiState, AttackCooldown, EntityAabb, EntityType, HurtTime, ITEM_DESPAWN_TICKS,
-    ITEM_MERGE_RADIUS, ITEM_PICKUP_RADIUS, ItemEntity, Mob, MobBundle, MobKind, NetEntity,
-    PLAYER_DROP_PICKUP_DELAY, PathFollower, PlayerPositions, Position, Rotation, SimulationFrozen,
-    TargetablePlayer, Velocity, has_line_of_sight, merge_item_stacks, mob_ai_system,
-    mob_hurt_decay_system, mob_movement_system, tick_item_physics_step,
+    ARROW_AIR_DRAG, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_GRAVITY,
+    ARROW_PICKUP_RADIUS, AiState, ArrowEntity, ArrowStepOutcome, AttackCooldown,
+    BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
+    EntityAabb, EntityType, HurtTime, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS, ITEM_PICKUP_RADIUS,
+    ItemEntity, Mob, MobBundle, MobKind, NetEntity, PLAYER_DROP_PICKUP_DELAY, PathFollower,
+    PlayerPositions, Position, Rotation, SimulationFrozen, TargetablePlayer, Velocity,
+    has_line_of_sight, merge_item_stacks, mob_ai_system, mob_hurt_decay_system,
+    mob_movement_system, tick_arrow_physics_step, tick_item_physics_step,
 };
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{
@@ -61,10 +64,11 @@ pub use foliage::{LEAF_DECAY_RADIUS, is_leaf_decaying};
 pub use hunger::{Hunger, HungerTickResult, SimParams, tick_hunger};
 pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,
-    CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ClickButton, ClickMode, HOTBAR_SLOTS, Inventory,
-    InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
-    block_to_drop_item, inventory_click, is_armor, is_boots, is_chestplate, is_helmet, is_leggings,
-    is_slot_valid_for_item, item_name, matching_armor_slot,
+    CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ClickButton, ClickMode, HOTBAR_SLOTS, ITEM_ARROW,
+    ITEM_BOW, Inventory, InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT,
+    PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS, block_to_drop_item, inventory_click, is_armor, is_arrow,
+    is_boots, is_bow, is_chestplate, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
+    matching_armor_slot,
 };
 pub use logic::{
     LogicChunk, LogicComponent, LogicEngine, LogicKind, MAX_SIGNAL_DISTANCE, ScheduledLogicTick,

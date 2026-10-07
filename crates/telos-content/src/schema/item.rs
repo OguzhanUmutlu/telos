@@ -52,6 +52,11 @@ pub enum ItemTypeDef {
         /// Potion effect descriptor (e.g. "swiftness", "healing").
         potion_type: String,
     },
+    /// Ranged projectile weapon (e.g. "bow", "crossbow").
+    RangedWeapon {
+        /// Weapon archetype (e.g. "bow").
+        weapon_type: String,
+    },
 }
 
 fn default_mining_speed() -> f32 {
