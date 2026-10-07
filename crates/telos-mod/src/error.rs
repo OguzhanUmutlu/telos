@@ -86,4 +86,29 @@ pub enum ModError {
         #[source]
         error: std::io::Error,
     },
+
+    /// JavaScript runtime initialization or execution error.
+    #[error("JavaScript mod error in '{mod_id}': {message}")]
+    JsExecution {
+        /// Identifier of the mod or script.
+        mod_id: String,
+        /// Error details.
+        message: String,
+    },
+
+    /// JavaScript execution exceeded instruction fuel or wall-clock timeout budget.
+    #[error("JavaScript script '{mod_id}' exceeded execution budget: {message}")]
+    JsTimeout {
+        /// Identifier of the mod or script.
+        mod_id: String,
+        /// Timeout / fuel detail.
+        message: String,
+    },
+
+    /// JavaScript heap memory limit exceeded.
+    #[error("JavaScript script '{mod_id}' exceeded memory quota")]
+    JsMemoryLimitExceeded {
+        /// Identifier of the mod or script.
+        mod_id: String,
+    },
 }

@@ -113,6 +113,7 @@ toml = "0.8"
 semver = { version = "1.0", features = ["serde"] }
 blake3 = "1.6"
 wasmtime = { version = "30", default-features = false, features = ["runtime", "cranelift", "component-model", "wat", "std"] }
+rquickjs = { version = "0.14", default-features = false, features = ["std"] }
 
 # Networking & Async
 tokio = { version = "1.43", default-features = false, features = ["sync", "rt", "rt-multi-thread", "net", "time", "macros", "io-util"] }
@@ -143,16 +144,21 @@ cast_precision_loss = "allow"
 
 [profile.dev]
 opt-level = 1
+debug = 1
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = 0
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "unwind"
+strip = "debuginfo"
 
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
+

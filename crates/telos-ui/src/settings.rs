@@ -114,6 +114,9 @@ pub struct GameplaySettings {
     pub game_mode: String,
     /// Active UI language code (e.g. `"en_us"`, `"es_es"`, `"de_de"`, `"fr_fr"`, `"tr_tr"`).
     pub language: String,
+    /// Whether to allow dynamic JavaScript scripts inside resource packs (default: false).
+    #[serde(default)]
+    pub allow_pack_scripts: bool,
 }
 
 impl Default for GameplaySettings {
@@ -122,6 +125,7 @@ impl Default for GameplaySettings {
             player_name: "Player".to_string(),
             game_mode: "Survival".to_string(),
             language: "en_us".to_string(),
+            allow_pack_scripts: false,
         }
     }
 }

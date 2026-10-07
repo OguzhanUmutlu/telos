@@ -27,6 +27,7 @@ telos-ui = { workspace = true }
 telos-sim = { workspace = true }
 telos-content = { workspace = true }
 telos-audio = { workspace = true }
+telos-mod = { workspace = true }
 hashbrown = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }

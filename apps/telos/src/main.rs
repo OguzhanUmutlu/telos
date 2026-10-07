@@ -1401,6 +1401,9 @@ struct App {
 
     // Active status effects on client player (Phase 38)
     client_effects: Vec<NetworkEffect>,
+
+    // Sandboxed JavaScript runtime for resource pack particle/sound modulation (Phase 40)
+    js_particle_hook: Option<telos_mod::JsParticleHook>,
 }
 
 impl App {
@@ -1587,6 +1590,34 @@ impl App {
             }
         }
         catalog.set_active_locale(&game_settings.gameplay.language);
+
+        let js_particle_hook = if game_settings.gameplay.allow_pack_scripts {
+            let scripts = pack_stack.load_scripts();
+            if scripts.is_empty() {
+                None
+            } else {
+                let mut combined = String::new();
+                for (name, src) in scripts {
+                    tracing::info!(script = %name, "Loading resource pack JavaScript hook");
+                    combined.push_str(&src);
+                    combined.push('\n');
+                }
+                match telos_mod::JsParticleHook::new(&combined) {
+                    Ok(hook) => {
+                        tracing::info!(
+                            "Compiled resource pack JavaScript particle/sound hook successfully"
+                        );
+                        Some(hook)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to initialize resource pack JavaScript hook");
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
 
         let main_menu = MainMenuScreen::new();
         let mut world_select = WorldSelectScreen::new();
@@ -1801,6 +1832,7 @@ impl App {
             last_frame_start: Instant::now(),
             catalog,
             client_effects: Vec::new(),
+            js_particle_hook,
         }
     }
 
@@ -2415,9 +2447,40 @@ impl App {
                         );
                     }
                     S2cMessage::ParticleEvent(ev) => {
-                        self.particle_system.spawn_from_event(&ev, |id| {
-                            block_state_to_particle_layer(telos_voxel::state::BlockStateId(id))
-                        });
+                        if let Some(hook) = &self.js_particle_hook {
+                            let type_str = match ev.effect {
+                                ParticleEffectKind::BlockBreak => "block_break",
+                                ParticleEffectKind::BlockPlace => "block_place",
+                                ParticleEffectKind::Footstep => "footstep",
+                                ParticleEffectKind::Crit => "crit",
+                                ParticleEffectKind::Heart => "heart",
+                                ParticleEffectKind::Smoke => "smoke",
+                                ParticleEffectKind::Flame => "flame",
+                                ParticleEffectKind::Explosion => "explosion",
+                            };
+                            let p = hook.on_particle_spawn(
+                                type_str,
+                                telos_mod::JsParticleParams {
+                                    pos: [ev.x, ev.y, ev.z],
+                                    velocity: [0.0, 0.0, 0.0],
+                                    color_tint: 0xFFFF_FFFF,
+                                    scale: 1.0,
+                                    lifetime: f32::from(ev.count),
+                                },
+                            );
+                            let mut mod_ev = ev;
+                            mod_ev.x = p.pos[0];
+                            mod_ev.y = p.pos[1];
+                            mod_ev.z = p.pos[2];
+                            mod_ev.count = (p.lifetime as u16).clamp(1, 128);
+                            self.particle_system.spawn_from_event(&mod_ev, |id| {
+                                block_state_to_particle_layer(telos_voxel::state::BlockStateId(id))
+                            });
+                        } else {
+                            self.particle_system.spawn_from_event(&ev, |id| {
+                                block_state_to_particle_layer(telos_voxel::state::BlockStateId(id))
+                            });
+                        }
                     }
                     _ => {}
                 },
@@ -7123,14 +7186,37 @@ impl ApplicationHandler for App {
                                     hit.pos.z() as f32 + 0.5,
                                 );
                                 let (layer, tint) = block_state_to_particle_layer(broken_state);
-                                self.particle_system
-                                    .spawn_block_break(hit_pos_f, layer, tint, 32);
+                                if let Some(hook) = &self.js_particle_hook {
+                                    let p = hook.on_particle_spawn(
+                                        "block_break",
+                                        telos_mod::JsParticleParams {
+                                            pos: [hit_pos_f.x, hit_pos_f.y, hit_pos_f.z],
+                                            velocity: [0.0, 0.0, 0.0],
+                                            color_tint: u32::from_le_bytes(tint),
+                                            scale: 1.0,
+                                            lifetime: 32.0,
+                                        },
+                                    );
+                                    let mod_tint = p.color_tint.to_le_bytes();
+                                    let mod_count = (p.lifetime as usize).clamp(1, 128);
+                                    let mod_pos = Vec3::new(p.pos[0], p.pos[1], p.pos[2]);
+                                    self.particle_system
+                                        .spawn_block_break(mod_pos, layer, mod_tint, mod_count);
+                                } else {
+                                    self.particle_system
+                                        .spawn_block_break(hit_pos_f, layer, tint, 32);
+                                }
 
-                                let pitch = 0.92
+                                let mut pitch = 0.92
                                     + (hit.pos.x().abs() as f32 * 0.1
                                         + hit.pos.z().abs() as f32 * 0.2)
                                         .fract()
                                         * 0.16;
+                                if let Some(hook) = &self.js_particle_hook {
+                                    let (_, mod_pitch) =
+                                        hook.on_sound_play("block_break", 1.0, pitch);
+                                    pitch = mod_pitch;
+                                }
                                 self.audio.play_procedural_break(hit_pos_f, pitch);
                             }
                         }
@@ -7206,17 +7292,40 @@ impl ApplicationHandler for App {
                                 );
                                 let (layer, tint) =
                                     block_state_to_particle_layer(self.selected_block_state);
-                                self.particle_system.spawn_block_place(
-                                    place_pos_f,
-                                    layer,
-                                    tint,
-                                    12,
-                                );
-                                let pitch = 0.95
+                                if let Some(hook) = &self.js_particle_hook {
+                                    let p = hook.on_particle_spawn(
+                                        "block_place",
+                                        telos_mod::JsParticleParams {
+                                            pos: [place_pos_f.x, place_pos_f.y, place_pos_f.z],
+                                            velocity: [0.0, 0.0, 0.0],
+                                            color_tint: u32::from_le_bytes(tint),
+                                            scale: 1.0,
+                                            lifetime: 12.0,
+                                        },
+                                    );
+                                    let mod_tint = p.color_tint.to_le_bytes();
+                                    let mod_count = (p.lifetime as usize).clamp(1, 128);
+                                    let mod_pos = Vec3::new(p.pos[0], p.pos[1], p.pos[2]);
+                                    self.particle_system
+                                        .spawn_block_place(mod_pos, layer, mod_tint, mod_count);
+                                } else {
+                                    self.particle_system.spawn_block_place(
+                                        place_pos_f,
+                                        layer,
+                                        tint,
+                                        12,
+                                    );
+                                }
+                                let mut pitch = 0.95
                                     + (place_pos.x().abs() as f32 * 0.13
                                         + place_pos.z().abs() as f32 * 0.17)
                                         .fract()
                                         * 0.12;
+                                if let Some(hook) = &self.js_particle_hook {
+                                    let (_, mod_pitch) =
+                                        hook.on_sound_play("block_place", 1.0, pitch);
+                                    pitch = mod_pitch;
+                                }
                                 self.audio.play_procedural_place(place_pos_f, pitch);
                             }
                         }

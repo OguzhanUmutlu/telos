@@ -154,4 +154,55 @@ impl ResourcePackStack {
             }
         }
     }
+
+    /// Scans all mounted resource packs for JavaScript files (`scripts/*.js` or `assets/<namespace>/scripts/*.js`).
+    ///
+    /// Returns a list of `(script_name, script_content)` pairs.
+    #[must_use]
+    pub fn load_scripts(&self) -> Vec<(String, String)> {
+        let mut scripts = Vec::new();
+        for root in &self.roots {
+            // Direct scripts/ directory
+            let direct_scripts = root.join("scripts");
+            if let Ok(entries) = std::fs::read_dir(&direct_scripts) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("js")
+                        && let Ok(content) = std::fs::read_to_string(&path)
+                    {
+                        let name = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("script.js")
+                            .to_string();
+                        scripts.push((name, content));
+                    }
+                }
+            }
+
+            // assets/<namespace>/scripts/ directories
+            let assets_dir = root.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let ns_scripts = entry.path().join("scripts");
+                    if let Ok(js_entries) = std::fs::read_dir(&ns_scripts) {
+                        for js_entry in js_entries.flatten() {
+                            let path = js_entry.path();
+                            if path.extension().and_then(|s| s.to_str()) == Some("js")
+                                && let Ok(content) = std::fs::read_to_string(&path)
+                            {
+                                let name = path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("script.js")
+                                    .to_string();
+                                scripts.push((name, content));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        scripts
+    }
 }

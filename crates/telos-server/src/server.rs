@@ -10,7 +10,7 @@ use telos_content::{
     FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order,
 };
 use telos_core::coords::{BlockPos, ChunkPos, Face};
-use telos_mod::{ModConfig, ModManager, ModPermissions, ModResult};
+use telos_mod::{JsPlugin, JsPluginEngine, ModConfig, ModManager, ModPermissions, ModResult};
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
@@ -102,6 +102,8 @@ pub struct Server {
     pub command_dispatcher: Arc<CommandDispatcher>,
     /// Central manager for sandboxed WebAssembly mods and scripts.
     pub mod_manager: ModManager,
+    /// Central manager for sandboxed JavaScript server plugins.
+    pub js_plugins: JsPluginEngine,
     /// Bounded event queue buffering simulation events during the tick.
     pub event_queue: EventQueue,
     /// Remote QUIC network listener accepting external client connections.
@@ -230,6 +232,30 @@ impl Server {
         let command_dispatcher = Arc::new(dispatcher);
 
         let mod_manager = ModManager::new().expect("ModManager engine initialization");
+        let mut js_plugins = JsPluginEngine::new();
+        if let Some(save_dir) = &config.save_directory {
+            for sub_dir in ["plugins", "scripts"] {
+                let dir = save_dir.join(sub_dir);
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|s| s.to_str()) == Some("js")
+                            && let Ok(content) = std::fs::read_to_string(&path)
+                        {
+                            let id = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("plugin");
+                            if let Ok(plugin) = JsPlugin::new(id, &content) {
+                                tracing::info!("Loaded JavaScript server plugin: {id}");
+                                js_plugins.add_plugin(plugin);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let event_queue = EventQueue::default();
 
         Self {
@@ -250,11 +276,19 @@ impl Server {
             last_mob_spawn_tick: 0,
             command_dispatcher,
             mod_manager,
+            js_plugins,
             event_queue,
             listener: None,
             lan_emitter,
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Loads and activates a sandboxed JavaScript plugin from source script.
+    pub fn load_js_plugin(&mut self, id: impl Into<String>, source: &str) -> ModResult<()> {
+        let plugin = JsPlugin::new(id, source)?;
+        self.js_plugins.add_plugin(plugin);
+        Ok(())
     }
 
     /// Loads a sandboxed mod from WebAssembly text format (`.wat`).
@@ -706,6 +740,7 @@ impl Server {
     #[allow(clippy::too_many_lines)]
     pub fn tick(&mut self) {
         self.tick_count += 1;
+        self.js_plugins.dispatch_tick(self.tick_count);
 
         // 0. Accept incoming QUIC network connections from listener
         let mut incoming_conns = Vec::new();
@@ -1640,10 +1675,18 @@ impl Server {
                     let _ = s.connection.send(Lane::Control, Payload::Msg(reply));
                 }
             } else {
+                let username = session.username.clone();
+                let Some(processed_text) = self
+                    .js_plugins
+                    .dispatch_player_chat(&username, text.to_string())
+                else {
+                    continue; // Suppressed by JS plugin
+                };
+
                 // Broadcast standard chat message: <username> message
-                let sender_bounded = BoundedString::new(session.username.clone())
+                let sender_bounded = BoundedString::new(username)
                     .unwrap_or_else(|_| BoundedString::new("Player").unwrap());
-                if let Ok(msg_bounded) = BoundedString::new(text.to_string()) {
+                if let Ok(msg_bounded) = BoundedString::new(processed_text) {
                     let chat_msg = S2cMessage::ChatMessage(S2cChatMessage {
                         sender: sender_bounded,
                         message: msg_bounded,
@@ -1754,6 +1797,29 @@ impl Server {
             let old_state = world.get_block(target_pos);
 
             if is_in_reach && is_in_bounds {
+                if matches!(action.action, BlockActionKind::Break)
+                    && !self.js_plugins.dispatch_block_break(
+                        session.entity_id,
+                        old_state.0,
+                        target_pos.x(),
+                        target_pos.y(),
+                        target_pos.z(),
+                    )
+                {
+                    // Block break rejected by JavaScript server plugin
+                    let rollback = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                        x: target_pos.x(),
+                        y: target_pos.y(),
+                        z: target_pos.z(),
+                        state_id: old_state,
+                        version: 0,
+                    });
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(rollback));
+                    continue;
+                }
+
                 if matches!(action.action, BlockActionKind::Interact) {
                     if let Some(_new_lever_state) = world.logic_engine.toggle_lever(target_pos) {
                         let cur_block = world.get_block(target_pos);
