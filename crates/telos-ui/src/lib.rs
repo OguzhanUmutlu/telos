@@ -19,7 +19,7 @@ pub mod tree;
 pub use chat::{ChatEntry, ChatHudState, render_chat_hud};
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;
-pub use hud::{HudState, UiLayers, render_hud};
+pub use hud::{HudEffectDisplay, HudState, UiLayers, render_hud};
 pub use inventory::{
     CONTAINER_HEIGHT, CONTAINER_WIDTH, INVENTORY_SLOT_COUNT, UiSlotItem, item_icon_uv,
     render_inventory_screen, slot_at_pos, slot_pos,

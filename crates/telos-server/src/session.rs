@@ -7,7 +7,9 @@ use telos_core::coords::{BlockPos, ChunkPos};
 use telos_lod::coords::LodNodeKey;
 use telos_lod::selection::{LodClipmap, LodClipmapConfig};
 use telos_net::Connection;
-use telos_protocol::messages::{C2sMessage, ConnectionPhase, InputFrame, S2cMessage};
+use telos_protocol::messages::{
+    C2sMessage, ConnectionPhase, InputFrame, NetworkEffect, S2cMessage,
+};
 use telos_sim::{MoveMode, MoveState};
 
 use crate::config::ServerConfig;
@@ -69,6 +71,8 @@ pub struct PlayerSession {
     pub cached_xp_level: u32,
     /// Cached experience progress fraction sent to client.
     pub cached_xp_progress: f32,
+    /// Cached active status effects sent to client.
+    pub cached_effects: Vec<NetworkEffect>,
     /// Player display username.
     pub username: String,
     /// Tick count when client last sent a chat or command message.
@@ -139,6 +143,7 @@ impl PlayerSession {
             cached_saturation: 5.0,
             cached_xp_level: 0,
             cached_xp_progress: 0.0,
+            cached_effects: Vec::new(),
             username: format!("Player{session_id}"),
             last_chat_tick: 0,
             chat_burst_count: 0,

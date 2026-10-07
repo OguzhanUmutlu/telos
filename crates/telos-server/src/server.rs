@@ -16,21 +16,22 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
     C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload,
-    ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity,
-    S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck,
-    S2cRegistryData, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData,
+    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate,
+    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cParticleEvent,
+    S2cPlayerMovementAck, S2cRegistryData, S2cSpawnEntity, S2cUniformChunk, S2cUpdateEffects,
+    S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
 };
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
-    CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
-    ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams,
-    SimulationFrozen, Velocity, WeatherKind, WeatherState, build_sim_schedule,
+    AttributeKind, Attributes, CombatTracker, DamageType, EffectInstance, EnchantmentKind,
+    EntityType, Experience, Health, Hunger, HurtTime, Inventory, ItemStack, MobBundle, NetEntity,
+    PlayerPositions, Position, PotionType, Rotation, SimParams, SimulationFrozen, StatusEffectKind,
+    StatusEffects, Velocity, WeatherKind, WeatherState, apply_mitigated_damage, build_sim_schedule,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -292,7 +293,10 @@ impl Server {
             EntityType::Zombie | EntityType::Player => MobBundle::new_zombie(net_id, pos, seed),
         };
         let health = bundle.health.cur;
-        let entity = self.ecs_world.spawn(bundle).id();
+        let entity = self
+            .ecs_world
+            .spawn((bundle, Attributes::player_default(), StatusEffects::new()))
+            .id();
 
         self.tracked_mobs.insert(net_id, entity);
         self.mob_positions.insert(net_id, pos);
@@ -848,6 +852,8 @@ impl Server {
                                         CombatTracker::default(),
                                         Hunger::new(20, 5.0),
                                         Experience::default(),
+                                        Attributes::player_default(),
+                                        StatusEffects::new(),
                                         inv.clone(),
                                     ))
                                     .id();
@@ -1087,6 +1093,38 @@ impl Server {
                         info!(mode, "Updated player session game mode");
                     }
                 }
+                PlayerCommandKind::ApplyEffect {
+                    effect_id,
+                    duration_ticks,
+                    amplifier,
+                } => {
+                    if let Some(entity) = entity
+                        && let Some(kind) = StatusEffectKind::from_u8(effect_id)
+                        && let Some(mut effects) = self.ecs_world.get_mut::<StatusEffects>(entity)
+                    {
+                        effects.apply(EffectInstance::new(
+                            kind,
+                            duration_ticks.cast_signed(),
+                            amplifier,
+                        ));
+                    }
+                }
+                PlayerCommandKind::ClearEffects => {
+                    if let Some(entity) = entity
+                        && let Some(mut effects) = self.ecs_world.get_mut::<StatusEffects>(entity)
+                    {
+                        effects.clear();
+                    }
+                }
+                PlayerCommandKind::DrinkPotion { potion_type } => {
+                    if let Some(entity) = entity
+                        && let Some(potion) = PotionType::from_u8(potion_type)
+                        && let Some(effect) = potion.effect()
+                        && let Some(mut effects) = self.ecs_world.get_mut::<StatusEffects>(entity)
+                    {
+                        effects.apply(effect);
+                    }
+                }
             }
         }
 
@@ -1114,11 +1152,46 @@ impl Server {
                 // Action 0 = Attack
                 let mut is_dead = false;
 
+                // Calculate attacker damage from Attributes
+                let attacker_entity = self.sessions.get(&session_id).and_then(|s| s.ecs_entity);
+                let mut attack_damage = 4.0f32;
+                if let Some(att_ent) = attacker_entity
+                    && let Some(mut attrs) = self.ecs_world.get_mut::<Attributes>(att_ent)
+                {
+                    attack_damage = (attrs.get_value(AttributeKind::AttackDamage) as f32).max(0.5);
+                }
+
+                // Query target defense
+                let target_armor = self
+                    .ecs_world
+                    .get_mut::<Attributes>(target_entity)
+                    .map_or(0.0, |mut a| a.get_value(AttributeKind::Armor) as f32);
+                let target_toughness = self
+                    .ecs_world
+                    .get_mut::<Attributes>(target_entity)
+                    .map_or(0.0, |mut a| {
+                        a.get_value(AttributeKind::ArmorToughness) as f32
+                    });
+                let target_resistance = self
+                    .ecs_world
+                    .get::<StatusEffects>(target_entity)
+                    .and_then(|eff| eff.amplifier(StatusEffectKind::Resistance))
+                    .map_or(0, |amp| amp + 1);
+
                 let mut query = self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
                 if let Ok((mut health, mut tracker)) =
                     query.get_mut(&mut self.ecs_world, target_entity)
                 {
-                    telos_sim::apply_damage(&mut health, &mut tracker, 4.0, DamageType::Attack);
+                    apply_mitigated_damage(
+                        &mut health,
+                        &mut tracker,
+                        attack_damage,
+                        DamageType::Attack,
+                        target_armor,
+                        target_toughness,
+                        target_resistance,
+                        0,
+                    );
                     if !health.is_alive() {
                         is_dead = true;
                     }
@@ -1126,7 +1199,7 @@ impl Server {
 
                 self.event_queue.push(GameEvent::EntityDamage {
                     target_net_id: interact.target_net_id,
-                    damage: 4.0,
+                    damage: attack_damage,
                     attacker_net_id: self.sessions.get(&session_id).map(|s| s.entity_id),
                 });
 
@@ -1395,6 +1468,102 @@ impl Server {
                             output.success = false;
                             output.message =
                                 "Usage: /world list or /world tp <world_name> [x y z]".to_string();
+                        }
+                    } else if text.starts_with("/effect clear") {
+                        if let Some(s) = self.sessions.get(&session_id)
+                            && let Some(ent) = s.ecs_entity
+                            && let Some(mut effs) = self.ecs_world.get_mut::<StatusEffects>(ent)
+                        {
+                            effs.clear();
+                        }
+                    } else if text.starts_with("/effect give") {
+                        let parts: Vec<&str> = text.split_whitespace().collect();
+                        let (effect_name, seconds, amplifier) = if parts.len() >= 4
+                            && (parts[2].starts_with('@') || parts[2] == "self")
+                        {
+                            let eff = parts[3];
+                            let sec = parts
+                                .get(4)
+                                .and_then(|s| s.parse::<i32>().ok())
+                                .unwrap_or(30);
+                            let amp = parts.get(5).and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+                            (eff, sec, amp)
+                        } else if parts.len() >= 3 {
+                            let eff = parts[2];
+                            let sec = parts
+                                .get(3)
+                                .and_then(|s| s.parse::<i32>().ok())
+                                .unwrap_or(30);
+                            let amp = parts.get(4).and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+                            (eff, sec, amp)
+                        } else {
+                            ("unknown", 30, 0)
+                        };
+
+                        let kind = match effect_name.to_lowercase().as_str() {
+                            "speed" => Some(StatusEffectKind::Speed),
+                            "slowness" => Some(StatusEffectKind::Slowness),
+                            "strength" => Some(StatusEffectKind::Strength),
+                            "weakness" => Some(StatusEffectKind::Weakness),
+                            "regeneration" | "regen" => Some(StatusEffectKind::Regeneration),
+                            "poison" => Some(StatusEffectKind::Poison),
+                            "wither" => Some(StatusEffectKind::Wither),
+                            "resistance" => Some(StatusEffectKind::Resistance),
+                            "fire_resistance" => Some(StatusEffectKind::FireResistance),
+                            "water_breathing" => Some(StatusEffectKind::WaterBreathing),
+                            "haste" => Some(StatusEffectKind::Haste),
+                            "mining_fatigue" => Some(StatusEffectKind::MiningFatigue),
+                            "invisibility" => Some(StatusEffectKind::Invisibility),
+                            "jump_boost" => Some(StatusEffectKind::JumpBoost),
+                            "instant_health" => Some(StatusEffectKind::InstantHealth),
+                            "instant_damage" => Some(StatusEffectKind::InstantDamage),
+                            _ => None,
+                        };
+
+                        if let Some(k) = kind
+                            && let Some(s) = self.sessions.get(&session_id)
+                            && let Some(ent) = s.ecs_entity
+                            && let Some(mut effs) = self.ecs_world.get_mut::<StatusEffects>(ent)
+                        {
+                            effs.apply(EffectInstance::new(k, seconds * 20, amplifier));
+                        }
+                    } else if text.starts_with("/enchant") {
+                        let parts: Vec<&str> = text.split_whitespace().collect();
+                        let (ench_name, level) = if parts.len() >= 4
+                            && (parts[1].starts_with('@') || parts[1] == "self")
+                        {
+                            let name = parts[2];
+                            let lvl = parts.get(3).and_then(|s| s.parse::<u8>().ok()).unwrap_or(1);
+                            (name, lvl)
+                        } else if parts.len() >= 2 {
+                            let name = parts[1];
+                            let lvl = parts.get(2).and_then(|s| s.parse::<u8>().ok()).unwrap_or(1);
+                            (name, lvl)
+                        } else {
+                            ("unknown", 1)
+                        };
+
+                        let ench_kind = match ench_name.to_lowercase().as_str() {
+                            "protection" => Some(EnchantmentKind::Protection),
+                            "fire_protection" => Some(EnchantmentKind::FireProtection),
+                            "feather_falling" => Some(EnchantmentKind::FeatherFalling),
+                            "blast_protection" => Some(EnchantmentKind::BlastProtection),
+                            "sharpness" => Some(EnchantmentKind::Sharpness),
+                            "knockback" => Some(EnchantmentKind::Knockback),
+                            "efficiency" => Some(EnchantmentKind::Efficiency),
+                            "unbreaking" => Some(EnchantmentKind::Unbreaking),
+                            "mending" => Some(EnchantmentKind::Mending),
+                            _ => None,
+                        };
+
+                        if let Some(k) = ench_kind
+                            && let Some(s) = self.sessions.get(&session_id)
+                            && let Some(ent) = s.ecs_entity
+                            && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(ent)
+                            && let Some(stack) = inv.get_mut(0)
+                            && !stack.is_empty()
+                        {
+                            stack.enchantments.set_enchantment(k, level);
                         }
                     }
                 }
@@ -1872,6 +2041,31 @@ impl Server {
                 let _ = session
                     .connection
                     .send(Lane::Control, Payload::Msg(stats_msg));
+            }
+
+            let effects_comp = self.ecs_world.get::<StatusEffects>(entity);
+            let current_effects: Vec<NetworkEffect> = effects_comp.map_or_else(Vec::new, |effs| {
+                effs.effects
+                    .iter()
+                    .map(|e| NetworkEffect {
+                        effect_id: e.kind.id(),
+                        amplifier: e.amplifier,
+                        duration_ticks: e.duration_ticks,
+                        ambient: e.ambient,
+                        particle_color: e.kind.particle_color(),
+                    })
+                    .collect()
+            });
+
+            if session.cached_effects != current_effects {
+                session.cached_effects.clone_from(&current_effects);
+                let effects_msg = S2cMessage::UpdateEffects(S2cUpdateEffects {
+                    entity_id: 0,
+                    effects: current_effects,
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(effects_msg));
             }
         }
 

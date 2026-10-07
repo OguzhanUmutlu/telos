@@ -47,6 +47,11 @@ pub enum ItemTypeDef {
         #[serde(default = "default_attack_damage")]
         attack_damage: f32,
     },
+    /// Consumable potion item.
+    Potion {
+        /// Potion effect descriptor (e.g. "swiftness", "healing").
+        potion_type: String,
+    },
 }
 
 fn default_mining_speed() -> f32 {

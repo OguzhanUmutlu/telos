@@ -9,6 +9,8 @@ pub mod attributes;
 pub mod bundles;
 pub mod command;
 pub mod crafting;
+pub mod effect;
+pub mod enchantment;
 pub mod entity;
 pub mod event;
 pub mod experience;
@@ -17,17 +19,26 @@ pub mod inventory;
 pub mod logic;
 pub mod movement;
 pub mod particle;
+pub mod potion;
 pub mod prediction;
 pub mod schedule;
 pub mod weather;
 
-pub use attributes::{CombatTracker, DamageEvent, DamageType, Health, apply_damage};
+pub use attributes::{
+    Attribute, AttributeKind, AttributeModifier, Attributes, CombatTracker, DamageEvent,
+    DamageType, Health, ModifierOperation, apply_damage, apply_mitigated_damage,
+    calculate_damage_mitigation,
+};
 pub use bundles::PlayerBundle;
 pub use command::{
     CommandContext, CommandDispatcher, CommandNode, CommandOutput, CommandSuggestions,
     register_builtins,
 };
 pub use crafting::{Recipe2x2, find_recipe_2x2};
+pub use effect::{EffectInstance, StatusEffectKind, StatusEffects, status_effect_system};
+pub use enchantment::{
+    CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
+};
 pub use entity::{
     AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,
     Position, Rotation, SimulationFrozen, Velocity, mob_ai_system, mob_hurt_decay_system,
@@ -53,6 +64,7 @@ pub use movement::{
     quantize_pitch, quantize_yaw, simulate_movement_step,
 };
 pub use particle::{Particle, ParticleGpu, ParticleKind, ParticleSystem};
+pub use potion::{BrewingRecipe, BrewingRegistry, PotionType};
 pub use prediction::{
     PREDICTION_BUFFER_CAPACITY, PredictionBuffer, PredictionEntry, ReconciliationResult,
     VisualSmoothing,

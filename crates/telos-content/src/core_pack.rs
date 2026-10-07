@@ -665,6 +665,7 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
 }
 
 /// Standard core non-block item definition entries: (path, `ItemDef`).
+#[allow(clippy::too_many_lines)]
 pub fn core_items() -> Vec<(&'static str, ItemDef)> {
     vec![
         (
@@ -721,6 +722,106 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
                     defense: 2,
                     toughness: 0.0,
                 },
+            },
+        ),
+        (
+            "potion",
+            ItemDef {
+                name: "Potion".into(),
+                max_stack_size: 1,
+                item_type: ItemTypeDef::Potion {
+                    potion_type: "water".into(),
+                },
+            },
+        ),
+        (
+            "splash_potion",
+            ItemDef {
+                name: "Splash Potion".into(),
+                max_stack_size: 1,
+                item_type: ItemTypeDef::Potion {
+                    potion_type: "water".into(),
+                },
+            },
+        ),
+        (
+            "glass_bottle",
+            ItemDef {
+                name: "Glass Bottle".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "brewing_stand",
+            ItemDef {
+                name: "Brewing Stand".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "nether_wart",
+            ItemDef {
+                name: "Nether Wart".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "blaze_powder",
+            ItemDef {
+                name: "Blaze Powder".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "sugar",
+            ItemDef {
+                name: "Sugar".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "glistering_melon",
+            ItemDef {
+                name: "Glistering Melon".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "spider_eye",
+            ItemDef {
+                name: "Spider Eye".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "fermented_spider_eye",
+            ItemDef {
+                name: "Fermented Spider Eye".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "ghast_tear",
+            ItemDef {
+                name: "Ghast Tear".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "magma_cream",
+            ItemDef {
+                name: "Magma Cream".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
             },
         ),
     ]

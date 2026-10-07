@@ -156,6 +156,10 @@ pub struct PlayerPhysicsController {
     pub height: f64,
     /// Eye height offset above feet position.
     pub eye_height: f64,
+    /// Movement speed multiplier from active status effects.
+    pub speed_multiplier: f32,
+    /// Jump velocity bonus from active status effects.
+    pub jump_boost: f32,
 }
 
 impl Default for PlayerPhysicsController {
@@ -180,6 +184,8 @@ impl PlayerPhysicsController {
             width: PLAYER_WIDTH,
             height: PLAYER_HEIGHT,
             eye_height: EYE_HEIGHT,
+            speed_multiplier: 1.0,
+            jump_boost: 0.0,
         }
     }
 
@@ -317,13 +323,14 @@ impl PlayerPhysicsController {
             self.on_ground = false;
         } else {
             // Walking / survival dynamics
-            let move_speed = if input.sprint {
+            let base_speed = if input.sprint {
                 SPRINT_SPEED
             } else if input.sneak {
                 SNEAK_SPEED
             } else {
                 WALK_SPEED
             };
+            let move_speed = base_speed * self.speed_multiplier.max(0.1);
 
             let target_h = wish_dir * move_speed;
             let accel = if self.on_ground { 15.0 * dt } else { 3.5 * dt };
@@ -349,7 +356,7 @@ impl PlayerPhysicsController {
 
             // Jump
             if input.jump && self.on_ground {
-                self.vel.y = JUMP_VELOCITY;
+                self.vel.y = JUMP_VELOCITY + self.jump_boost;
                 self.on_ground = false;
             }
 

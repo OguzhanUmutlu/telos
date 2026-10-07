@@ -13,6 +13,8 @@ pub fn register_builtins(dispatcher: &mut CommandDispatcher) {
     register_kill(dispatcher);
     register_clear(dispatcher);
     register_say(dispatcher);
+    register_effect(dispatcher);
+    register_enchant(dispatcher);
 }
 
 fn register_help(dispatcher: &mut CommandDispatcher) {
@@ -20,7 +22,7 @@ fn register_help(dispatcher: &mut CommandDispatcher) {
         .with_tooltip("Shows list of available commands or help on a specific command")
         .executes(|_| {
             CommandOutput::success(
-                "Available commands: /help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say"
+                "Available commands: /help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say, /effect, /enchant"
             )
         })
         .then(
@@ -37,6 +39,8 @@ fn register_help(dispatcher: &mut CommandDispatcher) {
                         "kill" => CommandOutput::success("/kill [target]"),
                         "clear" => CommandOutput::success("/clear [target]"),
                         "say" => CommandOutput::success("/say <message>"),
+                        "effect" => CommandOutput::success("/effect <give|clear> [target] [effect] [seconds] [amplifier]"),
+                        "enchant" => CommandOutput::success("/enchant <target> <enchantment> [level]"),
                         _ => CommandOutput::failure(format!("Unknown command: '{cmd}'")),
                     }
                 }),
@@ -277,4 +281,116 @@ fn register_say(dispatcher: &mut CommandDispatcher) {
         );
 
     dispatcher.register(say_node);
+}
+
+fn register_effect(dispatcher: &mut CommandDispatcher) {
+    let effect_node = CommandNode::literal("effect")
+        .with_tooltip("Applies or removes status effects from entities")
+        .then(
+            CommandNode::literal("clear")
+                .with_tooltip("Clears active status effects")
+                .executes(|ctx| {
+                    CommandOutput::success(format!(
+                        "Cleared all effects from {}",
+                        ctx.executor_name
+                    ))
+                })
+                .then(
+                    CommandNode::argument("target", ArgumentType::Entity)
+                        .with_tooltip("Target entity to clear")
+                        .executes(|_| CommandOutput::success("Cleared all effects from target")),
+                ),
+        )
+        .then(
+            CommandNode::literal("give")
+                .with_tooltip("Gives a status effect to an entity")
+                .then(
+                    CommandNode::argument("target", ArgumentType::Entity)
+                        .with_tooltip("Target entity")
+                        .then(
+                            CommandNode::argument("effect", ArgumentType::Word)
+                                .with_tooltip("Status effect name (e.g. speed, poison)")
+                                .executes(|ctx| {
+                                    let effect = ctx.get_string("effect").unwrap_or("unknown");
+                                    CommandOutput::success(format!(
+                                        "Applied {effect} to target for 30s"
+                                    ))
+                                })
+                                .then(
+                                    CommandNode::argument(
+                                        "seconds",
+                                        ArgumentType::Integer {
+                                            min: Some(1),
+                                            max: Some(1_000_000),
+                                        },
+                                    )
+                                    .with_tooltip("Duration in seconds")
+                                    .executes(|ctx| {
+                                        let effect = ctx.get_string("effect").unwrap_or("unknown");
+                                        let sec = ctx.get_int("seconds").unwrap_or(30);
+                                        CommandOutput::success(format!(
+                                            "Applied {effect} to target for {sec}s"
+                                        ))
+                                    })
+                                    .then(
+                                        CommandNode::argument(
+                                            "amplifier",
+                                            ArgumentType::Integer {
+                                                min: Some(0),
+                                                max: Some(255),
+                                            },
+                                        )
+                                        .with_tooltip("Amplifier level (0 = I, 1 = II)")
+                                        .executes(|ctx| {
+                                            let effect =
+                                                ctx.get_string("effect").unwrap_or("unknown");
+                                            let sec = ctx.get_int("seconds").unwrap_or(30);
+                                            let amp = ctx.get_int("amplifier").unwrap_or(0);
+                                            CommandOutput::success(format!(
+                                                "Applied {effect} {amp} to target for {sec}s"
+                                            ))
+                                        }),
+                                    ),
+                                ),
+                        ),
+                ),
+        );
+
+    dispatcher.register(effect_node);
+}
+
+fn register_enchant(dispatcher: &mut CommandDispatcher) {
+    let enchant_node = CommandNode::literal("enchant")
+        .with_tooltip("Adds an enchantment to a player's selected item")
+        .then(
+            CommandNode::argument("target", ArgumentType::Entity)
+                .with_tooltip("Target player")
+                .then(
+                    CommandNode::argument("enchantment", ArgumentType::Word)
+                        .with_tooltip("Enchantment name (e.g. protection, sharpness)")
+                        .executes(|ctx| {
+                            let ench = ctx.get_string("enchantment").unwrap_or("unknown");
+                            CommandOutput::success(format!("Applied {ench} I to selected item"))
+                        })
+                        .then(
+                            CommandNode::argument(
+                                "level",
+                                ArgumentType::Integer {
+                                    min: Some(1),
+                                    max: Some(5),
+                                },
+                            )
+                            .with_tooltip("Enchantment level")
+                            .executes(|ctx| {
+                                let ench = ctx.get_string("enchantment").unwrap_or("unknown");
+                                let lvl = ctx.get_int("level").unwrap_or(1);
+                                CommandOutput::success(format!(
+                                    "Applied {ench} {lvl} to selected item"
+                                ))
+                            }),
+                        ),
+                ),
+        );
+
+    dispatcher.register(enchant_node);
 }

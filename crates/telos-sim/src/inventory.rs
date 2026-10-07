@@ -1,6 +1,7 @@
 //! Inventory container, item stacks, and deterministic click interaction logic.
 
 use crate::crafting::find_recipe_2x2;
+use crate::enchantment::CompactEnchantments;
 use bevy_ecs::component::Component;
 use std::ops::Range;
 use thiserror::Error;
@@ -140,6 +141,18 @@ pub fn item_name(item: u32) -> &'static str {
         33 => "Fire",
         34 => "Nether Portal",
         35 => "Iron Boots",
+        36 => "Potion",
+        37 => "Splash Potion",
+        38 => "Glass Bottle",
+        39 => "Brewing Stand",
+        40 => "Nether Wart",
+        41 => "Blaze Powder",
+        42 => "Sugar",
+        43 => "Glistering Melon",
+        44 => "Spider Eye",
+        45 => "Fermented Spider Eye",
+        46 => "Ghast Tear",
+        47 => "Magma Cream",
         _ => "Unknown Item",
     }
 }
@@ -151,19 +164,43 @@ pub struct ItemStack {
     pub item: u32,
     /// Number of items in this stack (0 = Empty).
     pub count: u16,
+    /// Compact bitpacked enchantments (empty if unenchanted).
+    pub enchantments: CompactEnchantments,
 }
 
 impl ItemStack {
     /// Empty item stack constant.
-    pub const EMPTY: Self = Self { item: 0, count: 0 };
+    pub const EMPTY: Self = Self {
+        item: 0,
+        count: 0,
+        enchantments: CompactEnchantments::EMPTY,
+    };
 
-    /// Creates a new item stack, normalizing 0-count to Air.
+    /// Creates a new unenchanted item stack, normalizing 0-count to Air.
     #[must_use]
     pub const fn new(item: u32, count: u16) -> Self {
         if item == 0 || count == 0 {
             Self::EMPTY
         } else {
-            Self { item, count }
+            Self {
+                item,
+                count,
+                enchantments: CompactEnchantments::EMPTY,
+            }
+        }
+    }
+
+    /// Creates a new item stack with custom enchantments.
+    #[must_use]
+    pub const fn new_enchanted(item: u32, count: u16, enchantments: CompactEnchantments) -> Self {
+        if item == 0 || count == 0 {
+            Self::EMPTY
+        } else {
+            Self {
+                item,
+                count,
+                enchantments,
+            }
         }
     }
 
@@ -178,6 +215,7 @@ impl ItemStack {
         if self.item == 0 || self.count == 0 {
             self.item = 0;
             self.count = 0;
+            self.enchantments = CompactEnchantments::EMPTY;
         }
     }
 
@@ -187,7 +225,9 @@ impl ItemStack {
         if self.is_empty() || other.is_empty() {
             return false;
         }
-        self.item == other.item && self.count + other.count <= MAX_STACK_SIZE
+        self.item == other.item
+            && self.enchantments == other.enchantments
+            && self.count + other.count <= MAX_STACK_SIZE
     }
 }
 

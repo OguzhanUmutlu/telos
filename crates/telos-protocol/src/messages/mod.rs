@@ -15,13 +15,13 @@ pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
     C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition,
-    C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, ParticleEffectKind, PlayerCommandKind,
-    S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity, S2cUniformChunk, S2cUpdateStats,
-    S2cUpdateTime, S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot,
-    input_buttons,
+    C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, NetworkEffect, ParticleEffectKind,
+    PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
+    S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
+    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnEntity, S2cUniformChunk,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -238,6 +238,8 @@ pub enum S2cMessage {
     PlayerMovementAck(S2cPlayerMovementAck),
     /// Play phase visual particle emission event.
     ParticleEvent(S2cParticleEvent),
+    /// Play phase entity status effects synchronization.
+    UpdateEffects(S2cUpdateEffects),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -273,7 +275,8 @@ impl S2cMessage {
             | Self::EntityStatus(_)
             | Self::CommandSuggestions(_)
             | Self::PlayerMovementAck(_)
-            | Self::ParticleEvent(_) => Some(ConnectionPhase::Play),
+            | Self::ParticleEvent(_)
+            | Self::UpdateEffects(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -307,6 +310,7 @@ impl S2cMessage {
             Self::CommandSuggestions(_) => 19,
             Self::PlayerMovementAck(_) => 20,
             Self::ParticleEvent(_) => 21,
+            Self::UpdateEffects(_) => 22,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -340,6 +344,7 @@ impl S2cMessage {
             Self::CommandSuggestions(m) => m.encode(buf),
             Self::PlayerMovementAck(m) => m.encode(buf),
             Self::ParticleEvent(m) => m.encode(buf),
+            Self::UpdateEffects(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

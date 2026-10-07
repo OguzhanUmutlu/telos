@@ -1745,3 +1745,146 @@ fn test_decoupled_simulation_distance_and_mob_freezing() {
         "Far mob beyond simulation despawn threshold must be despawned"
     );
 }
+
+#[test]
+fn test_server_status_effects_chat_and_sync() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 2,
+        simulation_distance: 2,
+        ..Default::default()
+    };
+    let mut server = Server::new(12355, config);
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    login_test_client(&mut server, &client_conn, "PlayerEffects");
+
+    // 1. Give speed effect via chat command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/effect give @s speed 10 1").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Client should receive S2cMessage::UpdateEffects
+    let mut got_effect = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(msg) = incoming.into_msg()
+            && let S2cMessage::UpdateEffects(eff_msg) = msg
+            && let Some(eff) = eff_msg.effects.iter().find(|e| e.effect_id == 1)
+        {
+            assert_eq!(eff.amplifier, 1);
+            assert!(eff.duration_ticks > 190);
+            got_effect = true;
+        }
+    }
+    assert!(
+        got_effect,
+        "Client must receive S2cUpdateEffects with Speed II"
+    );
+
+    // 2. Clear effects
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/effect clear").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let mut got_cleared = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let Some(S2cMessage::UpdateEffects(eff_msg)) = incoming.into_msg()
+            && eff_msg.effects.is_empty()
+        {
+            got_cleared = true;
+        }
+    }
+    assert!(
+        got_cleared,
+        "Client must receive empty S2cUpdateEffects after /effect clear"
+    );
+}
+
+#[test]
+fn test_server_status_effects_combat_mitigation() {
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 2,
+        simulation_distance: 2,
+        ..Default::default()
+    };
+    let mut server = Server::new(12356, config);
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    server.add_connection(Box::new(server_conn));
+
+    login_test_client(&mut server, &client_conn, "PlayerCombat");
+
+    let surface_y = server.world().get_surface_y(128, 160);
+    let player_y = f64::from(surface_y) + 1.0;
+
+    let zombie_id = server.spawn_mob(
+        telos_sim::EntityType::Zombie,
+        glam::DVec3::new(128.0, player_y, 161.0),
+    );
+    let zombie_entity = *server.tracked_mobs.get(&zombie_id).unwrap();
+
+    // Give zombie Resistance II (level 2 -> 40% damage reduction)
+    if let Some(mut effs) = server
+        .ecs_world_mut()
+        .get_mut::<telos_sim::StatusEffects>(zombie_entity)
+    {
+        effs.apply(telos_sim::EffectInstance::new(
+            telos_sim::StatusEffectKind::Resistance,
+            200,
+            1,
+        ));
+    }
+
+    // Player position next to zombie
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::PlayerPosition(C2sPlayerPosition {
+                x: 128.0,
+                y: player_y,
+                z: 160.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: true,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Attack zombie
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InteractEntity(C2sInteractEntity {
+                target_net_id: zombie_id,
+                action: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Base damage is 4.0. With Resistance II (40% reduction): 4.0 * 0.6 = 2.4 damage.
+    // 20.0 - 2.4 = 17.6 HP.
+    let zombie_health = server
+        .ecs_world()
+        .get::<telos_sim::Health>(zombie_entity)
+        .unwrap()
+        .cur;
+    assert!(
+        (zombie_health - 17.6).abs() < 0.01,
+        "Zombie health should be 17.6 after 40% resistance mitigation, got {zombie_health}"
+    );
+}

@@ -105,4 +105,18 @@ fn test_render_hud_quad_generation() {
     render_hud(&state, &font, &layers, 1920, 1080, 4, &mut quads);
     // Should have crosshair, hotbar, selection indicator, plus multiple lines with backing boxes
     assert!(quads.len() > 10);
+
+    // Add active status effect badge
+    state.f3_open = false;
+    state.active_effects.push(telos_ui::HudEffectDisplay {
+        effect_id: 1,
+        name: "Speed II".to_string(),
+        amplifier: 1,
+        duration_ticks: 200,
+        color: [124, 175, 198],
+    });
+    quads.clear();
+    render_hud(&state, &font, &layers, 1920, 1080, 4, &mut quads);
+    // Base 44 quads + badge background + accent bar + text glyphs
+    assert!(quads.len() > 44, "Active effects must generate HUD quads");
 }

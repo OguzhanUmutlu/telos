@@ -1444,6 +1444,22 @@ pub enum PlayerCommandKind {
     ClearMobs,
     /// Switch player game mode (0 = Survival, 1 = Creative).
     SetGameMode(u8),
+    /// Apply a status effect to the player.
+    ApplyEffect {
+        /// Effect ID (1..=16).
+        effect_id: u8,
+        /// Duration in ticks.
+        duration_ticks: u32,
+        /// Amplifier (0 = I, 1 = II).
+        amplifier: u8,
+    },
+    /// Clear all active status effects on the player.
+    ClearEffects,
+    /// Drink a potion item, applying its status effect.
+    DrinkPotion {
+        /// Potion type ID.
+        potion_type: u8,
+    },
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1801,6 +1817,23 @@ impl C2sPlayerCommand {
                 buf.push(8);
                 buf.push(mode);
             }
+            PlayerCommandKind::ApplyEffect {
+                effect_id,
+                duration_ticks,
+                amplifier,
+            } => {
+                buf.push(9);
+                buf.push(effect_id);
+                encode_varint(duration_ticks, buf);
+                buf.push(amplifier);
+            }
+            PlayerCommandKind::ClearEffects => {
+                buf.push(10);
+            }
+            PlayerCommandKind::DrinkPotion { potion_type } => {
+                buf.push(11);
+                buf.push(potion_type);
+            }
         }
     }
 
@@ -1908,6 +1941,33 @@ impl C2sPlayerCommand {
                 let mode = cursor[0];
                 *cursor = &cursor[1..];
                 PlayerCommandKind::SetGameMode(mode)
+            }
+            9 => {
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let effect_id = cursor[0];
+                *cursor = &cursor[1..];
+                let duration_ticks = decode_varint(cursor)?;
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let amplifier = cursor[0];
+                *cursor = &cursor[1..];
+                PlayerCommandKind::ApplyEffect {
+                    effect_id,
+                    duration_ticks,
+                    amplifier,
+                }
+            }
+            10 => PlayerCommandKind::ClearEffects,
+            11 => {
+                if cursor.is_empty() {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let potion_type = cursor[0];
+                *cursor = &cursor[1..];
+                PlayerCommandKind::DrinkPotion { potion_type }
             }
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
@@ -2361,6 +2421,91 @@ impl S2cParticleEvent {
     }
 }
 
+/// Compact network representation of an active status effect on an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkEffect {
+    /// Effect ID (1..=16).
+    pub effect_id: u8,
+    /// Amplifier / tier (0 = Level I, 1 = Level II).
+    pub amplifier: u8,
+    /// Remaining duration in ticks (-1 for infinite).
+    pub duration_ticks: i32,
+    /// Whether effect is ambient (beacon/conduit).
+    pub ambient: bool,
+    /// Swirl particle RGB color.
+    pub particle_color: [u8; 3],
+}
+
+impl NetworkEffect {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.effect_id);
+        buf.push(self.amplifier);
+        buf.extend_from_slice(&self.duration_ticks.to_le_bytes());
+        buf.push(u8::from(self.ambient));
+        buf.extend_from_slice(&self.particle_color);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 10 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let effect_id = cursor[0];
+        let amplifier = cursor[1];
+        let duration_ticks = i32::from_le_bytes(cursor[2..6].try_into().unwrap());
+        let ambient = cursor[6] != 0;
+        let particle_color = [cursor[7], cursor[8], cursor[9]];
+        *cursor = &cursor[10..];
+        Ok(Self {
+            effect_id,
+            amplifier,
+            duration_ticks,
+            ambient,
+            particle_color,
+        })
+    }
+}
+
+/// Server synchronizes active status effects for an entity (player or mob).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cUpdateEffects {
+    /// Network ID of the target entity (0 for client player).
+    pub entity_id: u32,
+    /// List of active status effects.
+    pub effects: Vec<NetworkEffect>,
+}
+
+impl S2cUpdateEffects {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.entity_id, buf);
+        #[allow(clippy::cast_possible_truncation)]
+        encode_varint(self.effects.len() as u32, buf);
+        for effect in &self.effects {
+            effect.encode(buf);
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let entity_id = decode_varint(cursor)?;
+        let count_raw = decode_varint(cursor)?;
+        if count_raw > 64 {
+            return Err(ProtocolError::InvalidValue {
+                field: "update_effects.count",
+                reason: format!("Effect count {count_raw} exceeds maximum 64"),
+            });
+        }
+        let count = count_raw as usize;
+        let mut effects = Vec::with_capacity(count);
+        for _ in 0..count {
+            effects.push(NetworkEffect::decode(cursor)?);
+        }
+        Ok(Self { entity_id, effects })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2593,5 +2738,45 @@ mod tests {
         let decoded_ev =
             S2cParticleEvent::decode(&mut cursor).expect("failed to decode S2cParticleEvent");
         assert_eq!(particle_ev, decoded_ev);
+
+        let update_effects = S2cUpdateEffects {
+            entity_id: 10,
+            effects: vec![
+                NetworkEffect {
+                    effect_id: 1,
+                    amplifier: 1,
+                    duration_ticks: 600,
+                    ambient: false,
+                    particle_color: [124, 175, 198],
+                },
+                NetworkEffect {
+                    effect_id: 6,
+                    amplifier: 0,
+                    duration_ticks: 300,
+                    ambient: true,
+                    particle_color: [78, 147, 49],
+                },
+            ],
+        };
+        let mut buf = Vec::new();
+        update_effects.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_effects =
+            S2cUpdateEffects::decode(&mut cursor).expect("failed to decode S2cUpdateEffects");
+        assert_eq!(update_effects, decoded_effects);
+
+        let cmd_effect = C2sPlayerCommand {
+            command: PlayerCommandKind::ApplyEffect {
+                effect_id: 1,
+                duration_ticks: 1200,
+                amplifier: 2,
+            },
+        };
+        let mut buf = Vec::new();
+        cmd_effect.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_cmd =
+            C2sPlayerCommand::decode(&mut cursor).expect("failed to decode C2sPlayerCommand");
+        assert_eq!(cmd_effect, decoded_cmd);
     }
 }

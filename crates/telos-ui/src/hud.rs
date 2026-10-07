@@ -137,6 +137,23 @@ pub struct HudState {
     pub game_mode: String,
     /// Whether the player is currently in flying mode.
     pub is_flying: bool,
+    /// Active status effects displayed in top-right HUD corner.
+    pub active_effects: Vec<HudEffectDisplay>,
+}
+
+/// Active status effect badge presentation on client HUD.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HudEffectDisplay {
+    /// Effect numeric identifier.
+    pub effect_id: u8,
+    /// Human-readable effect name (e.g. "Speed II").
+    pub name: String,
+    /// Effect amplifier (0 = I, 1 = II, etc.).
+    pub amplifier: u8,
+    /// Remaining duration in ticks.
+    pub duration_ticks: i32,
+    /// Particle and badge accent RGB color.
+    pub color: [u8; 3],
 }
 
 impl Default for HudState {
@@ -172,6 +189,7 @@ impl Default for HudState {
             audio_channels: 0,
             game_mode: "Creative".to_string(),
             is_flying: true,
+            active_effects: Vec::new(),
         }
     }
 }
@@ -366,9 +384,105 @@ pub fn render_hud(
         }
     }
 
-    // 7. F3 Debug Overlay (if toggled on)
+    // 7. Active Status Effect Badges (top-right corner)
+    if !state.active_effects.is_empty() {
+        render_active_effects(state, font, screen_width, gui_scale, out);
+    }
+
+    // 8. F3 Debug Overlay (if toggled on)
     if state.f3_open {
         render_f3_overlay(state, font, screen_width, gui_scale, out);
+    }
+}
+
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn render_active_effects(
+    state: &HudState,
+    font: &BitmapFont,
+    screen_width: u32,
+    gui_scale: u32,
+    out: &mut Vec<UiQuad>,
+) {
+    let mut cur_y = if state.f3_open { 74.0f32 } else { 4.0f32 };
+    let card_w = 72.0f32;
+    let card_h = 18.0f32;
+    let right_pad = 4.0f32;
+    let sw_logical = screen_width as f32 / gui_scale as f32;
+    let card_x = sw_logical - card_w - right_pad;
+
+    for eff in &state.active_effects {
+        // Low duration blink (< 100 ticks = 5s): blink when ticks/10 is odd
+        let is_blinking = eff.duration_ticks > 0 && eff.duration_ticks < 100;
+        let bg_alpha = if is_blinking && ((eff.duration_ticks / 10) % 2 == 1) {
+            70
+        } else {
+            160
+        };
+
+        let px_x = (card_x * gui_scale as f32).round() as i32;
+        let px_y = (cur_y * gui_scale as f32).round() as i32;
+        let px_w = (card_w * gui_scale as f32).round() as u16;
+        let px_h = (card_h * gui_scale as f32).round() as u16;
+
+        // Dark translucent background card
+        out.push(UiQuad::solid(
+            [px_x, px_y],
+            [px_w, px_h],
+            UiQuad::rgba(25, 25, 30, bg_alpha),
+        ));
+
+        // Colored accent bar on left edge (3 logical px wide)
+        let bar_w = to_physical_pixels(3, gui_scale) as u16;
+        out.push(UiQuad::solid(
+            [px_x, px_y],
+            [bar_w, px_h],
+            UiQuad::rgba(eff.color[0], eff.color[1], eff.color[2], 255),
+        ));
+
+        // Effect title (e.g. "Speed II")
+        let title_x = card_x + 6.0;
+        let title_y = cur_y + 1.0;
+        font.layout_text(
+            &eff.name,
+            title_x,
+            title_y,
+            UiQuad::rgba(255, 255, 255, 255),
+            true,
+            gui_scale,
+            out,
+        );
+
+        // Formatted duration (e.g. "0:45" or "**:**")
+        let duration_str = if eff.duration_ticks < 0 {
+            "**:**".to_string()
+        } else {
+            let total_sec = eff.duration_ticks / 20;
+            let mins = total_sec / 60;
+            let secs = total_sec % 60;
+            format!("{mins}:{secs:02}")
+        };
+        let duration_y = cur_y + 9.5;
+        let dur_color = if is_blinking {
+            UiQuad::rgba(255, 120, 120, 255)
+        } else {
+            UiQuad::rgba(180, 180, 180, 255)
+        };
+        font.layout_text(
+            &duration_str,
+            title_x,
+            duration_y,
+            dur_color,
+            true,
+            gui_scale,
+            out,
+        );
+
+        cur_y += card_h + 3.0;
     }
 }
 

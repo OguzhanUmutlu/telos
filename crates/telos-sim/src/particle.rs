@@ -494,6 +494,46 @@ impl ParticleSystem {
         }
     }
 
+    /// Spawns a floating ambient status effect swirl particle around an entity.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    pub fn spawn_status_effect_swirl(&mut self, center: Vec3, color: [u8; 3]) {
+        if self.particles.len() >= self.max_particles {
+            return;
+        }
+        let angle = self.next_f32() * std::f32::consts::TAU;
+        let radius = self.next_f32_range(0.3, 0.7);
+        let offset = Vec3::new(
+            angle.cos() * radius,
+            self.next_f32_range(-0.5, 0.8),
+            angle.sin() * radius,
+        );
+        let vel = Vec3::new(
+            -angle.sin() * 0.2,
+            self.next_f32_range(0.1, 0.3),
+            angle.cos() * 0.2,
+        );
+        let size = self.next_f32_range(0.10, 0.16);
+        let max_age = self.next_f32_range(0.6, 1.2);
+
+        self.particles.push(Particle {
+            pos: center + offset,
+            vel,
+            color: [color[0], color[1], color[2], 200],
+            size,
+            initial_size: size,
+            age: 0.0,
+            max_age,
+            layer: 0,
+            tex_source: 0,
+            uv_min: [0.0, 0.0],
+            uv_max: [1.0, 1.0],
+            gravity: 0.05,
+            drag: 0.05,
+            collides_voxels: false,
+            kind: ParticleKind::Dust,
+        });
+    }
+
     /// Spawns particles corresponding to a server-replicated `S2cParticleEvent`.
     pub fn spawn_from_event<F>(&mut self, event: &S2cParticleEvent, block_layer_lookup: F)
     where
