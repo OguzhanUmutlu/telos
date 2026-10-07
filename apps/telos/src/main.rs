@@ -25,7 +25,8 @@ use telos_core::{
 };
 use telos_gpu::{
     ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
-    GraphicsPipeline, HiZPyramid, MemoryLocation, ShaderModule, TextureMipRegion, ash, vk,
+    GraphicsPipeline, HiZPyramid, MemoryLocation, PostCompositePushConstants,
+    PostProcessFrameGraph, ShaderModule, SsaoPushConstants, TextureMipRegion, ash, vk,
 };
 use telos_net::{Connection, Lane, MemoryConnection, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
@@ -1404,6 +1405,9 @@ struct App {
 
     // Sandboxed JavaScript runtime for resource pack particle/sound modulation (Phase 40)
     js_particle_hook: Option<telos_mod::JsParticleHook>,
+
+    // Extensible post-processing framework & custom shader pipeline (Phase 41)
+    postprocess: Option<PostProcessFrameGraph>,
 }
 
 impl App {
@@ -1833,6 +1837,7 @@ impl App {
             catalog,
             client_effects: Vec::new(),
             js_particle_hook,
+            postprocess: None,
         }
     }
 
@@ -3719,6 +3724,15 @@ impl App {
         let (cmd, image_index) = frame_data;
         let swapchain_extent = gpu_context.extent();
         let image_view = gpu_context.swapchain().image_view(image_index as usize);
+        let swapchain_image = gpu_context.swapchain().image(image_index as usize);
+
+        let use_postprocess =
+            self.game_settings.video.post_processing && self.postprocess.is_some();
+        let target_color_view = if use_postprocess {
+            self.postprocess.as_ref().unwrap().scene_color_view()
+        } else {
+            image_view
+        };
 
         #[allow(clippy::cast_precision_loss)]
         let aspect = swapchain_extent.width as f32 / swapchain_extent.height as f32;
@@ -3764,6 +3778,27 @@ impl App {
                 let init_barriers = [init_barrier];
                 let dep_info = vk::DependencyInfo::default().image_memory_barriers(&init_barriers);
                 device.cmd_pipeline_barrier2(cmd, &dep_info);
+
+                if let Some(pp) = &self.postprocess {
+                    let pp_init_barrier = vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                        .src_access_mask(vk::AccessFlags2::NONE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                        .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .image(pp.scene_color_image())
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        });
+                    let dep = vk::DependencyInfo::default()
+                        .image_memory_barriers(std::slice::from_ref(&pp_init_barrier));
+                    device.cmd_pipeline_barrier2(cmd, &dep);
+                }
             }
 
             // Upload dynamic Lightmap LUT to lightmap_texture
@@ -3990,7 +4025,7 @@ impl App {
             // PHASE 1: EARLY RASTERIZATION PASSES
             // ==========================================
             let color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(image_view)
+                .image_view(target_color_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
@@ -4454,7 +4489,7 @@ impl App {
             // PHASE 2: LATE RASTERIZATION PASSES
             // ==========================================
             let late_color_attachment = vk::RenderingAttachmentInfo::default()
-                .image_view(image_view)
+                .image_view(target_color_view)
                 .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD) // Preserve Early Pass color!
                 .store_op(vk::AttachmentStoreOp::STORE);
@@ -4463,7 +4498,7 @@ impl App {
                 .image_view(depth_buffer.view())
                 .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                 .load_op(vk::AttachmentLoadOp::LOAD) // Preserve Early Pass depth!
-                .store_op(vk::AttachmentStoreOp::DONT_CARE);
+                .store_op(vk::AttachmentStoreOp::STORE);
 
             let late_color_attachments = [late_color_attachment];
             let late_rendering_info = vk::RenderingInfo::default()
@@ -4984,6 +5019,68 @@ impl App {
             }
 
             device.cmd_end_rendering(cmd);
+
+            // ==========================================
+            // PHASE 2.5: POST-PROCESSING (SSAO, FOG, TONEMAP)
+            // ==========================================
+            if use_postprocess {
+                let pp = self.postprocess.as_ref().unwrap();
+
+                let proj_mat = self.camera.projection_matrix(aspect);
+                let inv_proj_mat = proj_mat.inverse();
+                let screen_size = [
+                    swapchain_extent.width as f32,
+                    swapchain_extent.height as f32,
+                ];
+
+                let ssao_pc = SsaoPushConstants {
+                    inv_proj: inv_proj_mat.to_cols_array(),
+                    proj: proj_mat.to_cols_array(),
+                    screen_size,
+                    radius: 0.75,
+                    bias: 0.025,
+                };
+
+                let sun_angle = (self.client_time_of_day / 24000.0) * std::f32::consts::TAU;
+                let sun_dir = [sun_angle.sin(), sun_angle.cos(), 0.2];
+
+                let mut flags = 0u32;
+                if self.game_settings.video.ssao {
+                    flags |= 1;
+                }
+                if self.game_settings.video.volumetric_fog {
+                    flags |= 2;
+                }
+                if self.game_settings.video.tonemapping {
+                    flags |= 4;
+                }
+                flags |= 8; // Vignette
+
+                let composite_pc = PostCompositePushConstants {
+                    inv_view_proj,
+                    cam_pos: [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                    ],
+                    time_of_day: self.client_time_of_day,
+                    sun_dir,
+                    view_distance: self.game_settings.video.view_distance as f32,
+                    fog_density: 1.0,
+                    flags,
+                    screen_size,
+                };
+
+                pp.record_postprocess(
+                    device,
+                    cmd,
+                    swapchain_image,
+                    image_view,
+                    depth_buffer.raw(),
+                    &ssao_pc,
+                    &composite_pc,
+                );
+            }
 
             // ==========================================
             // PHASE 3: RETAINED GUI & HUD PASS (Phase 16)
@@ -6790,6 +6887,35 @@ impl ApplicationHandler for App {
         self.descriptor_set_layout = Some(descriptor_set_layout);
         self.descriptor_set = Some(descriptor_set);
 
+        let post_fullscreen_spv =
+            include_bytes!(concat!(env!("OUT_DIR"), "/post_fullscreen.vert.spv"));
+        let post_ssao_spv = include_bytes!(concat!(env!("OUT_DIR"), "/post_ssao.frag.spv"));
+        let post_composite_spv =
+            include_bytes!(concat!(env!("OUT_DIR"), "/post_composite.frag.spv"));
+
+        let postprocess = match PostProcessFrameGraph::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            gpu_context.extent(),
+            gpu_context.swapchain().format(),
+            self.depth_buffer.as_ref().unwrap().view(),
+            post_fullscreen_spv,
+            post_ssao_spv,
+            post_composite_spv,
+        ) {
+            Ok(pp) => {
+                info!("PostProcessFrameGraph successfully initialized");
+                Some(pp)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to initialize PostProcessFrameGraph: {err}; continuing without post-processing"
+                );
+                None
+            }
+        };
+        self.postprocess = postprocess;
+
         let mdi_buffers = match MdiBuffers::new(&gpu_context) {
             Ok(b) => b,
             Err(err) => {
@@ -7616,6 +7742,33 @@ impl ApplicationHandler for App {
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                         info!(?next_mode, "Toggled game mode (F4)");
                     }
+                    KeyCode::F5 if pressed => {
+                        if let (Some(gpu_context), Some(pp)) =
+                            (&self.gpu_context, &mut self.postprocess)
+                        {
+                            let shaders_dir = if std::path::Path::new("shaders").exists() {
+                                PathBuf::from("shaders")
+                            } else if std::path::Path::new("../../shaders").exists() {
+                                PathBuf::from("../../shaders")
+                            } else {
+                                PathBuf::from("shaders")
+                            };
+                            if shaders_dir.exists() {
+                                match pp.reload_shaders(gpu_context.device().raw(), &shaders_dir) {
+                                    Ok(()) => {
+                                        info!(
+                                            "Hot-reloaded post-processing shaders successfully (F5)"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        tracing::error!("Failed to reload shaders: {err}");
+                                    }
+                                }
+                            } else {
+                                tracing::warn!("Shaders directory not found for hot-reload");
+                            }
+                        }
+                    }
                     KeyCode::F7 if pressed => {
                         let next_kind =
                             if self.weather_rain_level < 0.1 && self.weather_thunder_level < 0.1 {
@@ -7748,6 +7901,16 @@ impl ApplicationHandler for App {
                         width: physical_size.width,
                         height: physical_size.height,
                     };
+                    if let (Some(pp), Some(depth)) = (&mut self.postprocess, &self.depth_buffer)
+                        && let Err(err) = pp.resize(
+                            gpu_context.device().raw(),
+                            gpu_context.allocator(),
+                            extent,
+                            depth.view(),
+                        )
+                    {
+                        tracing::error!("Failed to resize post-process frame graph: {err}");
+                    }
                     if let Err(err) = self.recreate_hiz_resources(extent) {
                         tracing::error!("Failed to recreate Hi-Z resources on resize: {err}");
                     }
@@ -7980,6 +8143,10 @@ impl ApplicationHandler for App {
 
             if let Some(mut depth) = self.depth_buffer.take() {
                 depth.destroy(device, allocator);
+            }
+
+            if let Some(mut pp) = self.postprocess.take() {
+                pp.destroy(device, allocator);
             }
 
             if let Some(mut pipeline) = self.sky_pipeline.take() {

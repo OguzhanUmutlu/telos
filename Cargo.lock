@@ -3382,6 +3382,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
+ "bytemuck",
  "gpu-allocator",
  "raw-window-handle",
  "telos-core",

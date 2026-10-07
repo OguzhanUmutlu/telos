@@ -23,7 +23,12 @@ const fn default_sim_distance() -> u32 {
     8
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 /// Video and display settings.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VideoSettings {
     /// Horizontal render distance in chunks (2..=32).
@@ -43,6 +48,18 @@ pub struct VideoSettings {
     pub vsync: bool,
     /// Target FPS limit (0 = unlimited, 60, 120, 144, 240).
     pub fps_limit: u32,
+    /// Enable post-processing pipeline.
+    #[serde(default = "default_true")]
+    pub post_processing: bool,
+    /// Enable screen-space ambient occlusion (SSAO).
+    #[serde(default = "default_true")]
+    pub ssao: bool,
+    /// Enable volumetric horizon distance fog & scattering.
+    #[serde(default = "default_true")]
+    pub volumetric_fog: bool,
+    /// Enable ACES filmic tonemapping.
+    #[serde(default = "default_true")]
+    pub tonemapping: bool,
 }
 
 impl Default for VideoSettings {
@@ -56,6 +73,10 @@ impl Default for VideoSettings {
             no_cull: false,
             vsync: false,
             fps_limit: 144,
+            post_processing: true,
+            ssao: true,
+            volumetric_fog: true,
+            tonemapping: true,
         }
     }
 }
@@ -207,6 +228,10 @@ mod tests {
                 no_cull: true,
                 vsync: false,
                 fps_limit: 144,
+                post_processing: true,
+                ssao: true,
+                volumetric_fog: true,
+                tonemapping: true,
             },
             audio: AudioSettings {
                 master_volume: 5.0,

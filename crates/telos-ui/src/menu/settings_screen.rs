@@ -116,8 +116,8 @@ impl SettingsScreen {
         let col_w = 145.0;
         let col1_x = center_x - col_w - 6.0;
         let col2_x = center_x + 6.0;
-        let start_y = 80.0;
-        let row_h = 30.0;
+        let start_y = 66.0;
+        let row_h = 24.0;
 
         self.sliders.clear();
         self.toggle_buttons.clear();
@@ -235,6 +235,66 @@ impl SettingsScreen {
                     self.settings.video.simulation_distance as f32,
                     " Chunks",
                     true,
+                ));
+
+                let pp_val = if self.settings.video.post_processing {
+                    on_str
+                } else {
+                    off_str
+                };
+                let pp_str = format!("Post-Process: {pp_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    205,
+                    col1_x,
+                    start_y + row_h * 4.0,
+                    col_w,
+                    22.0,
+                    pp_str,
+                ));
+
+                let ssao_val = if self.settings.video.ssao {
+                    on_str
+                } else {
+                    off_str
+                };
+                let ssao_str = format!("SSAO: {ssao_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    206,
+                    col2_x,
+                    start_y + row_h * 4.0,
+                    col_w,
+                    22.0,
+                    ssao_str,
+                ));
+
+                let fog_val = if self.settings.video.volumetric_fog {
+                    on_str
+                } else {
+                    off_str
+                };
+                let fog_str = format!("Volumetric Fog: {fog_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    207,
+                    col1_x,
+                    start_y + row_h * 5.0,
+                    col_w,
+                    22.0,
+                    fog_str,
+                ));
+
+                let tone_val = if self.settings.video.tonemapping {
+                    on_str
+                } else {
+                    off_str
+                };
+                let tone_str = format!("Tonemapping: {tone_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    208,
+                    col2_x,
+                    start_y + row_h * 5.0,
+                    col_w,
+                    22.0,
+                    tone_str,
                 ));
             }
             SettingsTab::Audio => {
@@ -365,9 +425,9 @@ impl SettingsScreen {
         self.done_button = MenuButton::new(
             99,
             center_x - done_w * 0.5,
-            height_gui - 34.0,
+            height_gui - 28.0,
             done_w,
-            24.0,
+            22.0,
             catalog.translate("gui.done"),
         );
     }
@@ -455,6 +515,18 @@ impl SettingsScreen {
                     204 => {
                         self.settings.controls.invert_mouse_y =
                             !self.settings.controls.invert_mouse_y;
+                    }
+                    205 => {
+                        self.settings.video.post_processing = !self.settings.video.post_processing;
+                    }
+                    206 => {
+                        self.settings.video.ssao = !self.settings.video.ssao;
+                    }
+                    207 => {
+                        self.settings.video.volumetric_fog = !self.settings.video.volumetric_fog;
+                    }
+                    208 => {
+                        self.settings.video.tonemapping = !self.settings.video.tonemapping;
                     }
                     301 => self.settings.gameplay.language = "en_us".to_string(),
                     302 => self.settings.gameplay.language = "es_es".to_string(),

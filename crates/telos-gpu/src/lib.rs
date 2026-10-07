@@ -15,6 +15,8 @@ pub mod frame;
 pub mod hiz;
 pub mod instance;
 pub mod pipeline;
+pub mod postprocess;
+pub mod reloader;
 pub mod swapchain;
 pub mod texture;
 
@@ -29,6 +31,8 @@ pub use frame::{FRAMES_IN_FLIGHT, FrameManager, FrameResources};
 pub use hiz::HiZPyramid;
 pub use instance::Instance;
 pub use pipeline::{GraphicsPipeline, ShaderModule};
+pub use postprocess::{PostCompositePushConstants, PostProcessFrameGraph, SsaoPushConstants};
+pub use reloader::ShaderCompiler;
 pub use swapchain::Swapchain;
 pub use texture::{GpuTexture2d, GpuTextureArray, TextureMipRegion};
 
