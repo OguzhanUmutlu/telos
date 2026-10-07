@@ -22,6 +22,8 @@ pub struct ResolvedBlocks {
     pub sand: BlockStateId,
     /// Water block state ID.
     pub water: BlockStateId,
+    /// Lava block state ID.
+    pub lava: BlockStateId,
     /// Poppy flower block state ID.
     pub poppy: BlockStateId,
     /// Dandelion flower block state ID.
@@ -57,6 +59,9 @@ impl ResolvedBlocks {
         let water = registry
             .get(&telos_core::ident::Identifier::new("telos", "water").unwrap())
             .map_or(BlockStateId::new(6), telos_voxel::Block::default_state);
+        let lava = registry
+            .get(&telos_core::ident::Identifier::new("telos", "lava").unwrap())
+            .map_or(BlockStateId::new(33), telos_voxel::Block::default_state);
         let poppy = registry
             .get(&telos_core::ident::Identifier::new("telos", "poppy").unwrap())
             .map_or(BlockStateId::new(12), telos_voxel::Block::default_state);
@@ -81,6 +86,7 @@ impl ResolvedBlocks {
             bedrock,
             sand,
             water,
+            lava,
             poppy,
             dandelion,
             short_grass,
@@ -102,13 +108,19 @@ pub fn apply_surface_rules(
     occupancy: &[bool; CHUNK_VOLUME],
     biomes: &[BiomeId; 64],
     blocks: &ResolvedBlocks,
+    aquifer: &crate::aquifer::AquiferSampler,
+    aquifer_cache: &crate::aquifer::ChunkAquiferCache,
     out_dense: &mut [BlockStateId; CHUNK_VOLUME],
 ) {
+    let origin_x = chunk_pos.x() * 32;
     let origin_y = chunk_pos.y() * 32;
+    let origin_z = chunk_pos.z() * 32;
 
     for z in 0usize..32 {
+        let wz = origin_z + z as i32;
         let cz = z >> 2;
         for x in 0usize..32 {
+            let wx = origin_x + x as i32;
             let cx = x >> 2;
             let biome = biomes[cz * 8 + cx];
 
@@ -166,15 +178,29 @@ pub fn apply_surface_rules(
 
                     depth_from_surface += 1;
                 } else {
-                    // Air or water
-                    is_under_solid = false;
-                    depth_from_surface = 0;
-
-                    if wy <= 0 {
-                        // Below or at sea level in empty cavity
-                        out_dense[idx] = blocks.water;
-                    } else {
-                        out_dense[idx] = blocks.air;
+                    // Empty cavity: evaluate 3D noise-modulated aquifer level & fluid barriers
+                    match aquifer.sample(aquifer_cache, wx, wy, wz) {
+                        crate::aquifer::AquiferSample::Barrier => {
+                            out_dense[idx] = blocks.stone;
+                            depth_from_surface += 1;
+                            is_under_solid = true;
+                        }
+                        crate::aquifer::AquiferSample::Fluid(crate::aquifer::FluidKind::Water) => {
+                            out_dense[idx] = blocks.water;
+                            depth_from_surface = 0;
+                            is_under_solid = false;
+                        }
+                        crate::aquifer::AquiferSample::Fluid(crate::aquifer::FluidKind::Lava) => {
+                            out_dense[idx] = blocks.lava;
+                            depth_from_surface = 0;
+                            is_under_solid = false;
+                        }
+                        crate::aquifer::AquiferSample::Air
+                        | crate::aquifer::AquiferSample::Fluid(crate::aquifer::FluidKind::None) => {
+                            out_dense[idx] = blocks.air;
+                            depth_from_surface = 0;
+                            is_under_solid = false;
+                        }
                     }
                 }
             }

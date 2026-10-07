@@ -1,5 +1,6 @@
 //! Central terrain generator coordinator producing standard 32³ cubic chunks.
 
+use crate::aquifer::AquiferSampler;
 use crate::decoration::apply_surface_decorations;
 use crate::density::CoarseGrid;
 use crate::surface::{ResolvedBlocks, apply_surface_rules};
@@ -29,6 +30,7 @@ pub struct WorldGenerator {
     seed: u64,
     kind: GeneratorKind,
     blocks: ResolvedBlocks,
+    aquifer: AquiferSampler,
 }
 
 impl WorldGenerator {
@@ -42,7 +44,13 @@ impl WorldGenerator {
     #[must_use]
     pub fn with_kind(seed: u64, registry: &BlockRegistry, kind: GeneratorKind) -> Self {
         let blocks = ResolvedBlocks::resolve(registry);
-        Self { seed, kind, blocks }
+        let aquifer = AquiferSampler::new(seed);
+        Self {
+            seed,
+            kind,
+            blocks,
+            aquifer,
+        }
     }
 
     /// World seed.
@@ -57,11 +65,18 @@ impl WorldGenerator {
         self.kind
     }
 
+    /// Reference to the underlying aquifer sampler.
+    #[must_use]
+    pub const fn aquifer(&self) -> &AquiferSampler {
+        &self.aquifer
+    }
+
     /// Generates a fully lit and paletted 32³ cubic chunk at `pos`.
     #[must_use]
     #[allow(clippy::large_stack_arrays)]
     pub fn generate_chunk(&self, pos: ChunkPos) -> Chunk {
         let water_id = self.blocks.water;
+        let lava_id = self.blocks.lava;
         match self.kind {
             GeneratorKind::Void => Chunk::new_uniform(pos, BlockStateId::AIR, false),
             GeneratorKind::Flat => {
@@ -94,7 +109,7 @@ impl WorldGenerator {
 
                 let packed_blocks = bulk::from_dense(&dense);
                 Chunk::from_blocks(pos, packed_blocks, move |state| {
-                    state != BlockStateId::AIR && state != water_id
+                    state != BlockStateId::AIR && state != water_id && state != lava_id
                 })
             }
             GeneratorKind::Standard => {
@@ -105,7 +120,10 @@ impl WorldGenerator {
                 let mut occupancy = [false; CHUNK_VOLUME];
                 grid.fill_occupancy(&mut occupancy);
 
-                // 3. Apply column surface rules and strata into dense array
+                // 3. Precompute 3D aquifer Voronoi cells covering the chunk volume
+                let aquifer_cache = self.aquifer.prepare_chunk(pos);
+
+                // 4. Apply column surface rules, 3D aquifers, and strata into dense array
                 let mut dense = [BlockStateId::AIR; CHUNK_VOLUME];
                 apply_surface_rules(
                     self.seed,
@@ -113,17 +131,19 @@ impl WorldGenerator {
                     &occupancy,
                     grid.biomes(),
                     &self.blocks,
+                    &self.aquifer,
+                    &aquifer_cache,
                     &mut dense,
                 );
 
-                // 4. Apply procedural surface foliage and floral patch decoration
+                // 5. Apply procedural surface foliage and floral patch decoration
                 apply_surface_decorations(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
 
-                // 5. Construct compact paletted chunk representation with uniform elision
+                // 6. Construct compact paletted chunk representation with uniform elision
                 let packed_blocks = bulk::from_dense(&dense);
 
                 Chunk::from_blocks(pos, packed_blocks, move |state| {
-                    state != BlockStateId::AIR && state != water_id
+                    state != BlockStateId::AIR && state != water_id && state != lava_id
                 })
             }
         }

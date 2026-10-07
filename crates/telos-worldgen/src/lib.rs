@@ -5,6 +5,7 @@
 //! interpolation, 3D cheese caves, and top-down surface strata rules to generate
 //! 32³ cubic chunks (`telos_voxel::Chunk`).
 
+pub mod aquifer;
 pub mod biome;
 pub mod climate;
 pub mod decoration;
@@ -15,6 +16,7 @@ pub mod math;
 pub mod noise;
 pub mod surface;
 
+pub use aquifer::{AquiferSample, AquiferSampler, FluidKind};
 pub use biome::BiomeId;
 pub use climate::ClimatePoint;
 pub use decoration::apply_surface_decorations;

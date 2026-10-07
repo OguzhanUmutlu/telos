@@ -38,10 +38,15 @@ fn test_chunk_negative_coordinates() {
     let chunk = generator.generate_chunk(pos);
     assert_eq!(chunk.position(), pos);
 
-    // Deep underground should contain bedrock or stone
-    let idx = LocalIdx::from_coords(0, 0, 0).unwrap();
-    let state = chunk.get(idx);
-    assert!(state.0 > 0, "Deep chunk should not be empty air");
+    // Deep underground chunk should contain bedrock or stone terrain
+    let has_solid = (0..CHUNK_VOLUME).any(|i| {
+        let idx = LocalIdx::new(i as u16).unwrap();
+        chunk.get(idx).0 > 0
+    });
+    assert!(
+        has_solid,
+        "Deep underground chunk must contain rock or solid terrain"
+    );
 }
 
 #[test]
