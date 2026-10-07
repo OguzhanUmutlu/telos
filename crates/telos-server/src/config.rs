@@ -48,6 +48,10 @@ const fn default_view_distance() -> u32 {
     8
 }
 
+const fn default_simulation_distance() -> u32 {
+    8
+}
+
 const fn default_vertical_view_distance() -> u32 {
     12
 }
@@ -96,6 +100,10 @@ pub struct ServerConfig {
     /// Default horizontal view distance in chunks (radius, default: 8).
     #[serde(default = "default_view_distance")]
     pub view_distance: u32,
+    /// Default horizontal simulation distance in chunks (radius, default: 8, range 2..=32).
+    /// Chunks outside this radius from all players freeze entity logic and scheduled ticks.
+    #[serde(default = "default_simulation_distance")]
+    pub simulation_distance: u32,
     /// Vertical chunk radius (default: 12 chunks above and below = 384 blocks).
     #[serde(default = "default_vertical_view_distance")]
     pub vertical_view_distance: u32,
@@ -132,6 +140,7 @@ impl Default for ServerConfig {
             log_level: default_log_level(),
             tps: default_tps(),
             view_distance: default_view_distance(),
+            simulation_distance: default_simulation_distance(),
             vertical_view_distance: default_vertical_view_distance(),
             chunks_per_tick_per_player: default_chunks_per_tick_per_player(),
             max_lod_level: default_max_lod_level(),

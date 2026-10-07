@@ -59,7 +59,7 @@ pub const fn is_leggings(item: u32) -> bool {
 /// Returns true if the item is boots.
 #[must_use]
 pub const fn is_boots(item: u32) -> bool {
-    item == 31
+    item == 31 || item == 35
 }
 
 /// Returns true if the item is any equippable armor item.
@@ -135,7 +135,11 @@ pub fn item_name(item: u32) -> &'static str {
         28 => "Logic Inverter",
         29 => "Logic Inverter (Off)",
         30 => "Logic Diode",
-        31 => "Iron Boots",
+        31 => "Lava",
+        32 => "Flowing Lava",
+        33 => "Fire",
+        34 => "Nether Portal",
+        35 => "Iron Boots",
         _ => "Unknown Item",
     }
 }

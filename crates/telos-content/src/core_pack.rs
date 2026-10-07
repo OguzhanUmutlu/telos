@@ -524,6 +524,80 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             },
         ),
         (
+            "lava",
+            "Lava",
+            BlockDef {
+                shape: BlockShapeDef::Fluid {
+                    level: 0,
+                    falling: false,
+                },
+                render_layer: RenderLayerDef::Translucent,
+                opacity: OpacityDef::Filter(15),
+                light_emission: 15,
+                hardness: 100.0,
+                blast_resistance: 100.0,
+                tool: None,
+                sound: None,
+                item: BlockItemPolicy::None,
+                material_texture_index: Some(31),
+                ..Default::default()
+            },
+        ),
+        (
+            "flowing_lava",
+            "Flowing Lava",
+            BlockDef {
+                shape: BlockShapeDef::Fluid {
+                    level: 1,
+                    falling: false,
+                },
+                render_layer: RenderLayerDef::Translucent,
+                opacity: OpacityDef::Filter(15),
+                light_emission: 15,
+                hardness: 100.0,
+                blast_resistance: 100.0,
+                tool: None,
+                sound: None,
+                item: BlockItemPolicy::None,
+                material_texture_index: Some(32),
+                ..Default::default()
+            },
+        ),
+        (
+            "fire",
+            "Fire",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                light_emission: 15,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: None,
+                item: BlockItemPolicy::None,
+                material_texture_index: Some(33),
+                ..Default::default()
+            },
+        ),
+        (
+            "nether_portal",
+            "Nether Portal",
+            BlockDef {
+                shape: BlockShapeDef::FlatPlate,
+                render_layer: RenderLayerDef::Translucent,
+                opacity: OpacityDef::Transparent,
+                light_emission: 11,
+                hardness: -1.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: None,
+                item: BlockItemPolicy::None,
+                material_texture_index: Some(34),
+                ..Default::default()
+            },
+        ),
+        (
             "cobblestone",
             "Cobblestone",
             BlockDef {

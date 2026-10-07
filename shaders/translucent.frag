@@ -16,17 +16,51 @@ layout(set = 0, binding = 0) uniform sampler2DArray u_textures;
 layout(set = 0, binding = 1) uniform sampler2D u_lightmap;
 
 layout(push_constant, std430) uniform PushConstants {
-    mat4 view_proj;
-    uint64_t draw_info_buffer_address;
-    uint frame_tick;
-    uint water_base_layer;
-    uint water_frame_count;
-    uint _pad;
+    mat4 view_proj;                   // 64 bytes (0..64)
+    uint64_t draw_info_buffer_address; // 8 bytes (64..72)
+    uint frame_tick;                  // 4 bytes (72..76)
+    uint water_base_layer;             // 4 bytes (76..80)
+    vec4 camera_pos;                  // 16 bytes (80..96, xyz = camera pos, w = sim_dist_meters)
+    uint water_frame_count;            // 4 bytes (96..100)
+    uint water_flow_base_layer;        // 4 bytes (100..104)
+    uint water_flow_frame_count;       // 4 bytes (104..108)
+    uint lava_base_layer;              // 4 bytes (108..112)
+    uint lava_frame_count;             // 4 bytes (112..116)
+    uint fire_base_layer;              // 4 bytes (116..120)
+    uint fire_frame_count;             // 4 bytes (120..124)
+    uint _pad;                         // 4 bytes (124..128)
 } pc;
 
 void main() {
-    uint frame = (pc.water_frame_count > 1u) ? ((pc.frame_tick / 3u) % pc.water_frame_count) : 0u;
-    uint layer = pc.water_base_layer + frame;
+    float dist = length(v_world_pos - pc.camera_pos.xyz);
+    bool is_simulated = (dist <= pc.camera_pos.w);
+
+    uint frame = 0u;
+    uint layer = pc.water_base_layer;
+    vec3 fluid_tint = vec3(0.247, 0.463, 0.894); // Plains water tint #3f76e4
+    float alpha = 0.72;
+
+    if (v_material == 31u || v_material == 32u) {
+        // Lava
+        if (is_simulated && pc.lava_frame_count > 1u) {
+            frame = (pc.frame_tick / 2u) % pc.lava_frame_count;
+        }
+        layer = pc.lava_base_layer + frame;
+        fluid_tint = vec3(1.0);
+        alpha = 1.0;
+    } else if (v_material == 15u) {
+        // Flowing water
+        if (is_simulated && pc.water_flow_frame_count > 1u) {
+            frame = (pc.frame_tick / 3u) % pc.water_flow_frame_count;
+        }
+        layer = pc.water_flow_base_layer + frame;
+    } else {
+        // Still water
+        if (is_simulated && pc.water_frame_count > 1u) {
+            frame = (pc.frame_tick / 3u) % pc.water_frame_count;
+        }
+        layer = pc.water_base_layer + frame;
+    }
 
     vec4 tex_color = texture(u_textures, vec3(v_uv, float(layer)));
 
@@ -54,8 +88,10 @@ void main() {
 
     vec3 total_light = clamp(light_color * face_shade * ao_factor, 0.0, 1.0);
 
-    // Water blue tint (plains water tint #3f76e4)
-    vec3 water_tint = vec3(0.247, 0.463, 0.894);
+    // Emissive glow for lava
+    if (v_material == 31u || v_material == 32u) {
+        total_light = max(total_light, vec3(1.0, 0.9, 0.7));
+    }
 
-    out_color = vec4(tex_color.rgb * water_tint * total_light, 0.72);
+    out_color = vec4(tex_color.rgb * fluid_tint * total_light, alpha);
 }

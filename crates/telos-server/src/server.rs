@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use telos_content::{
     FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order,
 };
-use telos_core::coords::{BlockPos, Face};
+use telos_core::coords::{BlockPos, ChunkPos, Face};
 use telos_mod::{ModConfig, ModManager, ModPermissions, ModResult};
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
@@ -29,8 +29,8 @@ use telos_sim::command::{
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
     CombatTracker, DamageType, EntityType, Experience, Health, Hunger, HurtTime, Inventory,
-    ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams, Velocity,
-    WeatherKind, WeatherState, build_sim_schedule,
+    ItemStack, MobBundle, NetEntity, PlayerPositions, Position, Rotation, SimParams,
+    SimulationFrozen, Velocity, WeatherKind, WeatherState, build_sim_schedule,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -351,6 +351,26 @@ impl Server {
         }
     }
 
+    /// Checks whether a chunk is within the horizontal Chebyshev simulation distance
+    /// of any active player session currently in the specified world.
+    #[must_use]
+    pub fn is_chunk_simulated(&self, world_name: &str, chunk: ChunkPos) -> bool {
+        for session in self.sessions.values() {
+            if session.phase != ConnectionPhase::Play || session.world_name != world_name {
+                continue;
+            }
+            let player_chunk = session.player_chunk();
+            let dx = (player_chunk.x() - chunk.x()).abs();
+            let dz = (player_chunk.z() - chunk.z()).abs();
+            #[allow(clippy::cast_possible_wrap)]
+            let sim_dist = session.simulation_distance as i32;
+            if dx <= sim_dist && dz <= sim_dist {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Spawns natural mobs around players according to light and surface rules.
     pub fn tick_natural_spawner(&mut self) {
         let player_count = self
@@ -403,6 +423,9 @@ impl Server {
             }
 
             let check_pos = BlockPos::new(spawn_x, surface_y + 1, spawn_z);
+            if !self.is_chunk_simulated("overworld", check_pos.chunk()) {
+                continue;
+            }
             let (sky_light, block_light) = self.worlds.default_world().get_light(check_pos);
 
             let spawn_pos = DVec3::new(
@@ -768,6 +791,8 @@ impl Server {
                         match msg {
                             C2sMessage::ClientSettings(settings) => {
                                 session.view_distance = u32::from(settings.view_distance);
+                                session.simulation_distance =
+                                    u32::from(settings.simulation_distance).clamp(2, 32);
                             }
                             C2sMessage::ConfigAck(_) => {
                                 info!(session_id, "Client config acked, entering Play");
@@ -1715,6 +1740,40 @@ impl Server {
         self.ecs_world
             .insert_resource(PlayerPositions(player_pos_list));
 
+        // Freeze mobs outside active simulation distance to zero out CPU cost
+        let mut to_freeze = Vec::new();
+        let mut to_unfreeze = Vec::new();
+        {
+            let mut mob_sim_query = self.ecs_world.query::<(
+                bevy_ecs::entity::Entity,
+                &Position,
+                Option<&SimulationFrozen>,
+            )>();
+            for (entity, pos, frozen) in mob_sim_query.iter(&self.ecs_world) {
+                #[allow(clippy::cast_possible_truncation)]
+                let chunk = BlockPos::new(
+                    pos.0.x.floor() as i32,
+                    pos.0.y.floor() as i32,
+                    pos.0.z.floor() as i32,
+                )
+                .chunk();
+                let is_sim = self.is_chunk_simulated("overworld", chunk);
+                if is_sim && frozen.is_some() {
+                    to_unfreeze.push(entity);
+                } else if !is_sim && frozen.is_none() {
+                    to_freeze.push(entity);
+                }
+            }
+        }
+        for entity in to_freeze {
+            self.ecs_world.entity_mut(entity).insert(SimulationFrozen);
+        }
+        for entity in to_unfreeze {
+            self.ecs_world
+                .entity_mut(entity)
+                .remove::<SimulationFrozen>();
+        }
+
         self.sim_schedule.run(&mut self.ecs_world);
 
         // Terrain floor clamp for mobs
@@ -1928,7 +1987,7 @@ impl Server {
             self.tick_natural_spawner();
         }
 
-        // 8. Distance despawning (> 72 blocks from all players)
+        // 8. Distance despawning based on simulation distance ((sim_dist * 32.0) + 16.0 blocks)
         let active_players: Vec<DVec3> = self
             .sessions
             .values()
@@ -1937,6 +1996,16 @@ impl Server {
             .collect();
 
         if !active_players.is_empty() {
+            let max_sim_dist = self
+                .sessions
+                .values()
+                .filter(|s| s.phase == ConnectionPhase::Play)
+                .map(|s| s.simulation_distance)
+                .max()
+                .unwrap_or(self.config.simulation_distance);
+            let despawn_dist = (f64::from(max_sim_dist) * 32.0) + 16.0;
+            let despawn_dist_sq = despawn_dist * despawn_dist;
+
             let mut to_despawn = Vec::new();
             for (&net_id, &entity) in &self.tracked_mobs {
                 if let Some(pos) = self.ecs_world.get::<Position>(entity) {
@@ -1944,7 +2013,7 @@ impl Server {
                         .iter()
                         .map(|p| p.distance_squared(pos.0))
                         .fold(f64::INFINITY, f64::min);
-                    if min_dist_sq > 72.0 * 72.0 {
+                    if min_dist_sq > despawn_dist_sq {
                         to_despawn.push(net_id);
                     }
                 }

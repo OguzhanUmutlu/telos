@@ -385,6 +385,51 @@ impl BlockRegistry {
             crate::shape::BlockShape::flat_plate(),
         );
 
+        // Animated fluids and multi-layer surfaces (Phase 37)
+        let lava_id = Identifier::new("telos", "lava").unwrap();
+        reg.register_with_shape(
+            lava_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::TRANSLUCENT.bits()
+                    | StateFlags::EMISSIVE.bits(),
+            ),
+            crate::shape::BlockShape::fluid(0, false),
+        );
+
+        let flowing_lava_id = Identifier::new("telos", "flowing_lava").unwrap();
+        reg.register_with_shape(
+            flowing_lava_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::TRANSLUCENT.bits()
+                    | StateFlags::EMISSIVE.bits(),
+            ),
+            crate::shape::BlockShape::fluid(1, false),
+        );
+
+        let fire_id = Identifier::new("telos", "fire").unwrap();
+        reg.register_with_shape(
+            fire_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::CUTOUT.bits()
+                    | StateFlags::EMISSIVE.bits(),
+            ),
+            crate::shape::BlockShape::cross(),
+        );
+
+        let nether_portal_id = Identifier::new("telos", "nether_portal").unwrap();
+        reg.register_with_shape(
+            nether_portal_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::TRANSLUCENT.bits()
+                    | StateFlags::EMISSIVE.bits(),
+            ),
+            crate::shape::BlockShape::flat_plate(),
+        );
+
         reg.freeze();
         reg
     }

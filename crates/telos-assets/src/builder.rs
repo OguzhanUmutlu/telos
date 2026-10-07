@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::image_buf::RgbaImage;
+use crate::{image_buf::RgbaImage, mcmeta::AnimationDef};
 
 /// Specification for copying a single mip slice from staging buffer to `VkImage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,35 +90,53 @@ impl TextureArrayBuilder {
         idx
     }
 
-    /// Registers an animated texture sequence as consecutive layers in the array.
-    pub fn insert_animated(
+    /// Registers an animated texture sequence, resolving custom frame ordering and frametime from `anim`.
+    pub fn insert_animated_with_meta(
         &mut self,
         name: &str,
-        frames: Vec<RgbaImage>,
-        frame_time: u32,
+        physical_frames: &[RgbaImage],
+        anim: Option<&AnimationDef>,
     ) -> AnimatedTextureInfo {
         if let Some(&info) = self.animations.get(name) {
             return info;
         }
 
+        if physical_frames.is_empty() {
+            let info = AnimatedTextureInfo {
+                base_layer: 0,
+                frame_count: 0,
+                frame_time: 1,
+            };
+            self.animations.insert(name.to_string(), info);
+            return info;
+        }
+
+        let frame_time = anim.map_or(2, |a| a.frametime.max(1));
         #[allow(clippy::cast_possible_truncation)]
-        let frame_count = frames.len() as u32;
+        let frame_indices = anim.map_or_else(
+            || (0..physical_frames.len() as u32).collect(),
+            |a| a.resolve_frames(physical_frames.len() as u32),
+        );
+
+        #[allow(clippy::cast_possible_truncation)]
+        let frame_count = frame_indices.len() as u32;
         let mut base_layer = 0;
 
-        for (i, frame) in frames.into_iter().enumerate() {
+        for (seq_idx, &phys_idx) in frame_indices.iter().enumerate() {
+            let frame = &physical_frames[(phys_idx as usize) % physical_frames.len()];
             let scaled = if frame.width != self.resolution || frame.height != self.resolution {
                 frame.rescale(self.resolution, self.resolution)
             } else {
-                frame
+                frame.clone()
             };
 
             #[allow(clippy::cast_possible_truncation)]
             let layer_idx = self.textures.len() as u32;
-            if i == 0 {
+            if seq_idx == 0 {
                 base_layer = layer_idx;
                 self.name_to_index.insert(name.to_string(), base_layer);
             }
-            self.textures.push((format!("{name}_{i}"), scaled));
+            self.textures.push((format!("{name}_{seq_idx}"), scaled));
         }
 
         let info = AnimatedTextureInfo {
@@ -128,6 +146,21 @@ impl TextureArrayBuilder {
         };
         self.animations.insert(name.to_string(), info);
         info
+    }
+
+    /// Registers an animated texture sequence as consecutive layers in the array.
+    pub fn insert_animated(
+        &mut self,
+        name: &str,
+        frames: &[RgbaImage],
+        frame_time: u32,
+    ) -> AnimatedTextureInfo {
+        let anim = AnimationDef {
+            frametime: frame_time,
+            interpolate: false,
+            frames: None,
+        };
+        self.insert_animated_with_meta(name, frames, Some(&anim))
     }
 
     /// Number of registered texture layers.

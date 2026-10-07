@@ -39,4 +39,13 @@ pub enum AssetError {
         /// Image height in pixels.
         height: u32,
     },
+
+    /// Failed to parse metadata file (e.g. .mcmeta JSON).
+    #[error("Failed to parse metadata from {path:?}: {message}")]
+    Parse {
+        /// File path of the metadata file.
+        path: PathBuf,
+        /// Description of the parse error.
+        message: String,
+    },
 }

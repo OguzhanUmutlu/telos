@@ -26,12 +26,19 @@ layout(buffer_reference, std430) readonly buffer DrawInfoBuffer {
 };
 
 layout(push_constant, std430) uniform PushConstants {
-    mat4 view_proj;
-    uint64_t draw_info_buffer_address;
-    uint frame_tick;
-    uint water_base_layer;
-    uint water_frame_count;
-    uint _pad;
+    mat4 view_proj;                   // 64 bytes (0..64)
+    uint64_t draw_info_buffer_address; // 8 bytes (64..72)
+    uint frame_tick;                  // 4 bytes (72..76)
+    uint water_base_layer;             // 4 bytes (76..80)
+    vec4 camera_pos;                  // 16 bytes (80..96, xyz = camera pos, w = sim_dist_meters)
+    uint water_frame_count;            // 4 bytes (96..100)
+    uint water_flow_base_layer;        // 4 bytes (100..104)
+    uint water_flow_frame_count;       // 4 bytes (104..108)
+    uint lava_base_layer;              // 4 bytes (108..112)
+    uint lava_frame_count;             // 4 bytes (112..116)
+    uint fire_base_layer;              // 4 bytes (116..120)
+    uint fire_frame_count;             // 4 bytes (120..124)
+    uint _pad;                         // 4 bytes (124..128)
 } pc;
 
 layout(location = 0) out vec3 v_normal;

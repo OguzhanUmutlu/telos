@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{error::AssetError, image_buf::RgbaImage};
+use crate::{error::AssetError, image_buf::RgbaImage, mcmeta::AnimationDef};
 
 /// Ordered stack of resource packs resolving assets from highest to lowest priority.
 #[derive(Debug, Clone, Default)]
@@ -36,6 +36,30 @@ impl ResourcePackStack {
         self.find_texture(&rel_path)
     }
 
+    /// Finds the `.png.mcmeta` animation metadata file for a block texture by name.
+    #[must_use]
+    pub fn find_block_mcmeta(&self, name: &str) -> Option<PathBuf> {
+        let rel_path = format!("textures/block/{name}.png.mcmeta");
+        self.find_texture(&rel_path)
+    }
+
+    /// Loads and parses the animation metadata for a block texture if present.
+    pub fn load_block_mcmeta(&self, name: &str) -> Result<AnimationDef, AssetError> {
+        let path = self
+            .find_block_mcmeta(name)
+            .ok_or_else(|| AssetError::MissingTexture(format!("{name}.png.mcmeta")))?;
+
+        let content = std::fs::read_to_string(&path).map_err(|source| AssetError::Io {
+            path: path.clone(),
+            source,
+        })?;
+
+        AnimationDef::from_json_str(&content).map_err(|err| AssetError::Parse {
+            path,
+            message: err.to_string(),
+        })
+    }
+
     /// Loads and decodes a block texture from the mounted packs.
     pub fn load_block_texture(&self, name: &str) -> Result<RgbaImage, AssetError> {
         let path = self
@@ -52,6 +76,16 @@ impl ResourcePackStack {
             .ok_or_else(|| AssetError::MissingTexture(name.to_string()))?;
 
         RgbaImage::frames_from_file(&path)
+    }
+
+    /// Loads and decodes all frames of an animated block texture along with its animation metadata.
+    pub fn load_block_texture_with_animation(
+        &self,
+        name: &str,
+    ) -> Result<(Vec<RgbaImage>, Option<AnimationDef>), AssetError> {
+        let frames = self.load_animated_block_texture(name)?;
+        let anim_def = self.load_block_mcmeta(name).ok();
+        Ok((frames, anim_def))
     }
 
     /// Finds a generic asset texture across mounted packs and namespace directories.

@@ -19,11 +19,18 @@ pub struct GameSettings {
     pub gameplay: GameplaySettings,
 }
 
+const fn default_sim_distance() -> u32 {
+    8
+}
+
 /// Video and display settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VideoSettings {
     /// Horizontal render distance in chunks (2..=32).
     pub view_distance: u32,
+    /// Simulation distance in chunks (2..=32).
+    #[serde(default = "default_sim_distance")]
+    pub simulation_distance: u32,
     /// Vertical render distance in chunks (2..=24).
     pub vertical_view_distance: u32,
     /// Field of view in degrees (30.0..=110.0).
@@ -42,6 +49,7 @@ impl Default for VideoSettings {
     fn default() -> Self {
         Self {
             view_distance: 8,
+            simulation_distance: 8,
             vertical_view_distance: 12,
             fov: 70.0,
             gui_scale: 0,
@@ -151,6 +159,7 @@ impl GameSettings {
     /// Clamps numeric values to valid engine ranges.
     pub fn clamp(&mut self) {
         self.video.view_distance = self.video.view_distance.clamp(2, 32);
+        self.video.simulation_distance = self.video.simulation_distance.clamp(2, 32);
         self.video.vertical_view_distance = self.video.vertical_view_distance.clamp(2, 24);
         self.video.fov = self.video.fov.clamp(30.0, 110.0);
         self.video.gui_scale = self.video.gui_scale.min(4);
@@ -187,6 +196,7 @@ mod tests {
         let mut settings = GameSettings {
             video: VideoSettings {
                 view_distance: 100,
+                simulation_distance: 100,
                 vertical_view_distance: 0,
                 fov: 150.0,
                 gui_scale: 10,
@@ -210,6 +220,7 @@ mod tests {
 
         settings.clamp();
         assert_eq!(settings.video.view_distance, 32);
+        assert_eq!(settings.video.simulation_distance, 32);
         assert_eq!(settings.video.vertical_view_distance, 2);
         assert_eq!(settings.video.fov, 110.0);
         assert_eq!(settings.video.gui_scale, 4);

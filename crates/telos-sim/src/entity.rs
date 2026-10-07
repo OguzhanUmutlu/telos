@@ -2,10 +2,15 @@
 
 use bevy_ecs::bundle::Bundle;
 use bevy_ecs::component::Component;
+use bevy_ecs::query::Without;
 use bevy_ecs::system::{Query, Res, Resource};
 use glam::{DVec3, Vec3};
 
 use crate::attributes::{CombatTracker, Health};
+
+/// Marker component indicating an entity is outside active simulation distance and frozen in place.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SimulationFrozen;
 
 /// High-level classification of an in-game entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -378,7 +383,7 @@ pub struct PlayerPositions(pub Vec<(u32, DVec3)>);
     clippy::needless_pass_by_value
 )]
 pub fn mob_ai_system(
-    mut mobs: Query<(&mut Mob, &mut Rotation, &mut Velocity, &Position)>,
+    mut mobs: Query<(&mut Mob, &mut Rotation, &mut Velocity, &Position), Without<SimulationFrozen>>,
     players: Option<Res<PlayerPositions>>,
 ) {
     let player_list = players.as_ref().map_or(&[][..], |p| p.0.as_slice());
@@ -546,7 +551,9 @@ pub fn mob_ai_system(
 }
 
 /// System that applies physics velocity integration, gravity, and drag to entities.
-pub fn mob_movement_system(mut query: Query<(&mut Position, &mut Velocity)>) {
+pub fn mob_movement_system(
+    mut query: Query<(&mut Position, &mut Velocity), Without<SimulationFrozen>>,
+) {
     for (mut pos, mut vel) in &mut query {
         // Integrate horizontal and vertical velocity
         pos.0.x += f64::from(vel.0.x);
@@ -563,7 +570,9 @@ pub fn mob_movement_system(mut query: Query<(&mut Position, &mut Velocity)>) {
 }
 
 /// System that counts down entity hurt animation and triggers panic flee on passive mobs.
-pub fn mob_hurt_decay_system(mut query: Query<(&mut HurtTime, &mut Mob, &Position)>) {
+pub fn mob_hurt_decay_system(
+    mut query: Query<(&mut HurtTime, &mut Mob, &Position), Without<SimulationFrozen>>,
+) {
     for (mut hurt, mut mob, pos) in &mut query {
         if hurt.0 > 0 {
             hurt.0 -= 1;

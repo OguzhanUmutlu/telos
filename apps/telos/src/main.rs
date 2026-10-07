@@ -279,6 +279,60 @@ struct TerrainMdiPushConstants {
 }
 const _: () = assert!(size_of::<TerrainMdiPushConstants>() == 72);
 
+/// Collection of animated texture layer descriptors used across GPU pipelines.
+#[derive(Debug, Clone, Copy)]
+pub struct AnimatedTextures {
+    /// Still water texture sequence info.
+    pub water_still: AnimatedTextureInfo,
+    /// Flowing water texture sequence info.
+    pub water_flow: AnimatedTextureInfo,
+    /// Still lava texture sequence info.
+    pub lava_still: AnimatedTextureInfo,
+    /// Flowing lava texture sequence info.
+    pub lava_flow: AnimatedTextureInfo,
+    /// Fire animation sequence info.
+    pub fire: AnimatedTextureInfo,
+    /// Nether portal animation sequence info.
+    pub nether_portal: AnimatedTextureInfo,
+}
+
+impl Default for AnimatedTextures {
+    fn default() -> Self {
+        Self {
+            water_still: AnimatedTextureInfo {
+                base_layer: 9,
+                frame_count: 32,
+                frame_time: 2,
+            },
+            water_flow: AnimatedTextureInfo {
+                base_layer: 9,
+                frame_count: 32,
+                frame_time: 2,
+            },
+            lava_still: AnimatedTextureInfo {
+                base_layer: 0,
+                frame_count: 1,
+                frame_time: 2,
+            },
+            lava_flow: AnimatedTextureInfo {
+                base_layer: 0,
+                frame_count: 1,
+                frame_time: 2,
+            },
+            fire: AnimatedTextureInfo {
+                base_layer: 0,
+                frame_count: 1,
+                frame_time: 1,
+            },
+            nether_portal: AnimatedTextureInfo {
+                base_layer: 0,
+                frame_count: 1,
+                frame_time: 1,
+            },
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct TranslucentMdiPushConstants {
@@ -286,10 +340,17 @@ struct TranslucentMdiPushConstants {
     draw_info_buffer_address: u64,
     frame_tick: u32,
     water_base_layer: u32,
+    camera_pos: [f32; 4], // xyz: camera pos, w: sim_dist_meters
     water_frame_count: u32,
+    water_flow_base_layer: u32,
+    water_flow_frame_count: u32,
+    lava_base_layer: u32,
+    lava_frame_count: u32,
+    fire_base_layer: u32,
+    fire_frame_count: u32,
     _pad: u32,
 }
-const _: () = assert!(size_of::<TranslucentMdiPushConstants>() == 88);
+const _: () = assert!(size_of::<TranslucentMdiPushConstants>() == 128);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -298,14 +359,17 @@ struct T2PushConstants {
     quad_buffer_address: u64,
     chunk_x: i32,
     chunk_y: i32,
+    camera_pos: [f32; 4], // xyz: camera pos, w: sim_dist_meters
     chunk_z: i32,
-    frame_tick: u32,
+    frame_tick_flags: u32,
     water_base_layer: u32,
     water_frame_count: u32,
-    is_translucent: u32,
-    _pad: u32,
+    lava_base_layer: u32,
+    lava_frame_count: u32,
+    fire_base_layer: u32,
+    fire_frame_count: u32,
 }
-const _: () = assert!(size_of::<T2PushConstants>() == 104);
+const _: () = assert!(size_of::<T2PushConstants>() == 128);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1169,7 +1233,7 @@ struct App {
     t2_vert_shader: Option<ShaderModule>,
     t2_frag_shader: Option<ShaderModule>,
 
-    water_anim_info: AnimatedTextureInfo,
+    anim_textures: AnimatedTextures,
     frame_tick: u32,
 
     lod_pipeline: Option<GraphicsPipeline>,
@@ -1416,6 +1480,7 @@ impl App {
             }
         });
         let seed = args.seed;
+        let simulation_distance = game_settings.video.simulation_distance;
 
         let server_running = Arc::new(AtomicBool::new(is_direct_ingame));
         let running_clone = server_running.clone();
@@ -1433,6 +1498,7 @@ impl App {
                         tps: 20,
                         view_distance,
                         vertical_view_distance,
+                        simulation_distance,
                         chunks_per_tick_per_player: 16,
                         save_directory: Some(default_save_dir),
                         ..Default::default()
@@ -1551,11 +1617,7 @@ impl App {
             t2_vert_shader: None,
             t2_frag_shader: None,
 
-            water_anim_info: AnimatedTextureInfo {
-                base_layer: 9,
-                frame_count: 32,
-                frame_time: 2,
-            },
+            anim_textures: AnimatedTextures::default(),
             frame_tick: 0,
 
             lod_pipeline: None,
@@ -1741,6 +1803,7 @@ impl App {
             tps: 20,
             view_distance: self.game_settings.video.view_distance,
             vertical_view_distance: self.game_settings.video.vertical_view_distance,
+            simulation_distance: self.game_settings.video.simulation_distance,
             chunks_per_tick_per_player: 16,
             save_directory: Some(world_dir),
             worlds: vec![world_cfg],
@@ -2026,9 +2089,11 @@ impl App {
                     }
                     S2cMessage::ConfigDone(_) => {
                         info!("Server configuration complete, acknowledging config...");
+                        #[allow(clippy::cast_possible_truncation)]
                         let settings = C2sMessage::ClientSettings(C2sClientSettings {
                             view_distance: self.view_distance as u16,
-                            simulation_distance: self.view_distance as u16,
+                            simulation_distance: self.game_settings.video.simulation_distance
+                                as u16,
                             locale: BoundedString::new("en_US").unwrap(),
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(settings));
@@ -3482,6 +3547,8 @@ impl App {
         let view_proj_mat = self.camera.view_proj_matrix(aspect);
         let view_proj = view_proj_mat.to_cols_array();
         let inv_view_proj = view_proj_mat.inverse().to_cols_array();
+        #[allow(clippy::cast_precision_loss)]
+        let sim_dist_meters = (self.game_settings.video.simulation_distance as f32) * 32.0;
 
         let staging_idx = if self.lightmap_staging_buffers.is_empty() {
             0
@@ -4364,12 +4431,20 @@ impl App {
                             quad_buffer_address: layer.buffer.device_address(),
                             chunk_x: mesh.pos[0],
                             chunk_y: mesh.pos[1],
+                            camera_pos: [
+                                self.camera.position.x,
+                                self.camera.position.y,
+                                self.camera.position.z,
+                                sim_dist_meters,
+                            ],
                             chunk_z: mesh.pos[2],
-                            frame_tick: self.frame_tick,
-                            water_base_layer: self.water_anim_info.base_layer,
-                            water_frame_count: self.water_anim_info.frame_count,
-                            is_translucent: 0,
-                            _pad: 0,
+                            frame_tick_flags: self.frame_tick & 0x7FFF_FFFF,
+                            water_base_layer: self.anim_textures.water_still.base_layer,
+                            water_frame_count: self.anim_textures.water_still.frame_count,
+                            lava_base_layer: self.anim_textures.lava_still.base_layer,
+                            lava_frame_count: self.anim_textures.lava_still.frame_count,
+                            fire_base_layer: self.anim_textures.fire.base_layer,
+                            fire_frame_count: self.anim_textures.fire.frame_count,
                         };
                         device.cmd_push_constants(
                             cmd,
@@ -4467,8 +4542,20 @@ impl App {
                     view_proj,
                     draw_info_buffer_address: mdi.translucent_draw_late.device_address(),
                     frame_tick: self.frame_tick,
-                    water_base_layer: self.water_anim_info.base_layer,
-                    water_frame_count: self.water_anim_info.frame_count,
+                    water_base_layer: self.anim_textures.water_still.base_layer,
+                    camera_pos: [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                        sim_dist_meters,
+                    ],
+                    water_frame_count: self.anim_textures.water_still.frame_count,
+                    water_flow_base_layer: self.anim_textures.water_flow.base_layer,
+                    water_flow_frame_count: self.anim_textures.water_flow.frame_count,
+                    lava_base_layer: self.anim_textures.lava_still.base_layer,
+                    lava_frame_count: self.anim_textures.lava_still.frame_count,
+                    fire_base_layer: self.anim_textures.fire.base_layer,
+                    fire_frame_count: self.anim_textures.fire.frame_count,
                     _pad: 0,
                 };
                 device.cmd_bind_pipeline(
@@ -4531,12 +4618,20 @@ impl App {
                             quad_buffer_address: layer.buffer.device_address(),
                             chunk_x: mesh.pos[0],
                             chunk_y: mesh.pos[1],
+                            camera_pos: [
+                                self.camera.position.x,
+                                self.camera.position.y,
+                                self.camera.position.z,
+                                sim_dist_meters,
+                            ],
                             chunk_z: mesh.pos[2],
-                            frame_tick: self.frame_tick,
-                            water_base_layer: self.water_anim_info.base_layer,
-                            water_frame_count: self.water_anim_info.frame_count,
-                            is_translucent: 1,
-                            _pad: 0,
+                            frame_tick_flags: (self.frame_tick & 0x7FFF_FFFF) | 0x8000_0000,
+                            water_base_layer: self.anim_textures.water_still.base_layer,
+                            water_frame_count: self.anim_textures.water_still.frame_count,
+                            lava_base_layer: self.anim_textures.lava_still.base_layer,
+                            lava_frame_count: self.anim_textures.lava_still.frame_count,
+                            fire_base_layer: self.anim_textures.fire.base_layer,
+                            fire_frame_count: self.anim_textures.fire.frame_count,
                         };
                         device.cmd_push_constants(
                             cmd,
@@ -5125,7 +5220,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        let (texture_array, water_anim_info) = match load_and_upload_textures(&gpu_context) {
+        let (texture_array, anim_textures) = match load_and_upload_textures(&gpu_context) {
             Ok(t) => t,
             Err(err) => {
                 tracing::error!("Failed to load and upload texture array: {err}");
@@ -5133,7 +5228,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        self.water_anim_info = water_anim_info;
+        self.anim_textures = anim_textures;
 
         let lightmap_texture = match GpuTexture2d::new_empty(
             gpu_context.device().raw(),
@@ -6751,6 +6846,26 @@ impl ApplicationHandler for App {
                                 if to_pause {
                                     self.current_screen = AppScreen::InGame;
                                     self.is_paused = true;
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let settings_msg =
+                                        C2sMessage::ClientSettings(C2sClientSettings {
+                                            view_distance: self.game_settings.video.view_distance
+                                                as u16,
+                                            simulation_distance: self
+                                                .game_settings
+                                                .video
+                                                .simulation_distance
+                                                as u16,
+                                            locale: BoundedString::new(
+                                                &self.game_settings.gameplay.language,
+                                            )
+                                            .unwrap_or_else(|_| {
+                                                BoundedString::new("en_US").unwrap()
+                                            }),
+                                        });
+                                    let _ = self
+                                        .client_conn
+                                        .send(Lane::Control, Payload::Msg(settings_msg));
                                 } else {
                                     self.current_screen = AppScreen::MainMenu;
                                 }
@@ -7043,6 +7158,22 @@ impl ApplicationHandler for App {
                             if to_pause {
                                 self.current_screen = AppScreen::InGame;
                                 self.is_paused = true;
+                                #[allow(clippy::cast_possible_truncation)]
+                                let settings_msg = C2sMessage::ClientSettings(C2sClientSettings {
+                                    view_distance: self.game_settings.video.view_distance as u16,
+                                    simulation_distance: self
+                                        .game_settings
+                                        .video
+                                        .simulation_distance
+                                        as u16,
+                                    locale: BoundedString::new(
+                                        &self.game_settings.gameplay.language,
+                                    )
+                                    .unwrap_or_else(|_| BoundedString::new("en_US").unwrap()),
+                                });
+                                let _ = self
+                                    .client_conn
+                                    .send(Lane::Control, Payload::Msg(settings_msg));
                             } else {
                                 self.current_screen = AppScreen::MainMenu;
                             }
@@ -7779,7 +7910,7 @@ fn mount_asset_roots(stack: &mut ResourcePackStack) {
 #[allow(clippy::too_many_lines)]
 fn load_and_upload_textures(
     gpu_context: &GpuContext,
-) -> Result<(GpuTextureArray, AnimatedTextureInfo)> {
+) -> Result<(GpuTextureArray, AnimatedTextures)> {
     let mut stack = ResourcePackStack::new();
     mount_asset_roots(&mut stack);
 
@@ -7883,16 +8014,52 @@ fn load_and_upload_textures(
     builder.insert("repeater_on", load_texture_with_fallback("repeater_on"));
     builder.insert("lever", load_texture_with_fallback("lever"));
 
-    let water_frames = stack
-        .load_animated_block_texture("water_still")
-        .unwrap_or_else(|_| {
+    let mut load_animated = |name: &str,
+                             alt_name: Option<&str>,
+                             fallback_color: [u8; 4],
+                             default_frametime: u32|
+     -> AnimatedTextureInfo {
+        let res = stack.load_block_texture_with_animation(name).or_else(|_| {
+            if let Some(alt) = alt_name {
+                stack.load_block_texture_with_animation(alt)
+            } else {
+                Err(telos_assets::AssetError::MissingTexture("missing".into()))
+            }
+        });
+
+        let (frames, mcmeta) = res.unwrap_or_else(|_| {
             let mut img = telos_assets::RgbaImage::new(target_res, target_res);
             for pixel in img.data.as_chunks_mut::<4>().0 {
-                *pixel = [40, 80, 200, 200];
+                *pixel = fallback_color;
             }
-            vec![img]
+            (vec![img], None)
         });
-    let water_anim = builder.insert_animated("water_still", water_frames, 2);
+        let mut anim_def = mcmeta;
+        if anim_def.is_none() && default_frametime > 1 {
+            anim_def = Some(telos_assets::AnimationDef {
+                frametime: default_frametime,
+                interpolate: false,
+                frames: None,
+            });
+        }
+        builder.insert_animated_with_meta(name, &frames, anim_def.as_ref())
+    };
+
+    let water_still_anim = load_animated("water_still", None, [40, 80, 200, 200], 2);
+    let water_flow_anim = load_animated("water_flow", None, [40, 80, 200, 200], 2);
+    let lava_still_anim = load_animated("lava_still", None, [230, 90, 10, 255], 2);
+    let lava_flow_anim = load_animated("lava_flow", None, [230, 90, 10, 255], 2);
+    let fire_anim = load_animated("fire_0", Some("fire"), [240, 140, 20, 255], 1);
+    let nether_portal_anim = load_animated("nether_portal", None, [150, 40, 200, 200], 1);
+
+    let anim_textures = AnimatedTextures {
+        water_still: water_still_anim,
+        water_flow: water_flow_anim,
+        lava_still: lava_still_anim,
+        lava_flow: lava_flow_anim,
+        fire: fire_anim,
+        nether_portal: nether_portal_anim,
+    };
 
     let baked = builder.bake();
     info!(
@@ -7922,7 +8089,7 @@ fn load_and_upload_textures(
         &regions,
     )?;
 
-    Ok((texture_array, water_anim))
+    Ok((texture_array, anim_textures))
 }
 
 #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]

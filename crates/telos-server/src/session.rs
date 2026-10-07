@@ -33,6 +33,8 @@ pub struct PlayerSession {
     pub on_ground: bool,
     /// Horizontal view distance in chunks.
     pub view_distance: u32,
+    /// Simulation distance in chunks.
+    pub simulation_distance: u32,
     /// Vertical chunk radius above and below player chunk.
     pub vertical_view_distance: u32,
     /// Set of chunk coordinates currently held / active on the client.
@@ -119,6 +121,7 @@ impl PlayerSession {
             pitch: 0.0,
             on_ground: false,
             view_distance: config.view_distance,
+            simulation_distance: config.simulation_distance,
             vertical_view_distance: config.vertical_view_distance,
             sent_chunks: HashSet::new(),
             queued_chunks: BinaryHeap::new(),

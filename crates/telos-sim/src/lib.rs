@@ -30,7 +30,8 @@ pub use command::{
 pub use crafting::{Recipe2x2, find_recipe_2x2};
 pub use entity::{
     AiState, EntityAabb, EntityType, HurtTime, Mob, MobBundle, MobKind, NetEntity, PlayerPositions,
-    Position, Rotation, Velocity, mob_ai_system, mob_hurt_decay_system, mob_movement_system,
+    Position, Rotation, SimulationFrozen, Velocity, mob_ai_system, mob_hurt_decay_system,
+    mob_movement_system,
 };
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{

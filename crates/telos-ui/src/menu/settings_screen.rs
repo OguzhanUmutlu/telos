@@ -223,6 +223,19 @@ impl SettingsScreen {
                     22.0,
                     gui_str,
                 ));
+                self.sliders.push(MenuSlider::new(
+                    5,
+                    col2_x,
+                    start_y + row_h * 3.0,
+                    col_w,
+                    22.0,
+                    "Sim Dist",
+                    2.0,
+                    32.0,
+                    self.settings.video.simulation_distance as f32,
+                    " Chunks",
+                    true,
+                ));
             }
             SettingsTab::Audio => {
                 self.sliders.push(MenuSlider::new(
@@ -498,6 +511,7 @@ impl SettingsScreen {
                 2 => self.settings.video.vertical_view_distance = s.value as u32,
                 3 => self.settings.video.fov = s.value,
                 4 => self.settings.video.fps_limit = s.value as u32,
+                5 => self.settings.video.simulation_distance = s.value as u32,
                 11 => self.settings.audio.master_volume = s.value,
                 12 => self.settings.audio.music_volume = s.value,
                 13 => self.settings.audio.weather_volume = s.value,

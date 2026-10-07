@@ -1642,3 +1642,106 @@ fn test_authoritative_movement_prediction_and_reconciliation() {
 
     server.tick();
 }
+
+#[test]
+fn test_decoupled_simulation_distance_and_mob_freezing() {
+    use glam::DVec3;
+    use telos_sim::{EntityType, SimulationFrozen};
+
+    let config = ServerConfig {
+        tps: 20,
+        view_distance: 8,
+        simulation_distance: 2,
+        ..Default::default()
+    };
+    let mut server = Server::new(7777, config);
+
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    let _session_id = server.add_connection(Box::new(server_conn));
+
+    // Fast-forward handshake: Hello -> LoginStart -> KnownRegistries -> ClientSettings -> ConfigAck
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::Hello(C2sHello {
+                protocol: 1,
+                build: BoundedString::new("0.1.0").unwrap(),
+                features: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::LoginStart(C2sLoginStart {
+                username: BoundedString::new("SimPlayer").unwrap(),
+                mode: AuthMode::Offline,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Client specifies render distance = 8, simulation distance = 2
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ClientSettings(C2sClientSettings {
+                view_distance: 8,
+                simulation_distance: 2,
+                locale: BoundedString::new("en_US").unwrap(),
+            })),
+        )
+        .unwrap();
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ConfigAck(
+                telos_protocol::messages::C2sConfigAck,
+            )),
+        )
+        .unwrap();
+    server.tick();
+
+    // Player spawned at (128.0, 45.0, 160.0) -> chunk (4, 1, 5)
+    let player_chunk = ChunkPos::new(4, 1, 5);
+    assert!(server.is_chunk_simulated("overworld", player_chunk));
+    assert!(server.is_chunk_simulated("overworld", ChunkPos::new(6, 1, 5))); // dist = 2 chunks
+    assert!(!server.is_chunk_simulated("overworld", ChunkPos::new(7, 1, 5))); // dist = 3 chunks (unsimulated)
+
+    // Spawn near mob in chunk (4, 1, 5)
+    let near_id = server.spawn_mob(EntityType::Pig, DVec3::new(128.0, 45.0, 160.0));
+    // Spawn distant mob in chunk (6, 1, 5) which is within sim distance
+    let mid_id = server.spawn_mob(EntityType::Pig, DVec3::new(192.0, 45.0, 160.0));
+
+    server.tick();
+
+    // Verify both near and mid mobs exist and are NOT frozen
+    let near_entity = *server.tracked_mobs.get(&near_id).unwrap();
+    let mid_entity = *server.tracked_mobs.get(&mid_id).unwrap();
+    assert!(
+        server
+            .ecs_world()
+            .get::<SimulationFrozen>(near_entity)
+            .is_none()
+    );
+    assert!(
+        server
+            .ecs_world()
+            .get::<SimulationFrozen>(mid_entity)
+            .is_none()
+    );
+
+    // Spawn a distant mob beyond despawn threshold (> (2 * 32.0) + 16.0 = 80.0 blocks)
+    let far_id = server.spawn_mob(EntityType::Zombie, DVec3::new(260.0, 45.0, 160.0));
+    assert!(server.tracked_mobs.contains_key(&far_id));
+
+    server.tick();
+
+    // Distance despawner should have removed the far mob
+    assert!(
+        !server.tracked_mobs.contains_key(&far_id),
+        "Far mob beyond simulation despawn threshold must be despawned"
+    );
+}
