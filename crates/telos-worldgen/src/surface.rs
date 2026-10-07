@@ -5,7 +5,7 @@ use telos_core::coords::{CHUNK_VOLUME, ChunkPos};
 use telos_voxel::registry::BlockRegistry;
 use telos_voxel::state::BlockStateId;
 
-/// Resolved block state IDs needed by surface rules.
+/// Resolved block state IDs needed by surface rules and ore generation.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedBlocks {
     /// Air block state ID.
@@ -34,49 +34,112 @@ pub struct ResolvedBlocks {
     pub fern: BlockStateId,
     /// Dead bush arid block state ID.
     pub dead_bush: BlockStateId,
+
+    // Phase 45 Ore & Subterranean Strata Blocks
+    /// Deepslate subterranean host rock.
+    pub deepslate: BlockStateId,
+    /// Coal ore block state ID.
+    pub coal_ore: BlockStateId,
+    /// Iron ore block state ID.
+    pub iron_ore: BlockStateId,
+    /// Copper ore block state ID.
+    pub copper_ore: BlockStateId,
+    /// Gold ore block state ID.
+    pub gold_ore: BlockStateId,
+    /// Redstone ore block state ID.
+    pub redstone_ore: BlockStateId,
+    /// Lapis lazuli ore block state ID.
+    pub lapis_ore: BlockStateId,
+    /// Diamond ore block state ID.
+    pub diamond_ore: BlockStateId,
+    /// Emerald ore block state ID.
+    pub emerald_ore: BlockStateId,
+
+    /// Deepslate coal ore block state ID.
+    pub deepslate_coal_ore: BlockStateId,
+    /// Deepslate iron ore block state ID.
+    pub deepslate_iron_ore: BlockStateId,
+    /// Deepslate copper ore block state ID.
+    pub deepslate_copper_ore: BlockStateId,
+    /// Deepslate gold ore block state ID.
+    pub deepslate_gold_ore: BlockStateId,
+    /// Deepslate redstone ore block state ID.
+    pub deepslate_redstone_ore: BlockStateId,
+    /// Deepslate lapis lazuli ore block state ID.
+    pub deepslate_lapis_ore: BlockStateId,
+    /// Deepslate diamond ore block state ID.
+    pub deepslate_diamond_ore: BlockStateId,
+    /// Deepslate emerald ore block state ID.
+    pub deepslate_emerald_ore: BlockStateId,
+
+    /// Granite filler rock block state ID.
+    pub granite: BlockStateId,
+    /// Diorite filler rock block state ID.
+    pub diorite: BlockStateId,
+    /// Andesite filler rock block state ID.
+    pub andesite: BlockStateId,
+    /// Tuff filler rock block state ID.
+    pub tuff: BlockStateId,
+
+    /// Block of raw iron block state ID.
+    pub raw_iron_block: BlockStateId,
+    /// Block of raw copper block state ID.
+    pub raw_copper_block: BlockStateId,
 }
 
 impl ResolvedBlocks {
     /// Resolves required block state IDs from the registry.
     #[must_use]
     pub fn resolve(registry: &BlockRegistry) -> Self {
+        let resolve_block = |name: &str, default_id: u32| {
+            registry
+                .get(&telos_core::ident::Identifier::new("telos", name).unwrap())
+                .map_or(
+                    BlockStateId::new(default_id),
+                    telos_voxel::Block::default_state,
+                )
+        };
+
         let air = BlockStateId::AIR;
-        let stone = registry
-            .get(&telos_core::ident::Identifier::new("telos", "stone").unwrap())
-            .map_or(BlockStateId::new(1), telos_voxel::Block::default_state);
-        let dirt = registry
-            .get(&telos_core::ident::Identifier::new("telos", "dirt").unwrap())
-            .map_or(BlockStateId::new(2), telos_voxel::Block::default_state);
-        let grass = registry
-            .get(&telos_core::ident::Identifier::new("telos", "grass_block").unwrap())
-            .map_or(BlockStateId::new(3), telos_voxel::Block::default_state);
-        let bedrock = registry
-            .get(&telos_core::ident::Identifier::new("telos", "bedrock").unwrap())
-            .map_or(BlockStateId::new(4), telos_voxel::Block::default_state);
-        let sand = registry
-            .get(&telos_core::ident::Identifier::new("telos", "sand").unwrap())
-            .map_or(BlockStateId::new(5), telos_voxel::Block::default_state);
-        let water = registry
-            .get(&telos_core::ident::Identifier::new("telos", "water").unwrap())
-            .map_or(BlockStateId::new(6), telos_voxel::Block::default_state);
-        let lava = registry
-            .get(&telos_core::ident::Identifier::new("telos", "lava").unwrap())
-            .map_or(BlockStateId::new(33), telos_voxel::Block::default_state);
-        let poppy = registry
-            .get(&telos_core::ident::Identifier::new("telos", "poppy").unwrap())
-            .map_or(BlockStateId::new(12), telos_voxel::Block::default_state);
-        let dandelion = registry
-            .get(&telos_core::ident::Identifier::new("telos", "dandelion").unwrap())
-            .map_or(BlockStateId::new(13), telos_voxel::Block::default_state);
-        let short_grass = registry
-            .get(&telos_core::ident::Identifier::new("telos", "short_grass").unwrap())
-            .map_or(BlockStateId::new(16), telos_voxel::Block::default_state);
-        let fern = registry
-            .get(&telos_core::ident::Identifier::new("telos", "fern").unwrap())
-            .map_or(BlockStateId::new(17), telos_voxel::Block::default_state);
-        let dead_bush = registry
-            .get(&telos_core::ident::Identifier::new("telos", "dead_bush").unwrap())
-            .map_or(BlockStateId::new(18), telos_voxel::Block::default_state);
+        let stone = resolve_block("stone", 1);
+        let dirt = resolve_block("dirt", 2);
+        let grass = resolve_block("grass_block", 3);
+        let bedrock = resolve_block("bedrock", 4);
+        let sand = resolve_block("sand", 5);
+        let water = resolve_block("water", 6);
+        let lava = resolve_block("lava", 33);
+        let poppy = resolve_block("poppy", 12);
+        let dandelion = resolve_block("dandelion", 13);
+        let short_grass = resolve_block("short_grass", 16);
+        let fern = resolve_block("fern", 17);
+        let dead_bush = resolve_block("dead_bush", 18);
+
+        let deepslate = resolve_block("deepslate", 57);
+        let coal_ore = resolve_block("coal_ore", 49);
+        let iron_ore = resolve_block("iron_ore", 50);
+        let copper_ore = resolve_block("copper_ore", 51);
+        let gold_ore = resolve_block("gold_ore", 52);
+        let redstone_ore = resolve_block("redstone_ore", 53);
+        let lapis_ore = resolve_block("lapis_ore", 54);
+        let diamond_ore = resolve_block("diamond_ore", 55);
+        let emerald_ore = resolve_block("emerald_ore", 56);
+
+        let deepslate_coal_ore = resolve_block("deepslate_coal_ore", 58);
+        let deepslate_iron_ore = resolve_block("deepslate_iron_ore", 59);
+        let deepslate_copper_ore = resolve_block("deepslate_copper_ore", 60);
+        let deepslate_gold_ore = resolve_block("deepslate_gold_ore", 61);
+        let deepslate_redstone_ore = resolve_block("deepslate_redstone_ore", 62);
+        let deepslate_lapis_ore = resolve_block("deepslate_lapis_ore", 63);
+        let deepslate_diamond_ore = resolve_block("deepslate_diamond_ore", 64);
+        let deepslate_emerald_ore = resolve_block("deepslate_emerald_ore", 65);
+
+        let granite = resolve_block("granite", 66);
+        let diorite = resolve_block("diorite", 67);
+        let andesite = resolve_block("andesite", 68);
+        let tuff = resolve_block("tuff", 69);
+
+        let raw_iron_block = resolve_block("raw_iron_block", 70);
+        let raw_copper_block = resolve_block("raw_copper_block", 71);
 
         Self {
             air,
@@ -92,6 +155,51 @@ impl ResolvedBlocks {
             short_grass,
             fern,
             dead_bush,
+            deepslate,
+            coal_ore,
+            iron_ore,
+            copper_ore,
+            gold_ore,
+            redstone_ore,
+            lapis_ore,
+            diamond_ore,
+            emerald_ore,
+            deepslate_coal_ore,
+            deepslate_iron_ore,
+            deepslate_copper_ore,
+            deepslate_gold_ore,
+            deepslate_redstone_ore,
+            deepslate_lapis_ore,
+            deepslate_diamond_ore,
+            deepslate_emerald_ore,
+            granite,
+            diorite,
+            andesite,
+            tuff,
+            raw_iron_block,
+            raw_copper_block,
+        }
+    }
+}
+
+/// Helper to determine the ambient rock type (stone vs deepslate) at world height `wy`.
+#[inline]
+#[must_use]
+pub fn rock_at_height(wx: i32, wy: i32, wz: i32, blocks: &ResolvedBlocks) -> BlockStateId {
+    if wy > 0 {
+        blocks.stone
+    } else if wy <= -16 {
+        blocks.deepslate
+    } else {
+        // Dithered transition between 0 and -16
+        let h = crate::math::hash3(0xDEE9_51A7_E000_0001, wx, wy, wz);
+        let roll = crate::math::unit_f32(h);
+        #[allow(clippy::cast_precision_loss)]
+        let threshold = (-wy as f32) * (1.0 / 16.0);
+        if roll < threshold {
+            blocks.deepslate
+        } else {
+            blocks.stone
         }
     }
 }
@@ -172,8 +280,8 @@ pub fn apply_surface_rules(
                             }
                         }
                     } else {
-                        // Deep rock
-                        out_dense[idx] = blocks.stone;
+                        // Deep rock: stone or deepslate depending on depth
+                        out_dense[idx] = rock_at_height(wx, wy, wz, blocks);
                     }
 
                     depth_from_surface += 1;
@@ -181,7 +289,7 @@ pub fn apply_surface_rules(
                     // Empty cavity: evaluate 3D noise-modulated aquifer level & fluid barriers
                     match aquifer.sample(aquifer_cache, wx, wy, wz) {
                         crate::aquifer::AquiferSample::Barrier => {
-                            out_dense[idx] = blocks.stone;
+                            out_dense[idx] = rock_at_height(wx, wy, wz, blocks);
                             depth_from_surface += 1;
                             is_under_solid = true;
                         }

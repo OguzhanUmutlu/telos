@@ -136,10 +136,13 @@ impl WorldGenerator {
                     &mut dense,
                 );
 
-                // 5. Apply procedural surface foliage and floral patch decoration
+                // 5. Apply procedural 3D blob ores & large sinuous ore veins
+                crate::ore::apply_ores(self.seed, pos, &self.blocks, &mut dense);
+
+                // 6. Apply procedural surface foliage and floral patch decoration
                 apply_surface_decorations(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
 
-                // 6. Construct compact paletted chunk representation with uniform elision
+                // 7. Construct compact paletted chunk representation with uniform elision
                 let packed_blocks = bulk::from_dense(&dense);
 
                 Chunk::from_blocks(pos, packed_blocks, move |state| {

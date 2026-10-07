@@ -14,6 +14,7 @@ pub mod error;
 pub mod generator;
 pub mod math;
 pub mod noise;
+pub mod ore;
 pub mod surface;
 
 pub use aquifer::{AquiferSample, AquiferSampler, FluidKind};
@@ -22,3 +23,4 @@ pub use climate::ClimatePoint;
 pub use decoration::apply_surface_decorations;
 pub use error::WorldGenError;
 pub use generator::{GeneratorKind, WorldGenerator};
+pub use ore::apply_ores;

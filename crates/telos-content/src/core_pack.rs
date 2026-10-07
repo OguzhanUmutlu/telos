@@ -677,6 +677,375 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 ..Default::default()
             },
         ),
+        // Procedural ore distribution & large sinuous ore veins (Phase 45)
+        (
+            "coal_ore",
+            "Coal Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(37),
+                ..Default::default()
+            },
+        ),
+        (
+            "iron_ore",
+            "Iron Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(38),
+                ..Default::default()
+            },
+        ),
+        (
+            "copper_ore",
+            "Copper Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(39),
+                ..Default::default()
+            },
+        ),
+        (
+            "gold_ore",
+            "Gold Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(40),
+                ..Default::default()
+            },
+        ),
+        (
+            "redstone_ore",
+            "Redstone Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(41),
+                ..Default::default()
+            },
+        ),
+        (
+            "lapis_ore",
+            "Lapis Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(42),
+                ..Default::default()
+            },
+        ),
+        (
+            "diamond_ore",
+            "Diamond Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(43),
+                ..Default::default()
+            },
+        ),
+        (
+            "emerald_ore",
+            "Emerald Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(44),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate",
+            "Deepslate",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.0,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(45),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_coal_ore",
+            "Deepslate Coal Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(46),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_iron_ore",
+            "Deepslate Iron Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(47),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_copper_ore",
+            "Deepslate Copper Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(48),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_gold_ore",
+            "Deepslate Gold Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(49),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_redstone_ore",
+            "Deepslate Redstone Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(50),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_lapis_ore",
+            "Deepslate Lapis Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(51),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_diamond_ore",
+            "Deepslate Diamond Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(52),
+                ..Default::default()
+            },
+        ),
+        (
+            "deepslate_emerald_ore",
+            "Deepslate Emerald Ore",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 4.5,
+                blast_resistance: 3.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(53),
+                ..Default::default()
+            },
+        ),
+        (
+            "granite",
+            "Granite",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 1.5,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(54),
+                ..Default::default()
+            },
+        ),
+        (
+            "diorite",
+            "Diorite",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 1.5,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(55),
+                ..Default::default()
+            },
+        ),
+        (
+            "andesite",
+            "Andesite",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 1.5,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(56),
+                ..Default::default()
+            },
+        ),
+        (
+            "tuff",
+            "Tuff",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 1.5,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:deepslate".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(57),
+                ..Default::default()
+            },
+        ),
+        (
+            "raw_iron_block",
+            "Block of Raw Iron",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 5.0,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(58),
+                ..Default::default()
+            },
+        ),
+        (
+            "raw_copper_block",
+            "Block of Raw Copper",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 5.0,
+                blast_resistance: 6.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(59),
+                ..Default::default()
+            },
+        ),
     ]
 }
 

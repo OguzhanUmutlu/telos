@@ -479,8 +479,111 @@ impl BlockRegistry {
             crate::shape::BlockShape::fluid(1, true),
         );
 
+        // Procedural ore distribution & large sinuous ore veins (Phase 45)
+        // Standard Ores
+        let coal_ore_id = Identifier::new("telos", "coal_ore").unwrap();
+        reg.register(coal_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let iron_ore_id = Identifier::new("telos", "iron_ore").unwrap();
+        reg.register(iron_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let copper_ore_id = Identifier::new("telos", "copper_ore").unwrap();
+        reg.register(copper_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let gold_ore_id = Identifier::new("telos", "gold_ore").unwrap();
+        reg.register(gold_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let redstone_ore_id = Identifier::new("telos", "redstone_ore").unwrap();
+        reg.register(redstone_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let lapis_ore_id = Identifier::new("telos", "lapis_ore").unwrap();
+        reg.register(lapis_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let diamond_ore_id = Identifier::new("telos", "diamond_ore").unwrap();
+        reg.register(diamond_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let emerald_ore_id = Identifier::new("telos", "emerald_ore").unwrap();
+        reg.register(emerald_ore_id, StateFlags::OPAQUE_CUBE);
+
+        // Deepslate & Deepslate Ores
+        let deepslate_id = Identifier::new("telos", "deepslate").unwrap();
+        reg.register(deepslate_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_coal_ore_id = Identifier::new("telos", "deepslate_coal_ore").unwrap();
+        reg.register(deepslate_coal_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_iron_ore_id = Identifier::new("telos", "deepslate_iron_ore").unwrap();
+        reg.register(deepslate_iron_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_copper_ore_id = Identifier::new("telos", "deepslate_copper_ore").unwrap();
+        reg.register(deepslate_copper_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_gold_ore_id = Identifier::new("telos", "deepslate_gold_ore").unwrap();
+        reg.register(deepslate_gold_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_redstone_ore_id = Identifier::new("telos", "deepslate_redstone_ore").unwrap();
+        reg.register(deepslate_redstone_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_lapis_ore_id = Identifier::new("telos", "deepslate_lapis_ore").unwrap();
+        reg.register(deepslate_lapis_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_diamond_ore_id = Identifier::new("telos", "deepslate_diamond_ore").unwrap();
+        reg.register(deepslate_diamond_ore_id, StateFlags::OPAQUE_CUBE);
+
+        let deepslate_emerald_ore_id = Identifier::new("telos", "deepslate_emerald_ore").unwrap();
+        reg.register(deepslate_emerald_ore_id, StateFlags::OPAQUE_CUBE);
+
+        // Host rock variants and filler rocks
+        let granite_id = Identifier::new("telos", "granite").unwrap();
+        reg.register(granite_id, StateFlags::OPAQUE_CUBE);
+
+        let diorite_id = Identifier::new("telos", "diorite").unwrap();
+        reg.register(diorite_id, StateFlags::OPAQUE_CUBE);
+
+        let andesite_id = Identifier::new("telos", "andesite").unwrap();
+        reg.register(andesite_id, StateFlags::OPAQUE_CUBE);
+
+        let tuff_id = Identifier::new("telos", "tuff").unwrap();
+        reg.register(tuff_id, StateFlags::OPAQUE_CUBE);
+
+        // Raw Metal Blocks (vein core concentrates)
+        let raw_iron_block_id = Identifier::new("telos", "raw_iron_block").unwrap();
+        reg.register(raw_iron_block_id, StateFlags::OPAQUE_CUBE);
+
+        let raw_copper_block_id = Identifier::new("telos", "raw_copper_block").unwrap();
+        reg.register(raw_copper_block_id, StateFlags::OPAQUE_CUBE);
+
         reg.freeze();
         reg
+    }
+
+    /// Returns `true` if the given block state represents standard stone rock.
+    #[inline]
+    #[must_use]
+    pub fn is_stone(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "stone")
+    }
+
+    /// Returns `true` if the given block state represents deepslate rock.
+    #[inline]
+    #[must_use]
+    pub fn is_deepslate(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "deepslate")
+    }
+
+    /// Returns `true` if the given block state is a replaceable host rock that can host ore blobs/veins
+    /// (e.g. stone, deepslate, granite, diorite, andesite, tuff).
+    #[inline]
+    #[must_use]
+    pub fn is_replaceable_rock(&self, id: BlockStateId) -> bool {
+        self.identifier(id).is_some_and(|ident| {
+            matches!(
+                ident.path(),
+                "stone" | "deepslate" | "granite" | "diorite" | "andesite" | "tuff"
+            )
+        })
     }
 
     /// Returns `true` if the given block state is a logic component.
@@ -666,5 +769,53 @@ mod tests {
             .default_state();
         assert!(!reg.is_fluid(obsidian));
         assert!(reg.flags(obsidian).contains(StateFlags::OPAQUE_FULL));
+    }
+
+    #[test]
+    fn test_standard_registry_ore_and_rock_blocks() {
+        let reg = BlockRegistry::standard();
+
+        let stone = reg
+            .get(&Identifier::new("telos", "stone").unwrap())
+            .unwrap()
+            .default_state();
+        let deepslate = reg
+            .get(&Identifier::new("telos", "deepslate").unwrap())
+            .unwrap()
+            .default_state();
+        let granite = reg
+            .get(&Identifier::new("telos", "granite").unwrap())
+            .unwrap()
+            .default_state();
+        let iron_ore = reg
+            .get(&Identifier::new("telos", "iron_ore").unwrap())
+            .unwrap()
+            .default_state();
+        let deepslate_diamond = reg
+            .get(&Identifier::new("telos", "deepslate_diamond_ore").unwrap())
+            .unwrap()
+            .default_state();
+        let raw_iron = reg
+            .get(&Identifier::new("telos", "raw_iron_block").unwrap())
+            .unwrap()
+            .default_state();
+
+        assert!(reg.is_stone(stone));
+        assert!(!reg.is_stone(deepslate));
+        assert!(reg.is_deepslate(deepslate));
+        assert!(!reg.is_deepslate(stone));
+
+        assert!(reg.is_replaceable_rock(stone));
+        assert!(reg.is_replaceable_rock(deepslate));
+        assert!(reg.is_replaceable_rock(granite));
+        assert!(!reg.is_replaceable_rock(iron_ore));
+        assert!(!reg.is_replaceable_rock(raw_iron));
+
+        assert!(reg.flags(iron_ore).contains(StateFlags::OPAQUE_FULL));
+        assert!(
+            reg.flags(deepslate_diamond)
+                .contains(StateFlags::OPAQUE_FULL)
+        );
+        assert!(reg.flags(raw_iron).contains(StateFlags::OPAQUE_FULL));
     }
 }
