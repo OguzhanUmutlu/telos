@@ -63,12 +63,15 @@ slotmap = "1.0"
 # Assets & image decoding
 image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Graphics & windowing (Vulkan 1.3)
+# Graphics & windowing (Vulkan 1.3 + OpenGL 4.5 fallback)
 ash = "0.38"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
 gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+glow = "0.18"
+glutin = "0.32"
+glutin-winit = "0.5"
 
 # Math & primitives
 glam = { version = "0.29", default-features = false, features = ["std"] }

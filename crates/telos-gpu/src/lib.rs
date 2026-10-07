@@ -14,9 +14,11 @@ pub mod error;
 pub mod frame;
 pub mod hiz;
 pub mod instance;
+pub mod opengl;
 pub mod pipeline;
 pub mod postprocess;
 pub mod reloader;
+pub mod rhi;
 pub mod swapchain;
 pub mod texture;
 
@@ -30,9 +32,11 @@ pub use error::GpuError;
 pub use frame::{FRAMES_IN_FLIGHT, FrameManager, FrameResources};
 pub use hiz::HiZPyramid;
 pub use instance::Instance;
+pub use opengl::{GlBuffer, GlContext, GlProgram, GlTexture2d, GlTextureArray};
 pub use pipeline::{GraphicsPipeline, ShaderModule};
 pub use postprocess::{PostCompositePushConstants, PostProcessFrameGraph, SsaoPushConstants};
 pub use reloader::ShaderCompiler;
+pub use rhi::{RenderBackendType, RenderCaps};
 pub use swapchain::Swapchain;
 pub use texture::{GpuTexture2d, GpuTextureArray, TextureMipRegion};
 

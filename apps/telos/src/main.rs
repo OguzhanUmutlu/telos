@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod entity_client;
+pub mod opengl_renderer;
 pub mod physics;
 
 use std::path::PathBuf;
@@ -153,6 +154,10 @@ struct Args {
     /// Disable Hi-Z GPU occlusion culling.
     #[arg(long, default_value_t = false)]
     no_cull: bool,
+
+    /// Rendering backend selection ('vulkan', 'opengl', or 'auto').
+    #[arg(long, default_value = "auto")]
+    backend: String,
 }
 
 #[repr(C)]
@@ -1408,6 +1413,11 @@ struct App {
 
     // Extensible post-processing framework & custom shader pipeline (Phase 41)
     postprocess: Option<PostProcessFrameGraph>,
+
+    // Active rendering backend and OpenGL fallback resources (Phase 44)
+    active_backend: telos_gpu::rhi::RenderBackendType,
+    gl_context: Option<telos_gpu::opengl::GlContext>,
+    gl_renderer: Option<opengl_renderer::OpenGlRenderer>,
 }
 
 impl App {
@@ -1838,6 +1848,10 @@ impl App {
             client_effects: Vec::new(),
             js_particle_hook,
             postprocess: None,
+
+            active_backend: telos_gpu::rhi::RenderBackendType::Vulkan,
+            gl_context: None,
+            gl_renderer: None,
         }
     }
 
@@ -2247,6 +2261,9 @@ impl App {
                             (self.chunk_meshes.remove(&pos), &self.gpu_context)
                         {
                             mesh.destroy(ctx);
+                        }
+                        if let Some(renderer) = &mut self.gl_renderer {
+                            renderer.remove_chunk_mesh(&pos);
                         }
                         self.mark_dirty_neighbors(pos);
                     }
@@ -3047,6 +3064,78 @@ impl App {
         }
     }
 
+    #[allow(clippy::similar_names)]
+    fn rebuild_dirty_meshes_gl(&mut self, budget: usize) {
+        let Some(gl_renderer) = &mut self.gl_renderer else {
+            return;
+        };
+
+        let cam_cx = (self.camera.position.x / 32.0).floor() as i32;
+        let cam_cy = (self.camera.position.y / 32.0).floor() as i32;
+        let cam_cz = (self.camera.position.z / 32.0).floor() as i32;
+
+        let mut processed = 0;
+        while processed < budget {
+            let Some(&pos) = self.dirty_chunks.iter().min_by_key(|p| {
+                let dx = p.x() - cam_cx;
+                let dy = p.y() - cam_cy;
+                let dz = p.z() - cam_cz;
+                dx * dx + dy * dy * 4 + dz * dz
+            }) else {
+                break;
+            };
+
+            self.dirty_chunks.remove(&pos);
+            processed += 1;
+
+            let Some(chunk) = self.chunks.get(&pos).cloned() else {
+                gl_renderer.remove_chunk_mesh(&pos);
+                continue;
+            };
+
+            if chunk.blocks().is_uniform()
+                && chunk.blocks().get(LocalIdx::from_coords_unchecked(0, 0, 0)) == BlockStateId::AIR
+            {
+                gl_renderer.remove_chunk_mesh(&pos);
+                continue;
+            }
+
+            let pos_x = self
+                .chunks
+                .get(&ChunkPos::new(pos.x() + 1, pos.y(), pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let neg_x = self
+                .chunks
+                .get(&ChunkPos::new(pos.x() - 1, pos.y(), pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let pos_y = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y() + 1, pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let neg_y = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y() - 1, pos.z()))
+                .map(std::convert::AsRef::as_ref);
+            let pos_z = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y(), pos.z() + 1))
+                .map(std::convert::AsRef::as_ref);
+            let neg_z = self
+                .chunks
+                .get(&ChunkPos::new(pos.x(), pos.y(), pos.z() - 1))
+                .map(std::convert::AsRef::as_ref);
+
+            let neighbors = [pos_x, neg_x, pos_y, neg_y, pos_z, neg_z];
+            let layers = telos_mesh::mesher::mesh_chunk_multilayers(
+                &chunk,
+                &neighbors,
+                &self.block_registry,
+            );
+
+            gl_renderer.update_chunk_mesh(pos, &layers);
+        }
+    }
+
     fn upload_pending_lod_meshes(&mut self) {
         let Some(gpu_context) = &mut self.gpu_context else {
             return;
@@ -3319,6 +3408,10 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn render(&mut self) -> bool {
+        if self.active_backend == telos_gpu::rhi::RenderBackendType::OpenGl {
+            return self.render_opengl();
+        }
+
         let fps_limit = self.game_settings.video.fps_limit;
         if fps_limit > 0 {
             let target_frame_dur = Duration::from_secs_f64(1.0 / f64::from(fps_limit));
@@ -5454,6 +5547,507 @@ impl App {
 
         should_exit
     }
+
+    fn update_hud_state(&mut self, dt: f32, day_number: u64, moon_phase: u32) {
+        self.hud_state.selected_slot = self.selected_hotbar_slot;
+        self.hud_state.player_pos = [
+            f64::from(self.camera.position.x),
+            f64::from(self.camera.position.y),
+            f64::from(self.camera.position.z),
+        ];
+        let (cpos, _) = telos_voxel::coords::split_block_pos(BlockPos::new(
+            self.camera.position.x.floor() as i32,
+            self.camera.position.y.floor() as i32,
+            self.camera.position.z.floor() as i32,
+        ));
+        self.hud_state.chunk_pos = [cpos.x(), cpos.y(), cpos.z()];
+
+        let yaw_deg = self.camera.yaw.to_degrees();
+        let pitch_deg = self.camera.pitch.to_degrees();
+        self.hud_state.yaw = yaw_deg;
+        self.hud_state.pitch = pitch_deg;
+
+        let normalized_yaw = (yaw_deg % 360.0 + 360.0) % 360.0;
+        self.hud_state.facing = if (45.0..135.0).contains(&normalized_yaw) {
+            "East (+X)".to_string()
+        } else if (135.0..225.0).contains(&normalized_yaw) {
+            "South (+Z)".to_string()
+        } else if (225.0..315.0).contains(&normalized_yaw) {
+            "West (-X)".to_string()
+        } else {
+            "North (-Z)".to_string()
+        };
+
+        self.hud_state.frame_time_ms = (dt * 1000.0).max(0.01);
+        self.hud_state.chunks_rendered = self.visible_chunks_last as u32;
+        self.hud_state.lod_nodes_rendered = self.visible_lod_nodes_last as u32;
+        self.hud_state.time_of_day = self.client_time_of_day as u64;
+        self.hud_state.day_number = day_number;
+        self.hud_state.moon_phase_name = match moon_phase {
+            0 => "Full Moon",
+            1 => "Waning Gibbous",
+            2 => "Third Quarter",
+            3 => "Waning Crescent",
+            4 => "New Moon",
+            5 => "Waxing Crescent",
+            6 => "First Quarter",
+            7 => "Waxing Gibbous",
+            _ => "Unknown",
+        }
+        .to_string();
+
+        let weather_kind_name = if self.weather_thunder_level > 0.05 {
+            "Thunder"
+        } else if self.weather_rain_level > 0.05 {
+            "Rain"
+        } else {
+            "Clear"
+        };
+        self.hud_state.weather_name = weather_kind_name.to_string();
+        self.hud_state.weather_rain_level = self.weather_rain_level;
+        self.hud_state.weather_thunder_level = self.weather_thunder_level;
+
+        let climate = telos_worldgen::ClimatePoint::sample(
+            self.world_seed,
+            self.camera.position.x,
+            self.camera.position.z,
+        );
+        let is_dry = climate.humidity < -0.35 && climate.temperature > 0.5;
+        let local_precip = if self.weather_rain_level <= 0.01 && self.weather_thunder_level <= 0.01
+        {
+            "None"
+        } else {
+            match telos_sim::weather::precipitation_at(
+                climate.temperature,
+                self.camera.position.y,
+                is_dry,
+            ) {
+                telos_sim::weather::PrecipitationKind::None => "None (Dry)",
+                telos_sim::weather::PrecipitationKind::Rain => "Rain",
+                telos_sim::weather::PrecipitationKind::Snow => "Snow",
+            }
+        };
+        self.hud_state.local_precipitation = local_precip.to_string();
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.hud_state.audio_channels = self.audio.active_players_count() as u32;
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_ui_quads(&mut self, width: u32, height: u32) -> Vec<UiQuad> {
+        let Some(font) = &self.ui_font else {
+            return Vec::new();
+        };
+
+        let gui_scale = compute_gui_scale(width, height);
+        let mut ui_quads = Vec::with_capacity(512);
+        let width_gui = width as f32 / gui_scale as f32;
+        let height_gui = height as f32 / gui_scale as f32;
+
+        match &mut self.current_screen {
+            AppScreen::MainMenu => {
+                self.main_menu
+                    .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                self.main_menu.render(
+                    font,
+                    width_gui,
+                    height_gui,
+                    gui_scale,
+                    u64::from(self.frame_counter),
+                    &mut ui_quads,
+                );
+            }
+            AppScreen::WorldSelect => {
+                self.world_select
+                    .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                self.world_select
+                    .render(font, width_gui, height_gui, gui_scale, &mut ui_quads);
+            }
+            AppScreen::WorldCreate => {
+                self.world_create
+                    .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                self.world_create.render(
+                    font,
+                    width_gui,
+                    height_gui,
+                    gui_scale,
+                    u64::from(self.frame_counter),
+                    &mut ui_quads,
+                );
+            }
+            AppScreen::Settings { .. } => {
+                self.settings_screen
+                    .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                self.settings_screen
+                    .render(font, width_gui, height_gui, gui_scale, &mut ui_quads);
+            }
+            AppScreen::InGame => {
+                if self.is_paused {
+                    self.pause_menu
+                        .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                    self.pause_menu
+                        .render(font, width_gui, height_gui, gui_scale, &mut ui_quads);
+                } else {
+                    render_hud(
+                        &self.hud_state,
+                        font,
+                        &self.ui_layers,
+                        width,
+                        height,
+                        gui_scale,
+                        &mut ui_quads,
+                    );
+
+                    if self.inventory_open {
+                        let mut ui_slots = [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
+                        for (i, slot) in self
+                            .inventory_sim
+                            .slots
+                            .iter()
+                            .enumerate()
+                            .take(telos_ui::INVENTORY_SLOT_COUNT)
+                        {
+                            ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                        }
+                        let ui_carried = UiSlotItem::new(
+                            self.inventory_sim.carried.item,
+                            self.inventory_sim.carried.count,
+                        );
+                        let item_lookup = |id: u32| {
+                            if let Some(def) = self.registries.item_registry().get_by_id(id) {
+                                def.name.as_str()
+                            } else {
+                                telos_sim::item_name(id)
+                            }
+                        };
+                        render_inventory_screen(
+                            &ui_slots,
+                            ui_carried,
+                            self.inventory_hovered_slot,
+                            width,
+                            height,
+                            gui_scale,
+                            font,
+                            &self.ui_layers,
+                            item_lookup,
+                            self.mouse_cursor_pos,
+                            &mut ui_quads,
+                        );
+                    }
+
+                    let now_secs = self.start_time.elapsed().as_secs_f64();
+                    render_chat_hud(
+                        &self.chat_state,
+                        font,
+                        width,
+                        height,
+                        gui_scale,
+                        now_secs,
+                        &mut ui_quads,
+                    );
+                }
+            }
+        }
+
+        ui_quads
+    }
+
+    #[allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
+    fn render_opengl(&mut self) -> bool {
+        let fps_limit = self.game_settings.video.fps_limit;
+        if fps_limit > 0 {
+            let target_frame_dur = Duration::from_secs_f64(1.0 / f64::from(fps_limit));
+            let elapsed = self.last_frame_start.elapsed();
+            if elapsed < target_frame_dur {
+                std::thread::sleep(target_frame_dur.checked_sub(elapsed).unwrap());
+            }
+        }
+        self.last_frame_start = Instant::now();
+
+        if self.current_screen == AppScreen::InGame {
+            self.poll_network();
+            self.rebuild_dirty_meshes_gl(16);
+        }
+
+        let now = Instant::now();
+        let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
+        self.last_frame_time = now;
+
+        if self.current_screen == AppScreen::InGame && !self.is_paused {
+            let input_state = PlayerInputState {
+                forward: self.controller.forward && self.controller.mouse_captured,
+                backward: self.controller.backward && self.controller.mouse_captured,
+                left: self.controller.left && self.controller.mouse_captured,
+                right: self.controller.right && self.controller.mouse_captured,
+                jump: self.controller.up && self.controller.mouse_captured,
+                sneak: self.controller.down && self.controller.mouse_captured,
+                sprint: self.controller.sprint && self.controller.mouse_captured,
+            };
+            let reg = &self.block_registry;
+            let chunks = &self.chunks;
+            self.physics.update(
+                dt,
+                self.camera.yaw.to_degrees(),
+                &input_state,
+                |bx, by, bz, out| {
+                    let (cpos, lidx) =
+                        telos_voxel::coords::split_block_pos(BlockPos::new(bx, by, bz));
+                    let block = if let Some(snap) = chunks.get(&cpos) {
+                        snap.blocks().get(lidx)
+                    } else {
+                        BlockStateId::AIR
+                    };
+                    if block == BlockStateId::AIR {
+                        return;
+                    }
+                    match reg.shape(block) {
+                        BlockShape::Cube => {
+                            out.push(Aabb::from_block(bx, by, bz));
+                        }
+                        BlockShape::Boxes(boxes) => {
+                            for b in boxes {
+                                out.push(Aabb::from_sub_box(bx, by, bz, b.min, b.max));
+                            }
+                        }
+                        _ => {}
+                    }
+                },
+            );
+
+            self.camera.position = self.physics.eye_pos();
+
+            // Raycast targeted block
+            let ray_origin = self.camera.position;
+            let ray_dir = self.camera.forward();
+            let is_solid = |pos: BlockPos| -> bool {
+                let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(pos);
+                if let Some(snap) = chunks.get(&chunk_pos) {
+                    let state = snap.blocks().get(local_idx);
+                    !reg.flags(state)
+                        .contains(telos_voxel::state::StateFlags::AIR)
+                } else {
+                    false
+                }
+            };
+            self.targeted_block = raycast_voxels(ray_origin, ray_dir, 5.0, is_solid);
+
+            self.audio.set_listener(
+                self.camera.position,
+                self.camera.forward(),
+                self.camera.up(),
+            );
+        }
+
+        self.frame_counter += 1;
+        self.total_frames += 1;
+        if self.last_fps_time.elapsed() >= Duration::from_secs(1) {
+            let fps = self.frame_counter;
+            info!(
+                fps,
+                backend = "OpenGL 4.5",
+                chunks = self.chunks.len(),
+                pos = %format!("({:.1}, {:.1}, {:.1})", self.camera.position.x, self.camera.position.y, self.camera.position.z),
+                "Client frame stats"
+            );
+            self.frame_counter = 0;
+            self.last_fps_time = Instant::now();
+        }
+
+        let (width, height) = if let Some(gl_ctx) = &self.gl_context {
+            (gl_ctx.width(), gl_ctx.height())
+        } else {
+            (1280, 720)
+        };
+        let aspect = width as f32 / height.max(1) as f32;
+        let view_proj_mat = self.camera.view_proj_matrix(aspect);
+        let inv_view_proj = view_proj_mat.inverse();
+
+        let day_number = self.client_world_age / telos_core::time::DAY_TICKS;
+        let moon_phase = telos_core::time::moon_phase(day_number);
+        let sun_angle = telos_core::time::sun_angle(
+            self.client_time_of_day as u64,
+            self.client_time_of_day.fract(),
+        );
+        let sun_dir = telos_core::time::sun_direction(sun_angle);
+        let sun_elevation = sun_dir.y;
+        let daylight = telos_core::time::daylight_factor(sun_elevation);
+        let sunset = telos_core::time::sunset_factor(sun_elevation);
+
+        self.lightmap_lut.update(
+            sun_elevation,
+            self.client_time_of_day,
+            self.weather_rain_level,
+            self.weather_thunder_level,
+            self.weather_lightning_flash,
+        );
+        if let Some(renderer) = &mut self.gl_renderer {
+            renderer.update_lightmap(&self.lightmap_lut.data);
+        }
+
+        let highlight_box = self.targeted_block.as_ref().map(|hit| {
+            (
+                Vec3::new(hit.pos.x() as f32, hit.pos.y() as f32, hit.pos.z() as f32),
+                Vec3::new(
+                    hit.pos.x() as f32 + 1.0,
+                    hit.pos.y() as f32 + 1.0,
+                    hit.pos.z() as f32 + 1.0,
+                ),
+            )
+        });
+
+        self.update_hud_state(dt, day_number, moon_phase);
+        let ui_quads = self.build_ui_quads(width, height);
+        let mut gl_ui_verts = Vec::new();
+        opengl_renderer::ui_quads_to_gl_vertices(&ui_quads, &mut gl_ui_verts);
+
+        if let Some(renderer) = &mut self.gl_renderer {
+            renderer.render_frame(
+                &view_proj_mat,
+                &inv_view_proj,
+                self.camera.position,
+                sun_dir,
+                daylight,
+                sunset,
+                highlight_box,
+                &gl_ui_verts,
+                width,
+                height,
+            );
+        }
+
+        if let Some(gl_ctx) = &self.gl_context {
+            let _ = gl_ctx.swap_buffers();
+        }
+
+        // Handle screenshot capture
+        let take_cli_screenshot =
+            self.args.screenshot.is_some() && self.total_frames >= self.args.frames;
+        let take_manual = self.manual_screenshot_requested;
+        if take_cli_screenshot || take_manual {
+            self.manual_screenshot_requested = false;
+            let target_path = if let Some(ref p) = self.args.screenshot {
+                p.clone()
+            } else {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                PathBuf::from(format!(
+                    "dev-assets/screenshots/screenshot_gl_{timestamp}.png"
+                ))
+            };
+
+            if let Some(parent) = target_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            if let Some(gl_ctx) = &self.gl_context {
+                let w = gl_ctx.width();
+                let h = gl_ctx.height();
+                let mut pixels = vec![0u8; (w * h * 4) as usize];
+                unsafe {
+                    use glow::HasContext;
+                    gl_ctx.gl().read_pixels(
+                        0,
+                        0,
+                        w as i32,
+                        h as i32,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelPackData::Slice(Some(&mut pixels)),
+                    );
+                }
+                let stride = (w * 4) as usize;
+                let mut flipped = vec![0u8; pixels.len()];
+                for y in 0..h as usize {
+                    let src_y = h as usize - 1 - y;
+                    flipped[y * stride..(y + 1) * stride]
+                        .copy_from_slice(&pixels[src_y * stride..(src_y + 1) * stride]);
+                }
+                if let Some(img) = image::RgbaImage::from_raw(w, h, flipped) {
+                    if let Err(e) = img.save(&target_path) {
+                        tracing::error!("Failed to save OpenGL screenshot: {e}");
+                    } else {
+                        info!(
+                            path = %target_path.display(),
+                            width = w,
+                            height = h,
+                            frame = self.total_frames,
+                            "Saved OpenGL screenshot successfully"
+                        );
+                    }
+                }
+            }
+
+            if take_cli_screenshot {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn init_opengl(
+        &mut self,
+        attributes: winit::window::WindowAttributes,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let (gl_context, window) =
+            match telos_gpu::opengl::GlContext::create_desktop(attributes, event_loop) {
+                Ok((ctx, win)) => (ctx, win),
+                Err(err) => {
+                    tracing::error!("Failed to create OpenGL desktop context: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        let mut gl_renderer = match opengl_renderer::OpenGlRenderer::new(&gl_context) {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::error!("Failed to initialize OpenGlRenderer: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // Lightmap texture
+        match telos_gpu::opengl::GlTexture2d::new(gl_context.gl().clone(), 16, 16) {
+            Ok(tex) => gl_renderer.set_lightmap(tex),
+            Err(err) => tracing::error!("Failed to create GL lightmap texture: {err}"),
+        }
+
+        // Bake block textures and upload
+        match load_and_upload_textures_gl(gl_context.gl()) {
+            Ok((gl_array, anim)) => {
+                gl_renderer.set_terrain_textures(gl_array);
+                self.anim_textures = anim;
+            }
+            Err(err) => tracing::error!("Failed to load GL block textures: {err}"),
+        }
+
+        // Bake UI textures and upload
+        match load_and_upload_ui_textures_gl(gl_context.gl()) {
+            Ok((ui_array, font)) => {
+                gl_renderer.set_ui_textures(ui_array);
+                self.ui_font = Some(font);
+            }
+            Err(err) => tracing::error!("Failed to load GL UI textures: {err}"),
+        }
+
+        info!(
+            backend = gl_context.caps().backend.name(),
+            renderer = %gl_context.caps().device_name,
+            version = %gl_context.caps().driver_info,
+            "OpenGL fallback renderer initialized successfully"
+        );
+
+        self.window = Some(window);
+        self.gl_context = Some(gl_context);
+        self.gl_renderer = Some(gl_renderer);
+        self.active_backend = telos_gpu::rhi::RenderBackendType::OpenGl;
+    }
 }
 
 impl ApplicationHandler for App {
@@ -5463,13 +6057,30 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let requested_backend = self.args.backend.trim().to_lowercase();
+        let use_opengl = requested_backend == "opengl" || requested_backend == "gl";
+        let auto = requested_backend == "auto";
+
         let attributes = Window::default_attributes()
             .with_title("Telos")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
 
-        let window = match event_loop.create_window(attributes) {
+        if use_opengl {
+            info!("Initializing OpenGL 4.5 fallback renderer (explicit CLI flag)");
+            self.init_opengl(attributes, event_loop);
+            return;
+        }
+
+        let window = match event_loop.create_window(attributes.clone()) {
             Ok(w) => w,
             Err(err) => {
+                if auto {
+                    tracing::warn!(
+                        "Failed to create Vulkan window ({err}), falling back to OpenGL 4.5"
+                    );
+                    self.init_opengl(attributes, event_loop);
+                    return;
+                }
                 tracing::error!("Failed to create window: {err}");
                 event_loop.exit();
                 return;
@@ -5480,6 +6091,14 @@ impl ApplicationHandler for App {
         let gpu_context = match GpuContext::new(&window, size.width, size.height, self.validation) {
             Ok(ctx) => ctx,
             Err(err) => {
+                if auto {
+                    tracing::warn!(
+                        "Failed to initialize Vulkan GpuContext ({err}), falling back to OpenGL 4.5"
+                    );
+                    drop(window);
+                    self.init_opengl(attributes, event_loop);
+                    return;
+                }
                 tracing::error!("Failed to initialize GpuContext: {err}");
                 event_loop.exit();
                 return;
@@ -7882,37 +8501,39 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(physical_size) => {
-                if physical_size.width > 0
-                    && physical_size.height > 0
-                    && let Some(gpu_context) = &mut self.gpu_context
-                {
-                    if let Err(err) = gpu_context.resize(physical_size.width, physical_size.height)
-                    {
-                        tracing::error!("Swapchain resize failed: {err}");
-                    }
-                    if let Some(mut old_depth) = self.depth_buffer.take() {
-                        old_depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
-                    }
-                    match gpu_context.create_depth_buffer() {
-                        Ok(d) => self.depth_buffer = Some(d),
-                        Err(err) => tracing::error!("Failed to recreate depth buffer: {err}"),
-                    }
-                    let extent = vk::Extent2D {
-                        width: physical_size.width,
-                        height: physical_size.height,
-                    };
-                    if let (Some(pp), Some(depth)) = (&mut self.postprocess, &self.depth_buffer)
-                        && let Err(err) = pp.resize(
-                            gpu_context.device().raw(),
-                            gpu_context.allocator(),
-                            extent,
-                            depth.view(),
-                        )
-                    {
-                        tracing::error!("Failed to resize post-process frame graph: {err}");
-                    }
-                    if let Err(err) = self.recreate_hiz_resources(extent) {
-                        tracing::error!("Failed to recreate Hi-Z resources on resize: {err}");
+                if physical_size.width > 0 && physical_size.height > 0 {
+                    if let Some(gpu_context) = &mut self.gpu_context {
+                        if let Err(err) =
+                            gpu_context.resize(physical_size.width, physical_size.height)
+                        {
+                            tracing::error!("Swapchain resize failed: {err}");
+                        }
+                        if let Some(mut old_depth) = self.depth_buffer.take() {
+                            old_depth.destroy(gpu_context.device().raw(), gpu_context.allocator());
+                        }
+                        match gpu_context.create_depth_buffer() {
+                            Ok(d) => self.depth_buffer = Some(d),
+                            Err(err) => tracing::error!("Failed to recreate depth buffer: {err}"),
+                        }
+                        let extent = vk::Extent2D {
+                            width: physical_size.width,
+                            height: physical_size.height,
+                        };
+                        if let (Some(pp), Some(depth)) = (&mut self.postprocess, &self.depth_buffer)
+                            && let Err(err) = pp.resize(
+                                gpu_context.device().raw(),
+                                gpu_context.allocator(),
+                                extent,
+                                depth.view(),
+                            )
+                        {
+                            tracing::error!("Failed to resize post-process frame graph: {err}");
+                        }
+                        if let Err(err) = self.recreate_hiz_resources(extent) {
+                            tracing::error!("Failed to recreate Hi-Z resources on resize: {err}");
+                        }
+                    } else if let Some(gl_context) = &mut self.gl_context {
+                        gl_context.resize(physical_size.width, physical_size.height);
                     }
                 }
             }
@@ -8296,9 +8917,7 @@ fn mount_asset_roots(stack: &mut ResourcePackStack) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn load_and_upload_textures(
-    gpu_context: &GpuContext,
-) -> Result<(GpuTextureArray, AnimatedTextures)> {
+fn bake_block_textures() -> (telos_assets::BakedTextureArray, AnimatedTextures) {
     let mut stack = ResourcePackStack::new();
     mount_asset_roots(&mut stack);
 
@@ -8457,6 +9076,13 @@ fn load_and_upload_textures(
         "Texture array baked with full mip chains"
     );
 
+    (baked, anim_textures)
+}
+
+fn load_and_upload_textures(
+    gpu_context: &GpuContext,
+) -> Result<(GpuTextureArray, AnimatedTextures)> {
+    let (baked, anim_textures) = bake_block_textures();
     let regions: Vec<TextureMipRegion> = baked
         .copy_regions
         .iter()
@@ -8480,8 +9106,37 @@ fn load_and_upload_textures(
     Ok((texture_array, anim_textures))
 }
 
+fn load_and_upload_textures_gl(
+    gl: &Arc<glow::Context>,
+) -> Result<(telos_gpu::opengl::GlTextureArray, AnimatedTextures)> {
+    let (baked, anim_textures) = bake_block_textures();
+    let gl_array = telos_gpu::opengl::GlTextureArray::new(
+        gl.clone(),
+        baked.resolution,
+        baked.resolution,
+        baked.layer_count,
+        baked.mip_levels,
+    )?;
+
+    for r in &baked.copy_regions {
+        let start = r.buffer_offset as usize;
+        let len = (r.width * r.height * 4) as usize;
+        if start + len <= baked.pixel_data.len() {
+            gl_array.upload_mip_region(
+                r.mip_level,
+                r.layer,
+                r.width,
+                r.height,
+                &baked.pixel_data[start..start + len],
+            );
+        }
+    }
+
+    Ok((gl_array, anim_textures))
+}
+
 #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
-fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
+fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     const UI_RES: u32 = 256;
 
     let mut stack = ResourcePackStack::new();
@@ -8855,6 +9510,12 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
         })
         .collect();
 
+    (pixel_data, regions, font)
+}
+
+fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
+    const UI_RES: u32 = 256;
+    let (pixel_data, regions, font) = bake_ui_textures();
     let texture_array = gpu_context.create_texture_array(UI_RES, 7, 1, &pixel_data, &regions)?;
 
     info!(
@@ -8862,6 +9523,30 @@ fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureAr
     );
 
     Ok((texture_array, font))
+}
+
+fn load_and_upload_ui_textures_gl(
+    gl: &Arc<glow::Context>,
+) -> Result<(telos_gpu::opengl::GlTextureArray, BitmapFont)> {
+    const UI_RES: u32 = 256;
+    let (pixel_data, regions, font) = bake_ui_textures();
+    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 7, 1)?;
+
+    for r in &regions {
+        let start = r.buffer_offset as usize;
+        let len = (r.width * r.height * 4) as usize;
+        if start + len <= pixel_data.len() {
+            gl_array.upload_mip_region(
+                0,
+                r.layer,
+                r.width,
+                r.height,
+                &pixel_data[start..start + len],
+            );
+        }
+    }
+
+    Ok((gl_array, font))
 }
 
 #[allow(

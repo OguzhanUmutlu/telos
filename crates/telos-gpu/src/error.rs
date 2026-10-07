@@ -37,4 +37,12 @@ pub enum GpuError {
     /// Dynamic rendering or graphics pipeline creation failure.
     #[error("pipeline creation error: {0}")]
     Pipeline(String),
+
+    /// OpenGL error.
+    #[error("OpenGL error: {0}")]
+    OpenGl(String),
+
+    /// Generic GPU error.
+    #[error("GPU error: {0}")]
+    Generic(String),
 }
