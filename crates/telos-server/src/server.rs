@@ -2475,6 +2475,39 @@ impl Server {
             }
         }
 
+        // 10c. Tick random block updates (leaf decay, plant ticks) across all loaded worlds
+        for (world_name, world) in self.worlds.iter_mut() {
+            let random_updates = world.tick_random_blocks(self.tick_count, 3);
+            for (pos, new_state) in random_updates {
+                let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                    x: pos.x(),
+                    y: pos.y(),
+                    z: pos.z(),
+                    state_id: new_state,
+                    version: 0,
+                });
+                let particle_msg = S2cMessage::ParticleEvent(S2cParticleEvent {
+                    effect: ParticleEffectKind::BlockBreak,
+                    x: pos.x() as f32 + 0.5,
+                    y: pos.y() as f32 + 0.5,
+                    z: pos.z() as f32 + 0.5,
+                    count: 12,
+                    speed: 0.5,
+                    block_state_id: 8,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play && s.world_name == *world_name {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(particle_msg.clone()));
+                    }
+                }
+            }
+        }
+
         // 11. Periodic autosave across all worlds
         if self.config.autosave_interval_ticks > 0
             && self

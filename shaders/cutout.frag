@@ -18,6 +18,10 @@ uint get_texture_layer(uint mat) {
             return 7u;
         case 9u: // Glass
             return 8u;
+        case 77u: // Birch Leaves
+            return 30u;
+        case 78u: // Spruce Leaves
+            return 31u;
         default:
             return 7u;
     }
@@ -34,9 +38,16 @@ void main() {
         discard;
     }
 
-    // Biome foliage tint for oak leaves (plains green #48b518)
+    // Biome foliage tint for leaves
     if (v_material == 8u) {
+        // Oak leaves (plains green #48b518)
         tex_color.rgb *= vec3(0.298, 0.600, 0.129);
+    } else if (v_material == 77u) {
+        // Birch leaves (#80a755)
+        tex_color.rgb *= vec3(0.502, 0.655, 0.333);
+    } else if (v_material == 78u) {
+        // Spruce leaves (#619961)
+        tex_color.rgb *= vec3(0.380, 0.600, 0.380);
     }
 
     // Directional face shading factor

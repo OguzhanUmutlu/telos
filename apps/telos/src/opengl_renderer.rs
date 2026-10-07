@@ -560,7 +560,7 @@ fn unpack_t0_quad(quad: &T0Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     let dir = quad.dir();
     let mat = quad.material();
 
-    let layer = f32::from(mat);
+    let layer = get_gl_texture_layer(mat, dir);
     let tint = get_material_tint(mat, dir);
 
     let (norm, u_dir, v_dir, plane_offset) = match dir {
@@ -657,7 +657,7 @@ fn unpack_t1_quad(quad: &T1Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     let dir = FaceDir::from_u8(((quad.word1 >> 18) & 0x7) as u8).unwrap_or(FaceDir::PosY);
     let mat = (quad.word2 >> 16) as u16;
 
-    let layer = f32::from(mat);
+    let layer = get_gl_texture_layer(mat, dir);
     let tint = get_material_tint(mat, dir);
 
     let (norm, u_dir, v_dir) = match dir {
@@ -754,7 +754,7 @@ fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
         let norm = v.normal();
         let uv = v.uv();
         let mat = v.material();
-        let layer = f32::from(mat);
+        let layer = get_gl_texture_layer(mat, FaceDir::PosY);
         let ao = f32::from(v.ao());
         let sky = f32::from(v.sky());
         let block = f32::from(v.block());
@@ -774,9 +774,44 @@ fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     ]);
 }
 
+fn get_gl_texture_layer(mat: u16, dir: FaceDir) -> f32 {
+    match mat {
+        1 => 0.0, // Stone
+        2 => 1.0, // Dirt
+        3 => match dir {
+            FaceDir::PosY => 2.0, // Grass Top
+            FaceDir::NegY => 1.0, // Dirt
+            _ => 3.0,             // Grass Side
+        },
+        4 => 4.0,   // Bedrock
+        5 => 5.0,   // Sand
+        7 => 6.0,   // Oak Planks
+        8 => 7.0,   // Oak Leaves
+        9 => 8.0,   // Glass
+        21 => 17.0, // logic_power_block
+        24 => 18.0, // logic_lamp
+        25 => 19.0, // logic_lamp_lit
+        74 => match dir {
+            FaceDir::PosY | FaceDir::NegY => 25.0, // oak_log_top
+            _ => 24.0,                             // oak_log
+        },
+        75 => match dir {
+            FaceDir::PosY | FaceDir::NegY => 27.0, // birch_log_top
+            _ => 26.0,                             // birch_log
+        },
+        76 => match dir {
+            FaceDir::PosY | FaceDir::NegY => 29.0, // spruce_log_top
+            _ => 28.0,                             // spruce_log
+        },
+        77 => 30.0, // birch_leaves
+        78 => 31.0, // spruce_leaves
+        _ => f32::from(mat),
+    }
+}
+
 fn get_material_tint(mat: u16, dir: FaceDir) -> [f32; 4] {
     match mat {
-        1 => {
+        3 => {
             // Grass
             if dir == FaceDir::PosY {
                 [0.55, 0.78, 0.35, 1.0]
@@ -784,6 +819,9 @@ fn get_material_tint(mat: u16, dir: FaceDir) -> [f32; 4] {
                 [1.0, 1.0, 1.0, 1.0]
             }
         }
+        8 => [0.298, 0.600, 0.129, 1.0],             // Oak Leaves
+        77 => [0.502, 0.655, 0.333, 1.0],            // Birch Leaves
+        78 => [0.380, 0.600, 0.380, 1.0],            // Spruce Leaves
         6 | 37..=43 => [0.20, 0.45, 0.85, 0.65],     // Water
         31 | 32 | 44..=50 => [1.0, 0.45, 0.05, 1.0], // Lava
         _ => [1.0, 1.0, 1.0, 1.0],

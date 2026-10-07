@@ -8946,6 +8946,14 @@ fn bake_block_textures() -> (telos_assets::BakedTextureArray, AnimatedTextures) 
                 "sand" => [219, 211, 160, 255],
                 "oak_planks" => [162, 130, 78, 255],
                 "oak_leaves" => [60, 140, 40, 255],
+                "birch_leaves" => [100, 160, 60, 255],
+                "spruce_leaves" => [65, 110, 65, 255],
+                "oak_log" => [103, 82, 49, 255],
+                "oak_log_top" => [140, 115, 75, 255],
+                "birch_log" => [215, 215, 210, 255],
+                "birch_log_top" => [180, 160, 125, 255],
+                "spruce_log" => [45, 30, 15, 255],
+                "spruce_log_top" => [105, 80, 50, 255],
                 "glass" => [200, 220, 255, 128],
                 "poppy" => [220, 40, 40, 255],
                 "dandelion" => [255, 230, 40, 255],
@@ -9020,6 +9028,17 @@ fn bake_block_textures() -> (telos_assets::BakedTextureArray, AnimatedTextures) 
     builder.insert("repeater", load_texture_with_fallback("repeater"));
     builder.insert("repeater_on", load_texture_with_fallback("repeater_on"));
     builder.insert("lever", load_texture_with_fallback("lever"));
+    builder.insert("oak_log", load_texture_with_fallback("oak_log"));
+    builder.insert("oak_log_top", load_texture_with_fallback("oak_log_top"));
+    builder.insert("birch_log", load_texture_with_fallback("birch_log"));
+    builder.insert("birch_log_top", load_texture_with_fallback("birch_log_top"));
+    builder.insert("spruce_log", load_texture_with_fallback("spruce_log"));
+    builder.insert(
+        "spruce_log_top",
+        load_texture_with_fallback("spruce_log_top"),
+    );
+    builder.insert("birch_leaves", load_texture_with_fallback("birch_leaves"));
+    builder.insert("spruce_leaves", load_texture_with_fallback("spruce_leaves"));
 
     let mut load_animated = |name: &str,
                              alt_name: Option<&str>,

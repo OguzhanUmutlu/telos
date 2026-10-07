@@ -232,7 +232,8 @@ impl BlockRegistry {
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
                     | StateFlags::CUTOUT.bits()
-                    | StateFlags::LIGHT_BLOCKING.bits(),
+                    | StateFlags::LIGHT_BLOCKING.bits()
+                    | StateFlags::TICKABLE.bits(),
             ),
         );
 
@@ -553,6 +554,38 @@ impl BlockRegistry {
         let raw_copper_block_id = Identifier::new("telos", "raw_copper_block").unwrap();
         reg.register(raw_copper_block_id, StateFlags::OPAQUE_CUBE);
 
+        // Procedural trees & foliage canopies (Phase 47)
+        let oak_log_id = Identifier::new("telos", "oak_log").unwrap();
+        reg.register(oak_log_id, StateFlags::OPAQUE_CUBE);
+
+        let birch_log_id = Identifier::new("telos", "birch_log").unwrap();
+        reg.register(birch_log_id, StateFlags::OPAQUE_CUBE);
+
+        let spruce_log_id = Identifier::new("telos", "spruce_log").unwrap();
+        reg.register(spruce_log_id, StateFlags::OPAQUE_CUBE);
+
+        let birch_leaves_id = Identifier::new("telos", "birch_leaves").unwrap();
+        reg.register(
+            birch_leaves_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::CUTOUT.bits()
+                    | StateFlags::LIGHT_BLOCKING.bits()
+                    | StateFlags::TICKABLE.bits(),
+            ),
+        );
+
+        let spruce_leaves_id = Identifier::new("telos", "spruce_leaves").unwrap();
+        reg.register(
+            spruce_leaves_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::CUTOUT.bits()
+                    | StateFlags::LIGHT_BLOCKING.bits()
+                    | StateFlags::TICKABLE.bits(),
+            ),
+        );
+
         reg.freeze();
         reg
     }
@@ -582,6 +615,26 @@ impl BlockRegistry {
             matches!(
                 ident.path(),
                 "stone" | "deepslate" | "granite" | "diorite" | "andesite" | "tuff"
+            )
+        })
+    }
+
+    /// Returns `true` if the given block state represents a tree wood log (oak, birch, spruce).
+    #[inline]
+    #[must_use]
+    pub fn is_log(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| matches!(ident.path(), "oak_log" | "birch_log" | "spruce_log"))
+    }
+
+    /// Returns `true` if the given block state represents tree leaves (oak, birch, spruce).
+    #[inline]
+    #[must_use]
+    pub fn is_leaves(&self, id: BlockStateId) -> bool {
+        self.identifier(id).is_some_and(|ident| {
+            matches!(
+                ident.path(),
+                "oak_leaves" | "birch_leaves" | "spruce_leaves"
             )
         })
     }
@@ -817,5 +870,51 @@ mod tests {
                 .contains(StateFlags::OPAQUE_FULL)
         );
         assert!(reg.flags(raw_iron).contains(StateFlags::OPAQUE_FULL));
+    }
+
+    #[test]
+    fn test_standard_registry_tree_blocks() {
+        let reg = BlockRegistry::standard();
+
+        let oak_log = reg
+            .get(&Identifier::new("telos", "oak_log").unwrap())
+            .unwrap()
+            .default_state();
+        let birch_log = reg
+            .get(&Identifier::new("telos", "birch_log").unwrap())
+            .unwrap()
+            .default_state();
+        let spruce_log = reg
+            .get(&Identifier::new("telos", "spruce_log").unwrap())
+            .unwrap()
+            .default_state();
+
+        let oak_leaves = reg
+            .get(&Identifier::new("telos", "oak_leaves").unwrap())
+            .unwrap()
+            .default_state();
+        let birch_leaves = reg
+            .get(&Identifier::new("telos", "birch_leaves").unwrap())
+            .unwrap()
+            .default_state();
+        let spruce_leaves = reg
+            .get(&Identifier::new("telos", "spruce_leaves").unwrap())
+            .unwrap()
+            .default_state();
+
+        assert!(reg.is_log(oak_log));
+        assert!(reg.is_log(birch_log));
+        assert!(reg.is_log(spruce_log));
+        assert!(!reg.is_log(oak_leaves));
+
+        assert!(reg.is_leaves(oak_leaves));
+        assert!(reg.is_leaves(birch_leaves));
+        assert!(reg.is_leaves(spruce_leaves));
+        assert!(!reg.is_leaves(oak_log));
+
+        assert!(reg.flags(oak_log).contains(StateFlags::OPAQUE_FULL));
+        assert!(reg.flags(oak_leaves).contains(StateFlags::TICKABLE));
+        assert!(reg.flags(birch_leaves).contains(StateFlags::TICKABLE));
+        assert!(reg.flags(spruce_leaves).contains(StateFlags::TICKABLE));
     }
 }

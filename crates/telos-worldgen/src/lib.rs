@@ -16,6 +16,7 @@ pub mod math;
 pub mod noise;
 pub mod ore;
 pub mod surface;
+pub mod tree;
 
 pub use aquifer::{AquiferSample, AquiferSampler, FluidKind};
 pub use biome::BiomeId;
@@ -24,3 +25,4 @@ pub use decoration::apply_surface_decorations;
 pub use error::WorldGenError;
 pub use generator::{GeneratorKind, WorldGenerator};
 pub use ore::apply_ores;
+pub use tree::{TreeSpecies, apply_trees};

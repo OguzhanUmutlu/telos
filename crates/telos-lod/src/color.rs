@@ -81,6 +81,42 @@ impl LodColorTable {
         );
         // Water: #4064C8
         colors.insert(BlockStateId::new(6), LodColor::uniform([64, 100, 200, 255]));
+        // Oak Leaves: #489120
+        colors.insert(BlockStateId::new(8), LodColor::uniform([72, 145, 32, 255]));
+        // Oak Log: top/bottom #8C734B, side #675231
+        colors.insert(
+            BlockStateId::new(74),
+            LodColor {
+                top: [140, 115, 75, 255],
+                side: [103, 82, 49, 255],
+                bottom: [140, 115, 75, 255],
+            },
+        );
+        // Birch Log: top/bottom #B4A07D, side #D7D7D2
+        colors.insert(
+            BlockStateId::new(75),
+            LodColor {
+                top: [180, 160, 125, 255],
+                side: [215, 215, 210, 255],
+                bottom: [180, 160, 125, 255],
+            },
+        );
+        // Spruce Log: top/bottom #695032, side #2D1E0F
+        colors.insert(
+            BlockStateId::new(76),
+            LodColor {
+                top: [105, 80, 50, 255],
+                side: [45, 30, 15, 255],
+                bottom: [105, 80, 50, 255],
+            },
+        );
+        // Birch Leaves: #80A755
+        colors.insert(
+            BlockStateId::new(77),
+            LodColor::uniform([128, 167, 85, 255]),
+        );
+        // Spruce Leaves: #619961
+        colors.insert(BlockStateId::new(78), LodColor::uniform([97, 153, 97, 255]));
 
         Self {
             colors,

@@ -34,6 +34,15 @@ uint get_texture_layer(uint mat, uint dir) {
             return 18u;
         case 25u: // logic_lamp_lit
             return 19u;
+        case 74u: // Oak Log
+            if (dir == 2u || dir == 3u) return 25u; // Top/Bottom -> oak_log_top
+            return 24u;                             // Sides -> oak_log
+        case 75u: // Birch Log
+            if (dir == 2u || dir == 3u) return 27u; // Top/Bottom -> birch_log_top
+            return 26u;                             // Sides -> birch_log
+        case 76u: // Spruce Log
+            if (dir == 2u || dir == 3u) return 29u; // Top/Bottom -> spruce_log_top
+            return 28u;                             // Sides -> spruce_log
         default:
             return 0u;
     }

@@ -142,6 +142,9 @@ impl WorldGenerator {
                 // 6. Apply procedural surface foliage and floral patch decoration
                 apply_surface_decorations(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
 
+                // 6b. Apply procedural multi-stage trees and foliage canopies
+                crate::tree::apply_trees(self.seed, pos, grid.biomes(), &self.blocks, &mut dense);
+
                 // 7. Construct compact paletted chunk representation with uniform elision
                 let packed_blocks = bulk::from_dense(&dense);
 

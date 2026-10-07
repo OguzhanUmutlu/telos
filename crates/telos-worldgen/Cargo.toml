@@ -24,5 +24,9 @@ crc32fast = { workspace = true }
 name = "worldgen_bench"
 harness = false
 
+[[bench]]
+name = "tree_bench"
+harness = false
+
 [lints]
 workspace = true

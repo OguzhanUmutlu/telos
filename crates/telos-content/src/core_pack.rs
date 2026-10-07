@@ -1046,6 +1046,71 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 ..Default::default()
             },
         ),
+        // Procedural trees & foliage canopies (Phase 47)
+        (
+            "birch_log",
+            "Birch Log",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 2.0,
+                blast_resistance: 2.0,
+                tool: Some("telos:axe".into()),
+                sound: Some("telos:wood".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(60),
+                ..Default::default()
+            },
+        ),
+        (
+            "spruce_log",
+            "Spruce Log",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 2.0,
+                blast_resistance: 2.0,
+                tool: Some("telos:axe".into()),
+                sound: Some("telos:wood".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(61),
+                ..Default::default()
+            },
+        ),
+        (
+            "birch_leaves",
+            "Birch Leaves",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Opaque,
+                hardness: 0.2,
+                blast_resistance: 0.2,
+                tool: Some("telos:shears".into()),
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(62),
+                ..Default::default()
+            },
+        ),
+        (
+            "spruce_leaves",
+            "Spruce Leaves",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Opaque,
+                hardness: 0.2,
+                blast_resistance: 0.2,
+                tool: Some("telos:shears".into()),
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(63),
+                ..Default::default()
+            },
+        ),
     ]
 }
 

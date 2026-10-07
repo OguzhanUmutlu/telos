@@ -590,6 +590,82 @@ impl ServerWorld {
         updated
     }
 
+    /// Advances random block ticks (e.g. leaf decay, plant growth) for active loaded chunks.
+    ///
+    /// Evaluates `ticks_per_chunk` pseudo-random coordinates per chunk. If an orphaned leaf is
+    /// discovered, it is decayed into air and returned for network broadcast and particle emission.
+    pub fn tick_random_blocks(
+        &mut self,
+        current_tick: u64,
+        ticks_per_chunk: usize,
+    ) -> Vec<(BlockPos, BlockStateId)> {
+        if self.chunks.is_empty() || ticks_per_chunk == 0 {
+            return Vec::new();
+        }
+
+        let mut to_decay = Vec::new();
+
+        // 1. Collect candidate block positions that require decay
+        for (&chunk_pos, sc) in &self.chunks {
+            for i in 0..ticks_per_chunk {
+                // Fast deterministic pseudo-random local index sampling
+                let h = telos_worldgen::math::hash3(
+                    current_tick.wrapping_add(i as u64),
+                    chunk_pos.x(),
+                    chunk_pos.y(),
+                    chunk_pos.z(),
+                );
+                let lx = (h & 0x1F) as u32;
+                let ly = ((h >> 5) & 0x1F) as u32;
+                let lz = ((h >> 10) & 0x1F) as u32;
+
+                let local_idx = telos_voxel::coords::LocalIdx::from_coords(lx, ly, lz).unwrap();
+                let state = sc.chunk.get(local_idx);
+                let flags = self.registry.flags(state);
+
+                if flags.contains(telos_voxel::state::StateFlags::TICKABLE)
+                    && self.registry.is_leaves(state)
+                {
+                    let pos = BlockPos::new(
+                        chunk_pos.x() * 32 + lx.cast_signed(),
+                        chunk_pos.y() * 32 + ly.cast_signed(),
+                        chunk_pos.z() * 32 + lz.cast_signed(),
+                    );
+                    if telos_sim::foliage::is_leaf_decaying(pos, 4, self) {
+                        to_decay.push(pos);
+                    }
+                }
+            }
+        }
+
+        // 2. Apply decay to air
+        let mut updated = Vec::new();
+        for pos in to_decay {
+            let (chunk_pos, local_idx) = split_block_pos(pos);
+            if let Some(sc) = self.chunks.get_mut(&chunk_pos) {
+                let cur = sc.chunk.get(local_idx);
+                if self.registry.is_leaves(cur) {
+                    let old_flags = self.registry.flags(cur);
+                    let new_flags = telos_voxel::state::StateFlags::AIR;
+                    sc.chunk.set(
+                        local_idx,
+                        BlockStateId::AIR,
+                        old_flags,
+                        new_flags,
+                        current_tick.max(1),
+                    );
+                    let snapshot = sc.chunk.publish_snapshot();
+                    sc.snapshot = snapshot;
+                    self.dirty_chunks.insert(chunk_pos);
+                    self.invalidate_lod_hierarchy(chunk_pos);
+                    updated.push((pos, BlockStateId::AIR));
+                }
+            }
+        }
+
+        updated
+    }
+
     /// Invalidates LOD pyramid nodes and cached meshes containing the given chunk.
     pub fn invalidate_lod_hierarchy(&mut self, chunk_pos: ChunkPos) {
         let mut key = LodNodeKey::from_chunk(chunk_pos).parent();

@@ -15,6 +15,7 @@ pub mod entity;
 pub mod event;
 pub mod experience;
 pub mod fluid;
+pub mod foliage;
 pub mod hunger;
 pub mod inventory;
 pub mod logic;
@@ -54,6 +55,7 @@ pub use fluid::{
     FluidEngine, FluidKind, FluidReaction, FluidState, FluidWorldReader, LAVA_MAX_DECAY,
     LAVA_TICK_RATE, SLOPE_SEARCH_DISTANCE, ScheduledFluidTick, WATER_MAX_DECAY, WATER_TICK_RATE,
 };
+pub use foliage::{LEAF_DECAY_RADIUS, is_leaf_decaying};
 pub use hunger::{Hunger, HungerTickResult, SimParams, tick_hunger};
 pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,

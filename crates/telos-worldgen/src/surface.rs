@@ -85,6 +85,20 @@ pub struct ResolvedBlocks {
     pub raw_iron_block: BlockStateId,
     /// Block of raw copper block state ID.
     pub raw_copper_block: BlockStateId,
+
+    // Phase 47 Trees & Foliage Blocks
+    /// Oak tree wood log.
+    pub oak_log: BlockStateId,
+    /// Birch tree wood log.
+    pub birch_log: BlockStateId,
+    /// Spruce tree wood log.
+    pub spruce_log: BlockStateId,
+    /// Oak tree leaves.
+    pub oak_leaves: BlockStateId,
+    /// Birch tree leaves.
+    pub birch_leaves: BlockStateId,
+    /// Spruce tree leaves.
+    pub spruce_leaves: BlockStateId,
 }
 
 impl ResolvedBlocks {
@@ -141,6 +155,13 @@ impl ResolvedBlocks {
         let raw_iron_block = resolve_block("raw_iron_block", 70);
         let raw_copper_block = resolve_block("raw_copper_block", 71);
 
+        let oak_log = resolve_block("oak_log", 74);
+        let birch_log = resolve_block("birch_log", 75);
+        let spruce_log = resolve_block("spruce_log", 76);
+        let oak_leaves = resolve_block("oak_leaves", 8);
+        let birch_leaves = resolve_block("birch_leaves", 77);
+        let spruce_leaves = resolve_block("spruce_leaves", 78);
+
         Self {
             air,
             stone,
@@ -178,6 +199,12 @@ impl ResolvedBlocks {
             tuff,
             raw_iron_block,
             raw_copper_block,
+            oak_log,
+            birch_log,
+            spruce_log,
+            oak_leaves,
+            birch_leaves,
+            spruce_leaves,
         }
     }
 }
