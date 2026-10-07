@@ -217,7 +217,9 @@ impl BlockRegistry {
         reg.register(
             water_id,
             StateFlags::from_bits_truncate(
-                StateFlags::NON_EMPTY.bits() | StateFlags::TRANSLUCENT.bits(),
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::TRANSLUCENT.bits()
+                    | StateFlags::FLUID.bits(),
             ),
         );
 
@@ -275,7 +277,7 @@ impl BlockRegistry {
         let flowing_water_id = Identifier::new("telos", "flowing_water").unwrap();
         reg.register_with_shape(
             flowing_water_id,
-            StateFlags::NON_EMPTY | StateFlags::TRANSLUCENT,
+            StateFlags::NON_EMPTY | StateFlags::TRANSLUCENT | StateFlags::FLUID,
             crate::shape::BlockShape::fluid(1, false),
         );
 
@@ -392,7 +394,8 @@ impl BlockRegistry {
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
                     | StateFlags::TRANSLUCENT.bits()
-                    | StateFlags::EMISSIVE.bits(),
+                    | StateFlags::EMISSIVE.bits()
+                    | StateFlags::FLUID.bits(),
             ),
             crate::shape::BlockShape::fluid(0, false),
         );
@@ -403,7 +406,8 @@ impl BlockRegistry {
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
                     | StateFlags::TRANSLUCENT.bits()
-                    | StateFlags::EMISSIVE.bits(),
+                    | StateFlags::EMISSIVE.bits()
+                    | StateFlags::FLUID.bits(),
             ),
             crate::shape::BlockShape::fluid(1, false),
         );
@@ -430,6 +434,51 @@ impl BlockRegistry {
             crate::shape::BlockShape::flat_plate(),
         );
 
+        // Fluid reactions & mechanics (Phase 43)
+        let cobblestone_id = Identifier::new("telos", "cobblestone").unwrap();
+        reg.register(cobblestone_id, StateFlags::OPAQUE_CUBE);
+
+        let obsidian_id = Identifier::new("telos", "obsidian").unwrap();
+        reg.register(obsidian_id, StateFlags::OPAQUE_CUBE);
+
+        // Flowing water decay levels 2..=7 and falling vertical column
+        for lvl in 2..=7u8 {
+            let id = Identifier::new("telos", format!("flowing_water_{lvl}")).unwrap();
+            reg.register_with_shape(
+                id,
+                StateFlags::NON_EMPTY | StateFlags::TRANSLUCENT | StateFlags::FLUID,
+                crate::shape::BlockShape::fluid(lvl, false),
+            );
+        }
+        let falling_water_id = Identifier::new("telos", "falling_water").unwrap();
+        reg.register_with_shape(
+            falling_water_id,
+            StateFlags::NON_EMPTY | StateFlags::TRANSLUCENT | StateFlags::FLUID,
+            crate::shape::BlockShape::fluid(1, true),
+        );
+
+        // Flowing lava decay levels 2..=7 and falling vertical column
+        for lvl in 2..=7u8 {
+            let id = Identifier::new("telos", format!("flowing_lava_{lvl}")).unwrap();
+            reg.register_with_shape(
+                id,
+                StateFlags::NON_EMPTY
+                    | StateFlags::TRANSLUCENT
+                    | StateFlags::EMISSIVE
+                    | StateFlags::FLUID,
+                crate::shape::BlockShape::fluid(lvl, false),
+            );
+        }
+        let falling_lava_id = Identifier::new("telos", "falling_lava").unwrap();
+        reg.register_with_shape(
+            falling_lava_id,
+            StateFlags::NON_EMPTY
+                | StateFlags::TRANSLUCENT
+                | StateFlags::EMISSIVE
+                | StateFlags::FLUID,
+            crate::shape::BlockShape::fluid(1, true),
+        );
+
         reg.freeze();
         reg
     }
@@ -446,6 +495,104 @@ impl BlockRegistry {
     #[must_use]
     pub fn is_logic_powered(&self, id: BlockStateId) -> bool {
         self.flags(id).contains(StateFlags::LOGIC_POWERED)
+    }
+
+    /// Returns `true` if the given block state represents a fluid (water or lava).
+    #[inline]
+    #[must_use]
+    pub fn is_fluid(&self, id: BlockStateId) -> bool {
+        self.flags(id).contains(StateFlags::FLUID)
+            || matches!(self.shape(id), crate::shape::BlockShape::Fluid { .. })
+    }
+
+    /// Returns `true` if the block state at `id` can be freely replaced by flowing fluids.
+    #[inline]
+    #[must_use]
+    pub fn is_replaceable(&self, id: BlockStateId) -> bool {
+        if id.is_air() {
+            return true;
+        }
+        let flags = self.flags(id);
+        let shape = self.shape(id);
+        matches!(
+            shape,
+            crate::shape::BlockShape::Cross | crate::shape::BlockShape::Torch { .. }
+        ) || (flags.contains(StateFlags::LOGIC_COMPONENT)
+            && matches!(shape, crate::shape::BlockShape::Boxes(_)))
+    }
+
+    /// Evaluates the fluid properties (kind, decay level, falling flag) of a block state.
+    #[must_use]
+    pub fn fluid_state(&self, id: BlockStateId) -> Option<crate::fluid::FluidState> {
+        let shape = self.shape(id);
+        if let crate::shape::BlockShape::Fluid { level, falling } = *shape {
+            let is_lava = self.flags(id).contains(StateFlags::EMISSIVE);
+            let kind = if is_lava {
+                crate::fluid::FluidKind::Lava
+            } else {
+                crate::fluid::FluidKind::Water
+            };
+            Some(crate::fluid::FluidState::new(kind, level, falling))
+        } else {
+            None
+        }
+    }
+
+    /// Resolves the corresponding `BlockStateId` for a given fluid kind, level (0..=7), and falling state.
+    #[must_use]
+    pub fn fluid_state_id(
+        &self,
+        kind: crate::fluid::FluidKind,
+        level: u8,
+        falling: bool,
+    ) -> BlockStateId {
+        let name = match kind {
+            crate::fluid::FluidKind::Water => {
+                if level == 0 && !falling {
+                    "water"
+                } else if falling {
+                    "falling_water"
+                } else {
+                    match level {
+                        1 => "flowing_water",
+                        2 => "flowing_water_2",
+                        3 => "flowing_water_3",
+                        4 => "flowing_water_4",
+                        5 => "flowing_water_5",
+                        6 => "flowing_water_6",
+                        _ => "flowing_water_7",
+                    }
+                }
+            }
+            crate::fluid::FluidKind::Lava => {
+                if level == 0 && !falling {
+                    "lava"
+                } else if falling {
+                    "falling_lava"
+                } else {
+                    match level {
+                        1 => "flowing_lava",
+                        2 => "flowing_lava_2",
+                        3 => "flowing_lava_3",
+                        4 => "flowing_lava_4",
+                        5 => "flowing_lava_5",
+                        6 => "flowing_lava_6",
+                        _ => "flowing_lava_7",
+                    }
+                }
+            }
+        };
+
+        if let Ok(ident) = Identifier::new("telos", name)
+            && let Some(&idx) = self.by_identifier.get(&ident)
+        {
+            self.blocks[idx].default_state()
+        } else {
+            match kind {
+                crate::fluid::FluidKind::Water => BlockStateId::new(6),
+                crate::fluid::FluidKind::Lava => BlockStateId::new(31),
+            }
+        }
     }
 }
 
@@ -476,5 +623,48 @@ mod tests {
             .unwrap();
         assert!(reg.is_logic_component(wire_powered.default_state()));
         assert!(reg.is_logic_powered(wire_powered.default_state()));
+    }
+
+    #[test]
+    fn test_standard_registry_fluid_blocks() {
+        let reg = BlockRegistry::standard();
+        let water = reg
+            .get(&Identifier::new("telos", "water").unwrap())
+            .unwrap()
+            .default_state();
+        assert!(reg.is_fluid(water));
+        let state = reg.fluid_state(water).unwrap();
+        assert_eq!(state.kind, crate::fluid::FluidKind::Water);
+        assert_eq!(state.level, 0);
+        assert!(!state.falling);
+        assert!(state.is_source());
+
+        let flowing_water_3 = reg.fluid_state_id(crate::fluid::FluidKind::Water, 3, false);
+        let s3 = reg.fluid_state(flowing_water_3).unwrap();
+        assert_eq!(s3.level, 3);
+        assert!(!s3.falling);
+
+        let falling_water = reg.fluid_state_id(crate::fluid::FluidKind::Water, 1, true);
+        let sf = reg.fluid_state(falling_water).unwrap();
+        assert!(sf.falling);
+
+        let lava = reg.fluid_state_id(crate::fluid::FluidKind::Lava, 0, false);
+        let sl = reg.fluid_state(lava).unwrap();
+        assert_eq!(sl.kind, crate::fluid::FluidKind::Lava);
+        assert_eq!(sl.level, 0);
+
+        let cobblestone = reg
+            .get(&Identifier::new("telos", "cobblestone").unwrap())
+            .unwrap()
+            .default_state();
+        assert!(!reg.is_fluid(cobblestone));
+        assert!(reg.flags(cobblestone).contains(StateFlags::OPAQUE_FULL));
+
+        let obsidian = reg
+            .get(&Identifier::new("telos", "obsidian").unwrap())
+            .unwrap()
+            .default_state();
+        assert!(!reg.is_fluid(obsidian));
+        assert!(reg.flags(obsidian).contains(StateFlags::OPAQUE_FULL));
     }
 }

@@ -1888,3 +1888,37 @@ fn test_server_status_effects_combat_mitigation() {
         "Zombie health should be 17.6 after 40% resistance mitigation, got {zombie_health}"
     );
 }
+
+#[test]
+fn test_server_fluid_flow_ticking() {
+    use telos_core::coords::BlockPos;
+    use telos_server::ServerWorld;
+    use telos_voxel::BlockRegistry;
+    use telos_voxel::fluid::FluidKind;
+
+    let registry = BlockRegistry::standard();
+    let mut world = ServerWorld::new(42, registry.clone());
+
+    // Place a water source block high in the air
+    let water_source = registry.fluid_state_id(FluidKind::Water, 0, false);
+    let src_pos = BlockPos::new(0, 10, 0);
+    world.set_block(src_pos, water_source);
+
+    // Advance 5 ticks: tick_fluids should evaluate and produce falling water at (0, 9, 0)
+    let updates = world.tick_fluids(5);
+    assert!(
+        !updates.is_empty(),
+        "Fluid engine should produce block updates on tick 5"
+    );
+
+    let down_pos = BlockPos::new(0, 9, 0);
+    let down_state = world.get_block(down_pos);
+    let down_fluid = registry
+        .fluid_state(down_state)
+        .expect("Should be fluid at (0, 9, 0)");
+    assert_eq!(down_fluid.kind, FluidKind::Water);
+    assert!(
+        down_fluid.falling,
+        "Downward fluid column should be marked falling"
+    );
+}

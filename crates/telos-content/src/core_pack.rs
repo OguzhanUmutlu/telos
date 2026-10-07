@@ -614,6 +614,22 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             },
         ),
         (
+            "obsidian",
+            "Obsidian",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 50.0,
+                blast_resistance: 1200.0,
+                tool: Some("telos:diamond_pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(36),
+                ..Default::default()
+            },
+        ),
+        (
             "oak_log",
             "Oak Log",
             BlockDef {

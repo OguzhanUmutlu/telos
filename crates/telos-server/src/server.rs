@@ -2421,6 +2421,27 @@ impl Server {
             }
         }
 
+        // 10b. Tick real-time cellular automata fluid simulation across all loaded worlds
+        for (world_name, world) in self.worlds.iter_mut() {
+            let fluid_updates = world.tick_fluids(self.tick_count);
+            for (pos, new_state) in fluid_updates {
+                let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                    x: pos.x(),
+                    y: pos.y(),
+                    z: pos.z(),
+                    state_id: new_state,
+                    version: 0,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play && s.world_name == *world_name {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                    }
+                }
+            }
+        }
+
         // 11. Periodic autosave across all worlds
         if self.config.autosave_interval_ticks > 0
             && self

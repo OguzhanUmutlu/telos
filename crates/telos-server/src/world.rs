@@ -46,6 +46,8 @@ pub struct ServerWorld {
     dirty_chunks: HashSet<ChunkPos>,
     /// Deterministic logic & signal propagation engine.
     pub logic_engine: telos_sim::logic::LogicEngine,
+    /// Real-time cellular automata fluid simulation engine.
+    pub fluid_engine: telos_sim::fluid::FluidEngine,
 }
 
 impl ServerWorld {
@@ -77,6 +79,7 @@ impl ServerWorld {
             storage: None,
             dirty_chunks: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
+            fluid_engine: telos_sim::fluid::FluidEngine::new(),
         }
     }
 
@@ -101,6 +104,7 @@ impl ServerWorld {
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
+            fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
     }
 
@@ -142,6 +146,7 @@ impl ServerWorld {
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
+            fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
     }
 
@@ -176,6 +181,7 @@ impl ServerWorld {
             storage,
             dirty_chunks: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
+            fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
     }
 
@@ -319,6 +325,17 @@ impl ServerWorld {
         snapshot.blocks().get(local_idx)
     }
 
+    /// Queries the block state at a world `BlockPos` if the chunk is loaded; otherwise returns `BlockStateId::AIR`.
+    #[must_use]
+    pub fn get_loaded_block(&self, pos: BlockPos) -> BlockStateId {
+        let (chunk_pos, local_idx) = split_block_pos(pos);
+        if let Some(sc) = self.chunks.get(&chunk_pos) {
+            sc.chunk.get(local_idx)
+        } else {
+            BlockStateId::AIR
+        }
+    }
+
     /// Sets a block in the world, updating chunk storage, heightmaps, and lighting.
     ///
     /// Invalidates affected LOD pyramid levels and flags the chunk dirty for save.
@@ -405,6 +422,23 @@ impl ServerWorld {
         self.invalidate_lod_hierarchy(chunk_pos);
 
         // Logic component update and propagation
+        self.update_logic_component(pos, old_flags, new_flags, new_state);
+
+        // Notify fluid simulation engine of block mutation
+        let mut engine = std::mem::take(&mut self.fluid_engine);
+        engine.on_block_changed(pos, 0, self);
+        self.fluid_engine = engine;
+
+        Some((snapshot, version))
+    }
+
+    fn update_logic_component(
+        &mut self,
+        pos: BlockPos,
+        old_flags: StateFlags,
+        new_flags: StateFlags,
+        new_state: BlockStateId,
+    ) {
         if new_flags.contains(StateFlags::LOGIC_COMPONENT) {
             if let Some(ident) = self.registry.identifier(new_state) {
                 let kind = match ident.path() {
@@ -444,8 +478,6 @@ impl ServerWorld {
         } else if old_flags.contains(StateFlags::LOGIC_COMPONENT) {
             self.logic_engine.remove_component(pos);
         }
-
-        Some((snapshot, version))
     }
 
     /// Resolves the corresponding `BlockStateId` for a logic component.
@@ -521,6 +553,35 @@ impl ServerWorld {
                     let snapshot = sc.chunk.publish_snapshot();
                     sc.snapshot = snapshot;
                     self.dirty_chunks.insert(chunk_pos);
+                    updated.push((pos, target));
+                }
+            }
+        }
+
+        updated
+    }
+
+    /// Advances the real-time cellular automata fluid simulation engine by one tick.
+    /// Returns all block positions whose block state changed.
+    pub fn tick_fluids(&mut self, current_tick: u64) -> Vec<(BlockPos, BlockStateId)> {
+        let mut engine = std::mem::take(&mut self.fluid_engine);
+        let changes = engine.tick(current_tick, self);
+        self.fluid_engine = engine;
+
+        let mut updated = Vec::new();
+        for (pos, target) in changes {
+            let cur_state = self.get_block(pos);
+            if target != cur_state {
+                let old_flags = self.registry.flags(cur_state);
+                let new_flags = self.registry.flags(target);
+                let (chunk_pos, local_idx) = split_block_pos(pos);
+                if let Some(sc) = self.chunks.get_mut(&chunk_pos) {
+                    sc.chunk
+                        .set(local_idx, target, old_flags, new_flags, current_tick.max(1));
+                    let snapshot = sc.chunk.publish_snapshot();
+                    sc.snapshot = snapshot;
+                    self.dirty_chunks.insert(chunk_pos);
+                    self.invalidate_lod_hierarchy(chunk_pos);
                     updated.push((pos, target));
                 }
             }
@@ -813,5 +874,15 @@ impl ServerWorld {
         if seeded {
             light_bfs.propagate_block_add(&mut chunk_light.sky, is_opaque);
         }
+    }
+}
+
+impl telos_sim::fluid::FluidWorldReader for ServerWorld {
+    fn get_block(&self, pos: BlockPos) -> BlockStateId {
+        self.get_loaded_block(pos)
+    }
+
+    fn registry(&self) -> &BlockRegistry {
+        &self.registry
     }
 }

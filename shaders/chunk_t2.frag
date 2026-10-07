@@ -36,6 +36,8 @@ uint get_texture_layer(uint mat) {
     switch (mat) {
         case 6u:  // Water (standard)
         case 8u:  // Water (core pack)
+        case 15u: // Flowing water (standard)
+        case 37u: case 38u: case 39u: case 40u: case 41u: case 42u: case 43u: // Flowing water levels 2..7 & falling
             return pc.water_base_layer;
         case 11u: // Poppy fallback
         case 12u: // Poppy (standard)
@@ -45,7 +47,6 @@ uint get_texture_layer(uint mat) {
         case 17u: // Dandelion (core pack)
             return 10u;
         case 14u: // Torch (standard)
-        case 15u: // Torch (core pack)
             return 11u;
         case 18u: // Short grass (core pack)
             return 12u;
@@ -55,6 +56,7 @@ uint get_texture_layer(uint mat) {
             return 14u;
         case 31u: // Lava
         case 32u: // Flowing lava
+        case 44u: case 45u: case 46u: case 47u: case 48u: case 49u: case 50u: // Flowing lava levels 2..7 & falling
             return pc.lava_base_layer;
         case 33u: // Fire
             return pc.fire_base_layer;
@@ -69,17 +71,20 @@ void main() {
     uint frame_tick = pc.frame_tick_flags & 0x7FFFFFFFu;
     uint is_translucent = (pc.frame_tick_flags >> 31u) & 1u;
 
+    bool is_lava = (v_is_emissive != 0u || (v_material >= 31u && v_material <= 32u) || (v_material >= 44u && v_material <= 50u));
+    bool is_water = !is_lava && (is_translucent != 0u || v_material == 6u || v_material == 8u || v_material == 15u || (v_material >= 37u && v_material <= 43u));
+
     uint base_layer = get_texture_layer(v_material);
 
     // If fluid or animated surface, animate frame when inside simulation distance
     uint layer = base_layer;
-    if (v_material == 31u || v_material == 32u) {
+    if (is_lava) {
         uint frame = (is_simulated && pc.lava_frame_count > 1u) ? ((frame_tick / 2u) % pc.lava_frame_count) : 0u;
         layer = pc.lava_base_layer + frame;
     } else if (v_material == 33u) {
         uint frame = (is_simulated && pc.fire_frame_count > 1u) ? (frame_tick % pc.fire_frame_count) : 0u;
         layer = pc.fire_base_layer + frame;
-    } else if (is_translucent != 0u || v_material == 6u || v_material == 8u) {
+    } else if (is_water) {
         uint frame = (is_simulated && pc.water_frame_count > 1u) ? ((frame_tick / 3u) % pc.water_frame_count) : 0u;
         layer = pc.water_base_layer + frame;
     }
@@ -87,7 +92,7 @@ void main() {
     vec4 tex_color = texture(u_textures, vec3(v_uv, float(layer)));
 
     // Alpha test for cutout pass (plants, torches, fire)
-    if (is_translucent == 0u && v_material != 6u && v_material != 8u && v_material != 31u && v_material != 32u) {
+    if (is_translucent == 0u && !is_water && !is_lava && v_material != 33u) {
         if (tex_color.a < 0.1) {
             discard;
         }
@@ -107,7 +112,7 @@ void main() {
 
     // Light calculation
     vec3 light_color;
-    if (v_is_emissive != 0u || v_material == 31u || v_material == 32u || v_material == 33u) {
+    if (v_is_emissive != 0u || is_lava || v_material == 33u) {
         light_color = vec3(1.0);
     } else {
         float ao_raw = v_light.x;    // 0.0 .. 3.0
@@ -127,10 +132,10 @@ void main() {
         light_color = clamp(final_light * face_shade * ao_factor, 0.0, 1.0);
     }
 
-    if (v_material == 31u || v_material == 32u) {
+    if (is_lava) {
         // Lava
         out_color = vec4(tex_color.rgb * light_color, 1.0);
-    } else if (is_translucent != 0u || v_material == 6u || v_material == 8u) {
+    } else if (is_water) {
         // Water blue tint
         vec3 water_tint = vec3(0.247, 0.463, 0.894);
         out_color = vec4(tex_color.rgb * water_tint * light_color, 0.72);

@@ -14,6 +14,7 @@ pub mod enchantment;
 pub mod entity;
 pub mod event;
 pub mod experience;
+pub mod fluid;
 pub mod hunger;
 pub mod inventory;
 pub mod logic;
@@ -47,6 +48,10 @@ pub use entity::{
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{
     Experience, level_from_total_points, points_for_next_level, total_points_for_level,
+};
+pub use fluid::{
+    FluidEngine, FluidKind, FluidReaction, FluidState, FluidWorldReader, LAVA_MAX_DECAY,
+    LAVA_TICK_RATE, SLOPE_SEARCH_DISTANCE, ScheduledFluidTick, WATER_MAX_DECAY, WATER_TICK_RATE,
 };
 pub use hunger::{Hunger, HungerTickResult, SimParams, tick_hunger};
 pub use inventory::{

@@ -28,5 +28,9 @@ criterion = { workspace = true }
 name = "logic_bench"
 harness = false
 
+[[bench]]
+name = "fluid_bench"
+harness = false
+
 [lints]
 workspace = true

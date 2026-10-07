@@ -67,6 +67,8 @@ bitflags! {
         const LOGIC_COMPONENT = 1 << 8;
         /// Currently in an active/powered state (emits signal or visual power).
         const LOGIC_POWERED = 1 << 9;
+        /// Fluid material (water, lava) simulating real-time cellular automata flow.
+        const FLUID = 1 << 10;
     }
 }
 
