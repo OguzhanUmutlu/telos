@@ -20,14 +20,15 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
     C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse,
-    C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind,
-    PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
-    S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cDespawnEntity, S2cEntityMove,
-    S2cEntityStatus, S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
-    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow,
-    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomItemDefWire,
+    LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
+    S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
+    S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
+    S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
     S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
@@ -2266,6 +2267,72 @@ impl Server {
                                 .connection
                                 .send(Lane::Control, Payload::Msg(item_msg));
 
+                            // If custom content exists, send S2cContentManifest before ConfigDone
+                            let custom_blocks = self.registries.custom_blocks();
+                            let custom_items = self.registries.custom_items();
+                            if !custom_blocks.is_empty() || !custom_items.is_empty() {
+                                let mut wire_blocks = Vec::new();
+                                for (ident, def) in custom_blocks {
+                                    if let Some(state_id) = self.registries.get_block_state(ident) {
+                                        let flags =
+                                            self.registries.block_registry().flags(state_id);
+                                        let shape_kind = def.shape.shape_kind_u8();
+                                        let light_emission = self
+                                            .registries
+                                            .block_registry()
+                                            .light_emission(state_id);
+                                        let texture_name = BoundedString::new(ident.path())
+                                            .unwrap_or_else(|_| {
+                                                BoundedString::new("stone").unwrap()
+                                            });
+                                        let base_color = def.effective_base_color(ident);
+                                        if let Ok(id_str) = BoundedString::new(ident.to_string()) {
+                                            wire_blocks.push(CustomBlockDefWire {
+                                                identifier: id_str,
+                                                state_id: state_id.as_u32(),
+                                                flags: u32::from(flags.bits()),
+                                                shape_kind,
+                                                light_emission,
+                                                hardness: def.hardness,
+                                                blast_resistance: def.blast_resistance,
+                                                texture_name,
+                                                base_color,
+                                            });
+                                        }
+                                    }
+                                }
+
+                                let mut wire_items = Vec::new();
+                                for (id, ident, def) in custom_items {
+                                    if let Ok(id_str) = BoundedString::new(ident.to_string()) {
+                                        let name =
+                                            BoundedString::new(&def.name).unwrap_or_else(|_| {
+                                                BoundedString::new("Custom Item").unwrap()
+                                            });
+                                        wire_items.push(CustomItemDefWire {
+                                            identifier: id_str,
+                                            item_id: id,
+                                            name,
+                                            max_stack_size: def.max_stack_size,
+                                            item_type_kind: def.item_type.item_type_kind_u8(),
+                                        });
+                                    }
+                                }
+
+                                if let (Ok(blocks_vec), Ok(items_vec)) =
+                                    (BoundedVec::new(wire_blocks), BoundedVec::new(wire_items))
+                                {
+                                    let manifest_msg =
+                                        S2cMessage::ContentManifest(S2cContentManifest {
+                                            custom_blocks: blocks_vec,
+                                            custom_items: items_vec,
+                                        });
+                                    let _ = session
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(manifest_msg));
+                                }
+                            }
+
                             // Signal configuration complete
                             let _ = session.connection.send(
                                 Lane::Control,
@@ -4184,21 +4251,37 @@ impl Server {
                                     containers_to_close.extend(viewers);
                                 }
 
-                                if session_game_mode == GameMode::Survival
-                                    && let Some(drop_stack) = block_to_drop_item(old_state.0)
-                                {
-                                    let spawn_pos = DVec3::new(
-                                        f64::from(target_pos.x()) + 0.5,
-                                        f64::from(target_pos.y()) + 0.25,
-                                        f64::from(target_pos.z()) + 0.5,
-                                    );
-                                    let vel = glam::Vec3::new(0.0, 0.1, 0.0);
-                                    dropped_items_to_spawn.push((
-                                        session_world_name.clone(),
-                                        spawn_pos,
-                                        vel,
-                                        drop_stack,
-                                    ));
+                                if session_game_mode == GameMode::Survival {
+                                    let maybe_drop_stack = self
+                                        .registries
+                                        .block_registry()
+                                        .identifier(old_state)
+                                        .and_then(|ident| {
+                                            if ident.namespace() == "telos" {
+                                                None
+                                            } else {
+                                                self.registries
+                                                    .item_registry()
+                                                    .get_by_ident(ident)
+                                                    .map(|item_id| ItemStack::new(item_id, 1))
+                                            }
+                                        })
+                                        .or_else(|| block_to_drop_item(old_state.0));
+
+                                    if let Some(drop_stack) = maybe_drop_stack {
+                                        let spawn_pos = DVec3::new(
+                                            f64::from(target_pos.x()) + 0.5,
+                                            f64::from(target_pos.y()) + 0.25,
+                                            f64::from(target_pos.z()) + 0.5,
+                                        );
+                                        let vel = glam::Vec3::new(0.0, 0.1, 0.0);
+                                        dropped_items_to_spawn.push((
+                                            session_world_name.clone(),
+                                            spawn_pos,
+                                            vel,
+                                            drop_stack,
+                                        ));
+                                    }
                                 }
 
                                 block_advancement_triggers.push((

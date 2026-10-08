@@ -26,6 +26,72 @@ impl RgbaImage {
         }
     }
 
+    /// Creates an image filled with a solid RGBA color.
+    #[must_use]
+    pub fn from_color(width: u32, height: u32, color: [u8; 4]) -> Self {
+        let pixel_count = (width * height) as usize;
+        let mut data = Vec::with_capacity(pixel_count * 4);
+        for _ in 0..pixel_count {
+            data.extend_from_slice(&color);
+        }
+        Self {
+            width,
+            height,
+            data,
+        }
+    }
+
+    /// Generates a procedural fallback texture with a beveled border and subtle pseudo-noise.
+    ///
+    /// This ensures custom blocks without PNG assets render distinctly and legibly.
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    #[must_use]
+    pub fn procedural_pattern(width: u32, height: u32, base_color: [u8; 4], seed: u32) -> Self {
+        let mut img = Self::new(width, height);
+        let [r, g, b, a] = base_color;
+
+        for y in 0..height {
+            for x in 0..width {
+                let is_top_left = x == 0 || y == 0;
+                let is_bottom_right = x == width - 1 || y == height - 1;
+                let is_border = is_top_left || is_bottom_right;
+
+                // Fast hash-based pseudo-noise
+                let h = ((x.wrapping_mul(374_761_393)
+                    ^ y.wrapping_mul(668_265_263)
+                    ^ seed.wrapping_mul(1_274_126_177))
+                    >> 16)
+                    & 0x1F;
+                let noise_offset = (h as i32) - 16; // -16..=15
+
+                let factor = if is_top_left {
+                    24
+                } else if is_bottom_right {
+                    -24
+                } else if is_border {
+                    -12
+                } else {
+                    noise_offset
+                };
+
+                let pr = (i32::from(r) + factor).clamp(0, 255) as u8;
+                let pg = (i32::from(g) + factor).clamp(0, 255) as u8;
+                let pb = (i32::from(b) + factor).clamp(0, 255) as u8;
+
+                let idx = ((y * width + x) * 4) as usize;
+                img.data[idx] = pr;
+                img.data[idx + 1] = pg;
+                img.data[idx + 2] = pb;
+                img.data[idx + 3] = a;
+            }
+        }
+        img
+    }
+
     /// Loads and decodes a PNG file from disk into an RGBA8 buffer.
     ///
     /// If the texture is an animated strip where `height > width`, the first square frame

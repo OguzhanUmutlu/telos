@@ -157,6 +157,28 @@ fn test_custom_data_pack_lifecycle_and_persistence() {
     let tag_ident = Identifier::new("sample", "block/mineable/pickaxe").unwrap();
     assert!(frozen.is_in_tag(&tag_ident, &ruby_block_ident));
 
+    // Verify custom_blocks and custom_items
+    let custom_blocks = frozen.custom_blocks();
+    assert_eq!(custom_blocks.len(), 1);
+    assert_eq!(custom_blocks[0].0, &ruby_block_ident);
+    assert_eq!(custom_blocks[0].1.light_emission, 12);
+
+    let custom_items = frozen.custom_items();
+    assert_eq!(custom_items.len(), 2);
+    assert!(
+        custom_items
+            .iter()
+            .any(|(_, ident, _)| *ident == &ruby_block_ident)
+    );
+    assert!(
+        custom_items
+            .iter()
+            .any(|(_, ident, _)| *ident == &ruby_item_ident)
+    );
+
+    // Verify block_registry light emission
+    assert_eq!(frozen.block_registry().light_emission(ruby_block_state), 12);
+
     // Content hash determinism
     let hash1 = frozen.content_hash_hex();
     assert!(!hash1.is_empty());

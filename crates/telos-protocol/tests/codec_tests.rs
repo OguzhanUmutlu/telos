@@ -15,13 +15,14 @@ use telos_protocol::messages::{
     AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
     C2sClientSettings, C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive,
     C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
-    C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload,
-    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
-    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cGameMode,
-    S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess,
-    S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRegistryData,
-    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    C2sPlayerPosition, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomItemDefWire,
+    Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
+    S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
+    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
+    S2cConfigDone, S2cContainerProperty, S2cContentManifest, S2cGameMode, S2cHelloReply,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow,
+    S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -970,6 +971,78 @@ fn test_game_mode_wire_roundtrip() {
         } else {
             panic!("expected GameMode");
         }
+    }
+}
+
+#[test]
+fn test_content_manifest_wire_roundtrip() {
+    let custom_blocks = vec![
+        CustomBlockDefWire {
+            identifier: BoundedString::new("custom:ruby_block").unwrap(),
+            state_id: 85,
+            flags: 0x0005,
+            shape_kind: 0,
+            light_emission: 12,
+            hardness: 3.0,
+            blast_resistance: 9.0,
+            texture_name: BoundedString::new("ruby_block").unwrap(),
+            base_color: [220, 20, 60, 255],
+        },
+        CustomBlockDefWire {
+            identifier: BoundedString::new("custom:glowing_crystal").unwrap(),
+            state_id: 86,
+            flags: 0x0025,
+            shape_kind: 3,
+            light_emission: 15,
+            hardness: 1.0,
+            blast_resistance: 3.0,
+            texture_name: BoundedString::new("glowing_crystal").unwrap(),
+            base_color: [0, 255, 255, 255],
+        },
+    ];
+
+    let custom_items = vec![
+        CustomItemDefWire {
+            identifier: BoundedString::new("custom:ruby").unwrap(),
+            item_id: 91,
+            name: BoundedString::new("Ruby Gem").unwrap(),
+            max_stack_size: 64,
+            item_type_kind: 0,
+        },
+        CustomItemDefWire {
+            identifier: BoundedString::new("custom:ruby_pickaxe").unwrap(),
+            item_id: 92,
+            name: BoundedString::new("Ruby Pickaxe").unwrap(),
+            max_stack_size: 1,
+            item_type_kind: 2,
+        },
+    ];
+
+    let manifest = S2cContentManifest {
+        custom_blocks: BoundedVec::new(custom_blocks).unwrap(),
+        custom_items: BoundedVec::new(custom_items).unwrap(),
+    };
+
+    let msg = S2cMessage::ContentManifest(manifest.clone());
+    let mut buf = Vec::new();
+    encode_s2c(&msg, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded =
+        decode_s2c(ConnectionPhase::Config, &mut cursor).expect("decode S2cContentManifest");
+    assert_eq!(msg, decoded);
+    assert!(cursor.is_empty());
+
+    if let S2cMessage::ContentManifest(m) = decoded {
+        assert_eq!(m.custom_blocks.len(), 2);
+        assert_eq!(m.custom_blocks[0].identifier.as_str(), "custom:ruby_block");
+        assert_eq!(m.custom_blocks[0].light_emission, 12);
+        assert_eq!(m.custom_blocks[0].base_color, [220, 20, 60, 255]);
+        assert_eq!(m.custom_items.len(), 2);
+        assert_eq!(m.custom_items[1].name.as_str(), "Ruby Pickaxe");
+        assert_eq!(m.custom_items[1].max_stack_size, 1);
+    } else {
+        panic!("expected ContentManifest");
     }
 }
 

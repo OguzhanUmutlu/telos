@@ -88,9 +88,12 @@ impl RegistryBuilder {
 
             let flags = block_def.compute_flags();
             let shape = block_def.compute_shape();
-            let state_id = self
-                .block_registry
-                .register_with_shape(ident.clone(), flags, shape);
+            let state_id = self.block_registry.register_with_properties(
+                ident.clone(),
+                flags,
+                shape,
+                block_def.light_emission,
+            );
 
             self.block_ident_to_state.insert(ident.clone(), state_id);
 
@@ -199,9 +202,12 @@ impl RegistryBuilder {
 
         let flags = block_def.compute_flags();
         let shape = block_def.compute_shape();
-        let state_id = self
-            .block_registry
-            .register_with_shape(ident.clone(), flags, shape);
+        let state_id = self.block_registry.register_with_properties(
+            ident.clone(),
+            flags,
+            shape,
+            block_def.light_emission,
+        );
 
         self.block_ident_to_state.insert(ident.clone(), state_id);
 
@@ -462,6 +468,31 @@ impl FrozenRegistries {
     #[must_use]
     pub fn total_items(&self) -> usize {
         self.item_registry.total_items()
+    }
+
+    /// Returns all registered block definitions and their identifiers.
+    #[must_use]
+    pub fn block_defs(&self) -> &[(Identifier, BlockDef)] {
+        &self.block_defs
+    }
+
+    /// Returns all registered custom blocks (blocks not in the built-in "telos" namespace).
+    #[must_use]
+    pub fn custom_blocks(&self) -> Vec<(&Identifier, &BlockDef)> {
+        self.block_defs
+            .iter()
+            .filter(|(ident, _)| ident.namespace() != "telos")
+            .map(|(ident, def)| (ident, def))
+            .collect()
+    }
+
+    /// Returns all registered custom items (items not in the built-in "telos" namespace).
+    #[must_use]
+    pub fn custom_items(&self) -> Vec<(u32, &Identifier, &ItemDef)> {
+        self.item_registry
+            .iter()
+            .filter(|(_, ident, _)| ident.namespace() != "telos")
+            .collect()
     }
 
     /// Creates a `FrozenRegistries` instance containing only the built-in core engine pack (`telos`).

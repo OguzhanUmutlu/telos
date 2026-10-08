@@ -99,12 +99,13 @@ pub struct ClientContainerState {
     /// Container properties (e.g. furnace burn/cook timers).
     pub properties: [i16; 4],
 }
+use telos_core::ident::Identifier;
 use telos_voxel::chunk::{Chunk, ChunkSnapshot};
 use telos_voxel::coords::LocalIdx;
 use telos_voxel::light::ChunkLight;
 use telos_voxel::registry::BlockRegistry;
-use telos_voxel::shape::BlockShape;
-use telos_voxel::state::BlockStateId;
+use telos_voxel::shape::{BlockShape, SubBox};
+use telos_voxel::state::{BlockStateId, StateFlags};
 use tracing::info;
 use winit::{
     application::ApplicationHandler,
@@ -1374,6 +1375,7 @@ struct App {
 
     registries: Arc<FrozenRegistries>,
     block_registry: BlockRegistry,
+    custom_item_names: HashMap<u32, String>,
     chunks: HashMap<ChunkPos, Arc<ChunkSnapshot>>,
     chunk_meshes: HashMap<ChunkPos, GpuChunkMesh>,
     dirty_chunks: HashSet<ChunkPos>,
@@ -1869,6 +1871,7 @@ impl App {
 
             registries: Arc::clone(&registries),
             block_registry: registries.block_registry().clone(),
+            custom_item_names: HashMap::new(),
             chunks: initial_chunks,
             chunk_meshes: HashMap::new(),
             dirty_chunks: initial_dirty,
@@ -2219,7 +2222,9 @@ impl App {
                 .registries
                 .item_registry()
                 .get_by_id(item)
-                .map_or_else(|| telos_sim::item_name(item), |def| def.name.as_str());
+                .map(|def| def.name.as_str())
+                .or_else(|| self.custom_item_names.get(&item).map(String::as_str))
+                .unwrap_or_else(|| telos_sim::item_name(item));
             info!(
                 slot = slot + 1,
                 item = item_name,
@@ -2470,6 +2475,78 @@ impl App {
                             entries = data.entries.len(),
                             "Received server registry data"
                         );
+                    }
+                    S2cMessage::ContentManifest(manifest) => {
+                        info!(
+                            custom_blocks = manifest.custom_blocks.len(),
+                            custom_items = manifest.custom_items.len(),
+                            "Received server content manifest, registering dynamic content..."
+                        );
+                        for wire_block in manifest.custom_blocks.iter() {
+                            if let Ok(ident) = wire_block.identifier.as_str().parse::<Identifier>()
+                            {
+                                let shape = match wire_block.shape_kind {
+                                    1 => {
+                                        BlockShape::Boxes(vec![SubBox::new([0, 0, 0], [16, 8, 16])])
+                                    }
+                                    2 => BlockShape::Boxes(vec![
+                                        SubBox::new([0, 0, 0], [16, 8, 16]),
+                                        SubBox::new([0, 8, 8], [16, 16, 16]),
+                                    ]),
+                                    3 => BlockShape::Cross,
+                                    _ => BlockShape::Cube,
+                                };
+                                let flags = match wire_block.shape_kind {
+                                    0 => StateFlags::OPAQUE_CUBE,
+                                    _ => StateFlags::empty(),
+                                };
+                                let state_id = if let Some(block) = self.block_registry.get(&ident)
+                                {
+                                    let existing = block.default_state();
+                                    self.block_registry
+                                        .set_light_emission(existing, wire_block.light_emission);
+                                    existing
+                                } else {
+                                    self.block_registry.register_with_properties(
+                                        ident.clone(),
+                                        flags,
+                                        shape,
+                                        wire_block.light_emission,
+                                    )
+                                };
+                                info!(
+                                    identifier = wire_block.identifier.as_str(),
+                                    state_id = state_id.as_u32(),
+                                    light_emission = wire_block.light_emission,
+                                    "Registered server custom block"
+                                );
+
+                                if let Some(gl) = &mut self.gl_renderer {
+                                    let tint = [
+                                        f32::from(wire_block.base_color[0]) / 255.0,
+                                        f32::from(wire_block.base_color[1]) / 255.0,
+                                        f32::from(wire_block.base_color[2]) / 255.0,
+                                        f32::from(wire_block.base_color[3]) / 255.0,
+                                    ];
+                                    gl.register_custom_material(
+                                        state_id.as_u32() as u16,
+                                        0.0,
+                                        tint,
+                                    );
+                                }
+                            }
+                        }
+
+                        for wire_item in manifest.custom_items.iter() {
+                            self.custom_item_names
+                                .insert(wire_item.item_id, wire_item.name.to_string());
+                            info!(
+                                item_id = wire_item.item_id,
+                                identifier = wire_item.identifier.as_str(),
+                                name = wire_item.name.as_str(),
+                                "Registered server custom item"
+                            );
+                        }
                     }
                     S2cMessage::ConfigDone(_) => {
                         info!("Server configuration complete, acknowledging config...");
@@ -5964,6 +6041,8 @@ impl App {
                                     if let Some(def) = self.registries.item_registry().get_by_id(id)
                                     {
                                         def.name.as_str()
+                                    } else if let Some(name) = self.custom_item_names.get(&id) {
+                                        name.as_str()
                                     } else {
                                         telos_sim::item_name(id)
                                     }
@@ -6076,6 +6155,8 @@ impl App {
                                     if let Some(def) = self.registries.item_registry().get_by_id(id)
                                     {
                                         def.name.as_str()
+                                    } else if let Some(name) = self.custom_item_names.get(&id) {
+                                        name.as_str()
                                     } else {
                                         telos_sim::item_name(id)
                                     }
@@ -6444,6 +6525,8 @@ impl App {
                         let item_lookup = |id: u32| {
                             if let Some(def) = self.registries.item_registry().get_by_id(id) {
                                 def.name.as_str()
+                            } else if let Some(name) = self.custom_item_names.get(&id) {
+                                name.as_str()
                             } else {
                                 telos_sim::item_name(id)
                             }
@@ -6540,6 +6623,8 @@ impl App {
                         let item_lookup = |id: u32| {
                             if let Some(def) = self.registries.item_registry().get_by_id(id) {
                                 def.name.as_str()
+                            } else if let Some(name) = self.custom_item_names.get(&id) {
+                                name.as_str()
                             } else {
                                 telos_sim::item_name(id)
                             }

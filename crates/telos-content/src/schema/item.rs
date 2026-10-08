@@ -59,6 +59,21 @@ pub enum ItemTypeDef {
     },
 }
 
+impl ItemTypeDef {
+    /// Returns the wire-compatible numeric item type kind (0: Generic, 1: Block, 2: Tool, 3: Armor, 4: Potion, 5: `RangedWeapon`).
+    #[must_use]
+    pub const fn item_type_kind_u8(&self) -> u8 {
+        match self {
+            Self::Generic => 0,
+            Self::Block(_) => 1,
+            Self::Tool { .. } => 2,
+            Self::Armor { .. } => 3,
+            Self::Potion { .. } => 4,
+            Self::RangedWeapon { .. } => 5,
+        }
+    }
+}
+
 fn default_mining_speed() -> f32 {
     1.0
 }

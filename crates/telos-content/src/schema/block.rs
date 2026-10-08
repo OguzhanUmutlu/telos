@@ -84,6 +84,26 @@ pub enum BlockShapeDef {
     Chest,
 }
 
+impl BlockShapeDef {
+    /// Returns the wire-compatible numeric shape kind (0..=10).
+    #[must_use]
+    pub const fn shape_kind_u8(&self) -> u8 {
+        match self {
+            Self::FullCube => 0,
+            Self::Slab { .. } => 1,
+            Self::Stairs { .. } => 2,
+            Self::Cross => 3,
+            Self::Torch { .. } => 4,
+            Self::FlatPlate => 5,
+            Self::Empty => 6,
+            Self::Lever { .. } => 7,
+            Self::Post => 8,
+            Self::Chest => 9,
+            Self::Fluid { .. } => 10,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -170,6 +190,9 @@ pub struct BlockDef {
     /// Whether this block has an associated block entity (e.g. chest container).
     #[serde(default)]
     pub has_block_entity: bool,
+    /// Optional fallback RGBA color for client procedural texturing when PNG assets are absent.
+    #[serde(default)]
+    pub base_color: Option<[u8; 4]>,
 }
 
 fn default_hardness() -> f32 {
@@ -197,11 +220,23 @@ impl Default for BlockDef {
             logic_component: false,
             logic_powered: false,
             has_block_entity: false,
+            base_color: None,
         }
     }
 }
 
 impl BlockDef {
+    /// Returns the effective base RGBA color for this block, defaulting to a deterministic hash of the name if unspecified.
+    #[must_use]
+    pub fn effective_base_color(&self, ident: &telos_core::ident::Identifier) -> [u8; 4] {
+        if let Some(color) = self.base_color {
+            return color;
+        }
+        let hash = blake3::hash(ident.to_string().as_bytes());
+        let bytes = hash.as_bytes();
+        [bytes[0].max(40), bytes[1].max(40), bytes[2].max(40), 255]
+    }
+
     /// Converts the data-driven block definition into voxel `StateFlags`.
     #[must_use]
     pub fn compute_flags(&self) -> StateFlags {

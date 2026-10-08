@@ -90,6 +90,23 @@ impl TextureArrayBuilder {
         idx
     }
 
+    /// Registers a custom block texture, generating a procedural fallback if no image is provided.
+    pub fn insert_or_procedural(
+        &mut self,
+        name: &str,
+        maybe_image: Option<RgbaImage>,
+        base_color: [u8; 4],
+        seed: u32,
+    ) -> u32 {
+        if let Some(&idx) = self.name_to_index.get(name) {
+            return idx;
+        }
+        let image = maybe_image.unwrap_or_else(|| {
+            RgbaImage::procedural_pattern(self.resolution, self.resolution, base_color, seed)
+        });
+        self.insert(name, image)
+    }
+
     /// Registers an animated texture sequence, resolving custom frame ordering and frametime from `anim`.
     pub fn insert_animated_with_meta(
         &mut self,

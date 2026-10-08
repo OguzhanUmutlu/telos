@@ -2,7 +2,8 @@
 
 use crate::error::{ProtocolError, Result};
 use crate::messages::config::{
-    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, S2cConfigDone, S2cRegistryData,
+    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, S2cConfigDone, S2cContentManifest,
+    S2cRegistryData,
 };
 use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
@@ -357,6 +358,7 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
             ConnectionPhase::Config => match msg_id {
                 0 => S2cMessage::RegistryData(S2cRegistryData::decode(&mut frame_cur)?),
                 1 => S2cMessage::ConfigDone(S2cConfigDone::decode(&mut frame_cur)?),
+                2 => S2cMessage::ContentManifest(S2cContentManifest::decode(&mut frame_cur)?),
                 id => {
                     return Err(ProtocolError::UnknownMessageId {
                         phase: "Config",

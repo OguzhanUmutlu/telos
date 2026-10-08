@@ -7,7 +7,8 @@ pub mod login;
 pub mod play;
 
 pub use config::{
-    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, S2cConfigDone, S2cRegistryData,
+    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, CustomBlockDefWire, CustomItemDefWire,
+    S2cConfigDone, S2cContentManifest, S2cRegistryData,
 };
 pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
@@ -206,6 +207,8 @@ pub enum S2cMessage {
     RegistryData(S2cRegistryData),
     /// Config phase server signaling configuration complete.
     ConfigDone(S2cConfigDone),
+    /// Config phase server synchronizing full custom block and item definitions.
+    ContentManifest(S2cContentManifest),
     /// Play phase heartbeat ping/pong challenge.
     KeepAlive(S2cKeepAlive),
     /// Play phase chat message or system alert broadcast.
@@ -286,7 +289,9 @@ impl S2cMessage {
         match self {
             Self::HelloReply(_) => Some(ConnectionPhase::Hello),
             Self::LoginSuccess(_) => Some(ConnectionPhase::Login),
-            Self::RegistryData(_) | Self::ConfigDone(_) => Some(ConnectionPhase::Config),
+            Self::RegistryData(_) | Self::ConfigDone(_) | Self::ContentManifest(_) => {
+                Some(ConnectionPhase::Config)
+            }
             Self::KeepAlive(_)
             | Self::ChatMessage(_)
             | Self::JoinGame(_)
@@ -333,7 +338,7 @@ impl S2cMessage {
             | Self::RegistryData(_)
             | Self::KeepAlive(_) => 0,
             Self::ConfigDone(_) | Self::ChatMessage(_) => 1,
-            Self::JoinGame(_) => 2,
+            Self::ContentManifest(_) | Self::JoinGame(_) => 2,
             Self::ChunkData(_) => 3,
             Self::UniformChunk(_) => 4,
             Self::ChunkUnload(_) => 5,
@@ -375,6 +380,7 @@ impl S2cMessage {
             Self::LoginSuccess(m) => m.encode(buf),
             Self::RegistryData(m) => m.encode(buf),
             Self::ConfigDone(m) => m.encode(buf),
+            Self::ContentManifest(m) => m.encode(buf),
             Self::KeepAlive(m) => m.encode(buf),
             Self::ChatMessage(m) => m.encode(buf),
             Self::JoinGame(m) => m.encode(buf),

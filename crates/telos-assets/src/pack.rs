@@ -69,6 +69,33 @@ impl ResourcePackStack {
         RgbaImage::from_file(&path)
     }
 
+    /// Finds a namespaced block texture (e.g. `ns = "sample"`, `name = "ruby_block"` -> `assets/sample/textures/block/ruby_block.png`).
+    #[must_use]
+    pub fn find_namespaced_block_texture(&self, ns: &str, name: &str) -> Option<PathBuf> {
+        let rel_path = format!("assets/{ns}/textures/block/{name}.png");
+        for root in &self.roots {
+            let candidate = root.join(&rel_path);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        // Fallback: search without explicit namespace prefix
+        self.find_block_texture(name)
+    }
+
+    /// Loads and decodes a namespaced block texture from the mounted packs.
+    pub fn load_namespaced_block_texture(
+        &self,
+        ns: &str,
+        name: &str,
+    ) -> Result<RgbaImage, AssetError> {
+        let path = self
+            .find_namespaced_block_texture(ns, name)
+            .ok_or_else(|| AssetError::MissingTexture(format!("{ns}:{name}")))?;
+
+        RgbaImage::from_file(&path)
+    }
+
     /// Loads and decodes all frames of an animated block texture strip from the mounted packs.
     pub fn load_animated_block_texture(&self, name: &str) -> Result<Vec<RgbaImage>, AssetError> {
         let path = self

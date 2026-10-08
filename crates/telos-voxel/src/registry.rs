@@ -48,6 +48,7 @@ pub struct BlockRegistry {
     state_to_flags: Vec<StateFlags>,
     state_to_shape: Vec<crate::shape::BlockShape>,
     state_to_block: Vec<usize>,
+    state_to_light_emission: Vec<u8>,
     is_frozen: bool,
 }
 
@@ -59,12 +60,18 @@ impl Default for BlockRegistry {
             state_to_flags: Vec::new(),
             state_to_shape: Vec::new(),
             state_to_block: Vec::new(),
+            state_to_light_emission: Vec::new(),
             is_frozen: false,
         };
 
         // Register default built-in air state (ID 0)
         let air_id = Identifier::new("telos", "air").expect("Valid identifier");
-        registry.register_with_shape(air_id, StateFlags::AIR, crate::shape::BlockShape::Empty);
+        registry.register_with_properties(
+            air_id,
+            StateFlags::AIR,
+            crate::shape::BlockShape::Empty,
+            0,
+        );
 
         registry
     }
@@ -102,11 +109,34 @@ impl BlockRegistry {
         flags: StateFlags,
         shape: crate::shape::BlockShape,
     ) -> BlockStateId {
+        let emission = if flags.contains(StateFlags::EMISSIVE) {
+            14
+        } else {
+            0
+        };
+        self.register_with_properties(identifier, flags, shape, emission)
+    }
+
+    /// Registers a new block type with explicit shape geometry and light emission level (0..=15).
+    ///
+    /// # Panics
+    /// Panics if the registry is already frozen or the identifier is registered.
+    pub fn register_with_properties(
+        &mut self,
+        identifier: Identifier,
+        mut flags: StateFlags,
+        shape: crate::shape::BlockShape,
+        light_emission: u8,
+    ) -> BlockStateId {
         assert!(!self.is_frozen, "Cannot register block: registry is frozen");
         assert!(
             !self.by_identifier.contains_key(&identifier),
             "Block identifier '{identifier}' is already registered"
         );
+
+        if light_emission > 0 {
+            flags |= StateFlags::EMISSIVE;
+        }
 
         #[allow(clippy::cast_possible_truncation)]
         let state_id = BlockStateId::new(self.state_to_flags.len() as u32);
@@ -115,6 +145,7 @@ impl BlockRegistry {
         self.state_to_flags.push(flags);
         self.state_to_shape.push(shape);
         self.state_to_block.push(block_index);
+        self.state_to_light_emission.push(light_emission.min(15));
 
         let block = Block {
             identifier: identifier.clone(),
@@ -176,6 +207,32 @@ impl BlockRegistry {
         face: telos_core::coords::Face,
     ) -> crate::shape::FaceOcclusionMask {
         self.shape(id).occlusion_mask(face)
+    }
+
+    /// Looks up the light emission level (0..=15) for a given `BlockStateId`.
+    #[inline]
+    #[must_use]
+    pub fn light_emission(&self, id: BlockStateId) -> u8 {
+        self.state_to_light_emission
+            .get(id.as_usize())
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Sets or overrides the light emission level (0..=15) for a given `BlockStateId`.
+    ///
+    /// This supports dynamic runtime light level overrides even after initial registration.
+    pub fn set_light_emission(&mut self, id: BlockStateId, emission: u8) {
+        let idx = id.as_usize();
+        if idx < self.state_to_light_emission.len() {
+            let clamped = emission.min(15);
+            self.state_to_light_emission[idx] = clamped;
+            if clamped > 0 {
+                self.state_to_flags[idx] |= StateFlags::EMISSIVE;
+            } else {
+                self.state_to_flags[idx] &= !StateFlags::EMISSIVE;
+            }
+        }
     }
 
     /// Total number of registered block states.
@@ -269,10 +326,11 @@ impl BlockRegistry {
         );
 
         let torch_id = Identifier::new("telos", "torch").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             torch_id,
             StateFlags::NON_EMPTY | StateFlags::CUTOUT | StateFlags::EMISSIVE,
             crate::shape::BlockShape::torch(None),
+            14,
         );
 
         let flowing_water_id = Identifier::new("telos", "flowing_water").unwrap();
@@ -348,9 +406,11 @@ impl BlockRegistry {
         );
 
         let logic_lamp_lit_id = Identifier::new("telos", "logic_lamp_lit").unwrap();
-        reg.register(
+        reg.register_with_properties(
             logic_lamp_lit_id,
             StateFlags::OPAQUE_CUBE | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
+            crate::shape::BlockShape::Cube,
+            15,
         );
 
         let logic_repeater_id = Identifier::new("telos", "logic_repeater").unwrap();
@@ -368,10 +428,11 @@ impl BlockRegistry {
         );
 
         let logic_inverter_id = Identifier::new("telos", "logic_inverter").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             logic_inverter_id,
             StateFlags::NON_EMPTY | StateFlags::LOGIC_COMPONENT | StateFlags::LOGIC_POWERED,
             crate::shape::BlockShape::post(),
+            7,
         );
 
         let logic_inverter_off_id = Identifier::new("telos", "logic_inverter_off").unwrap();
@@ -390,7 +451,7 @@ impl BlockRegistry {
 
         // Animated fluids and multi-layer surfaces (Phase 37)
         let lava_id = Identifier::new("telos", "lava").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             lava_id,
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
@@ -399,10 +460,11 @@ impl BlockRegistry {
                     | StateFlags::FLUID.bits(),
             ),
             crate::shape::BlockShape::fluid(0, false),
+            15,
         );
 
         let flowing_lava_id = Identifier::new("telos", "flowing_lava").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             flowing_lava_id,
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
@@ -411,10 +473,11 @@ impl BlockRegistry {
                     | StateFlags::FLUID.bits(),
             ),
             crate::shape::BlockShape::fluid(1, false),
+            15,
         );
 
         let fire_id = Identifier::new("telos", "fire").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             fire_id,
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
@@ -422,10 +485,11 @@ impl BlockRegistry {
                     | StateFlags::EMISSIVE.bits(),
             ),
             crate::shape::BlockShape::cross(),
+            15,
         );
 
         let nether_portal_id = Identifier::new("telos", "nether_portal").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             nether_portal_id,
             StateFlags::from_bits_truncate(
                 StateFlags::NON_EMPTY.bits()
@@ -433,6 +497,7 @@ impl BlockRegistry {
                     | StateFlags::EMISSIVE.bits(),
             ),
             crate::shape::BlockShape::flat_plate(),
+            11,
         );
 
         // Fluid reactions & mechanics (Phase 43)
@@ -461,23 +526,25 @@ impl BlockRegistry {
         // Flowing lava decay levels 2..=7 and falling vertical column
         for lvl in 2..=7u8 {
             let id = Identifier::new("telos", format!("flowing_lava_{lvl}")).unwrap();
-            reg.register_with_shape(
+            reg.register_with_properties(
                 id,
                 StateFlags::NON_EMPTY
                     | StateFlags::TRANSLUCENT
                     | StateFlags::EMISSIVE
                     | StateFlags::FLUID,
                 crate::shape::BlockShape::fluid(lvl, false),
+                15,
             );
         }
         let falling_lava_id = Identifier::new("telos", "falling_lava").unwrap();
-        reg.register_with_shape(
+        reg.register_with_properties(
             falling_lava_id,
             StateFlags::NON_EMPTY
                 | StateFlags::TRANSLUCENT
                 | StateFlags::EMISSIVE
                 | StateFlags::FLUID,
             crate::shape::BlockShape::fluid(1, true),
+            15,
         );
 
         // Procedural ore distribution & large sinuous ore veins (Phase 45)
@@ -615,7 +682,7 @@ impl BlockRegistry {
         );
 
         let lit_furnace_id = Identifier::new("telos", "lit_furnace").unwrap();
-        reg.register(
+        reg.register_with_properties(
             lit_furnace_id,
             StateFlags::from_bits_truncate(
                 StateFlags::OPAQUE_CUBE.bits()
@@ -623,6 +690,8 @@ impl BlockRegistry {
                     | StateFlags::EMISSIVE.bits()
                     | StateFlags::TICKABLE.bits(),
             ),
+            crate::shape::BlockShape::Cube,
+            13,
         );
 
         let crafting_table_id = Identifier::new("telos", "crafting_table").unwrap();
@@ -1032,5 +1101,61 @@ mod tests {
         );
         assert!(reg.flags(lit_furnace).contains(StateFlags::EMISSIVE));
         assert!(!reg.flags(furnace).contains(StateFlags::EMISSIVE));
+    }
+
+    #[test]
+    fn test_light_emission_and_dynamic_override() {
+        let mut reg = BlockRegistry::new();
+        let air = BlockStateId::new(0);
+        assert_eq!(reg.light_emission(air), 0);
+
+        let glow_id = Identifier::new("custom", "glow_stone").unwrap();
+        let glow_state = reg.register_with_properties(
+            glow_id,
+            StateFlags::OPAQUE_CUBE,
+            crate::shape::BlockShape::Cube,
+            12,
+        );
+
+        assert_eq!(reg.light_emission(glow_state), 12);
+        assert!(reg.flags(glow_state).contains(StateFlags::EMISSIVE));
+
+        // Test dynamic runtime override
+        reg.set_light_emission(glow_state, 8);
+        assert_eq!(reg.light_emission(glow_state), 8);
+        assert!(reg.flags(glow_state).contains(StateFlags::EMISSIVE));
+
+        reg.set_light_emission(glow_state, 0);
+        assert_eq!(reg.light_emission(glow_state), 0);
+        assert!(!reg.flags(glow_state).contains(StateFlags::EMISSIVE));
+
+        // Verify standard registry light emissions
+        let standard = BlockRegistry::standard();
+        let torch = standard
+            .get(&Identifier::new("telos", "torch").unwrap())
+            .unwrap()
+            .default_state();
+        let lit_furnace = standard
+            .get(&Identifier::new("telos", "lit_furnace").unwrap())
+            .unwrap()
+            .default_state();
+        let lava = standard
+            .get(&Identifier::new("telos", "lava").unwrap())
+            .unwrap()
+            .default_state();
+        let portal = standard
+            .get(&Identifier::new("telos", "nether_portal").unwrap())
+            .unwrap()
+            .default_state();
+        let stone = standard
+            .get(&Identifier::new("telos", "stone").unwrap())
+            .unwrap()
+            .default_state();
+
+        assert_eq!(standard.light_emission(torch), 14);
+        assert_eq!(standard.light_emission(lit_furnace), 13);
+        assert_eq!(standard.light_emission(lava), 15);
+        assert_eq!(standard.light_emission(portal), 11);
+        assert_eq!(standard.light_emission(stone), 0);
     }
 }

@@ -473,12 +473,15 @@ impl ServerWorld {
         let ly = local_idx.y();
         let lz = local_idx.z();
 
-        if new_flags.contains(StateFlags::EMITS_LIGHT) {
+        let new_emission = self.registry.light_emission(new_state);
+        let old_emission = self.registry.light_emission(old_state);
+
+        if new_emission > 0 {
             self.light_bfs
-                .add_source(&mut chunk_light.block, lx, ly, lz, 14);
+                .add_source(&mut chunk_light.block, lx, ly, lz, new_emission);
             self.light_bfs
                 .propagate_block_add(&mut chunk_light.block, is_opaque);
-        } else if old_flags.contains(StateFlags::EMITS_LIGHT) {
+        } else if old_emission > 0 || old_flags.contains(StateFlags::EMITS_LIGHT) {
             self.light_bfs
                 .remove_source(&mut chunk_light.block, lx, ly, lz);
             self.light_bfs

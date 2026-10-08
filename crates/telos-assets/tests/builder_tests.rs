@@ -72,3 +72,19 @@ fn test_material_texture_map() {
     assert_eq!(table[6], 0);
     assert_eq!(table[20], 2);
 }
+
+#[test]
+fn test_procedural_pattern_and_insert() {
+    let base_color = [200, 40, 60, 255];
+    let img = RgbaImage::procedural_pattern(16, 16, base_color, 42);
+    assert_eq!(img.width, 16);
+    assert_eq!(img.height, 16);
+    assert_eq!(img.data.len(), 16 * 16 * 4);
+    // Alpha is preserved
+    assert_eq!(img.data[3], 255);
+
+    let mut builder = TextureArrayBuilder::new(16);
+    let idx = builder.insert_or_procedural("ruby_block", None, base_color, 42);
+    assert_eq!(idx, 0);
+    assert_eq!(builder.layer_count(), 1);
+}

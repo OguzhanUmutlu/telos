@@ -79,6 +79,8 @@ pub struct OpenGlRenderer {
     terrain_textures: Option<GlTextureArray>,
     lightmap: Option<GlTexture2d>,
     ui_textures: Option<GlTextureArray>,
+    custom_layers: HashMap<u16, f32>,
+    custom_tints: HashMap<u16, [f32; 4]>,
 
     highlight_vao: glow::VertexArray,
     _highlight_vbo: GlBuffer,
@@ -182,6 +184,8 @@ impl OpenGlRenderer {
             terrain_textures: None,
             lightmap: None,
             ui_textures: None,
+            custom_layers: HashMap::new(),
+            custom_tints: HashMap::new(),
             highlight_vao,
             _highlight_vbo: highlight_vbo,
             ui_vao,
@@ -194,6 +198,12 @@ impl OpenGlRenderer {
     /// Returns a reference to the underlying glow Context.
     pub fn gl(&self) -> &Arc<glow::Context> {
         &self.gl
+    }
+
+    /// Registers a custom block material with its texture array layer and RGBA tint color.
+    pub fn register_custom_material(&mut self, mat_id: u16, layer: f32, tint: [f32; 4]) {
+        self.custom_layers.insert(mat_id, layer);
+        self.custom_tints.insert(mat_id, tint);
     }
 
     /// Sets the active terrain texture array.
@@ -226,7 +236,7 @@ impl OpenGlRenderer {
     }
 
     /// Updates or uploads an entire chunk's mesh geometry to OpenGL VBOs.
-    #[allow(clippy::cast_possible_wrap)]
+    #[allow(clippy::cast_possible_wrap, clippy::too_many_lines)]
     pub fn update_chunk_mesh(&mut self, pos: ChunkPos, layers: &ChunkMeshLayers) {
         let chunk_origin = Vec3::new(
             pos.x() as f32 * 32.0,
@@ -240,26 +250,62 @@ impl OpenGlRenderer {
 
         // 1. Opaque layers (T0 cubes + T1 sub-boxes)
         for q in &layers.opaque.quads {
-            unpack_t0_quad(q, chunk_origin, &mut opaque_verts);
+            unpack_t0_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut opaque_verts,
+            );
         }
         for q in &layers.t1_opaque.quads {
-            unpack_t1_quad(q, chunk_origin, &mut opaque_verts);
+            unpack_t1_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut opaque_verts,
+            );
         }
 
         // 2. Cutout foliage, glass, flowers, torches
         for q in &layers.cutout.quads {
-            unpack_t0_quad(q, chunk_origin, &mut cutout_verts);
+            unpack_t0_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut cutout_verts,
+            );
         }
         for q in &layers.t2_cutout.quads {
-            unpack_t2_quad(q, chunk_origin, &mut cutout_verts);
+            unpack_t2_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut cutout_verts,
+            );
         }
 
         // 3. Translucent water and sloped fluids
         for q in &layers.translucent.quads {
-            unpack_t0_quad(q, chunk_origin, &mut translucent_verts);
+            unpack_t0_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut translucent_verts,
+            );
         }
         for q in &layers.t2_translucent.quads {
-            unpack_t2_quad(q, chunk_origin, &mut translucent_verts);
+            unpack_t2_quad(
+                q,
+                chunk_origin,
+                &self.custom_layers,
+                &self.custom_tints,
+                &mut translucent_verts,
+            );
         }
 
         let total_verts_count = opaque_verts.len() + cutout_verts.len() + translucent_verts.len();
@@ -551,7 +597,13 @@ impl Drop for OpenGlRenderer {
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn unpack_t0_quad(quad: &T0Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
+fn unpack_t0_quad(
+    quad: &T0Quad,
+    origin: Vec3,
+    custom_layers: &HashMap<u16, f32>,
+    custom_tints: &HashMap<u16, [f32; 4]>,
+    out: &mut Vec<GlChunkVertex>,
+) {
     let x = quad.x() as f32;
     let y = quad.y() as f32;
     let z = quad.z() as f32;
@@ -560,8 +612,8 @@ fn unpack_t0_quad(quad: &T0Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     let dir = quad.dir();
     let mat = quad.material();
 
-    let layer = get_gl_texture_layer(mat, dir);
-    let tint = get_material_tint(mat, dir);
+    let layer = get_gl_texture_layer(mat, dir, custom_layers);
+    let tint = get_material_tint(mat, dir, custom_tints);
 
     let (norm, u_dir, v_dir, plane_offset) = match dir {
         FaceDir::PosX => (
@@ -647,7 +699,13 @@ fn unpack_t0_quad(quad: &T0Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     out.extend_from_slice(&[v0, v1, v2, v0, v2, v3]);
 }
 
-fn unpack_t1_quad(quad: &T1Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
+fn unpack_t1_quad(
+    quad: &T1Quad,
+    origin: Vec3,
+    custom_layers: &HashMap<u16, f32>,
+    custom_tints: &HashMap<u16, [f32; 4]>,
+    out: &mut Vec<GlChunkVertex>,
+) {
     let x = (quad.word0 & 0x3FF) as f32 / 16.0;
     let y = ((quad.word0 >> 10) & 0x3FF) as f32 / 16.0;
     let z = ((quad.word0 >> 20) & 0x3FF) as f32 / 16.0;
@@ -657,8 +715,8 @@ fn unpack_t1_quad(quad: &T1Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     let dir = FaceDir::from_u8(((quad.word1 >> 18) & 0x7) as u8).unwrap_or(FaceDir::PosY);
     let mat = (quad.word2 >> 16) as u16;
 
-    let layer = get_gl_texture_layer(mat, dir);
-    let tint = get_material_tint(mat, dir);
+    let layer = get_gl_texture_layer(mat, dir, custom_layers);
+    let tint = get_material_tint(mat, dir, custom_tints);
 
     let (norm, u_dir, v_dir) = match dir {
         FaceDir::PosX => (
@@ -738,7 +796,13 @@ fn unpack_t1_quad(quad: &T1Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     out.extend_from_slice(&[v0, v1, v2, v0, v2, v3]);
 }
 
-fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
+fn unpack_t2_quad(
+    quad: &T2Quad,
+    origin: Vec3,
+    custom_layers: &HashMap<u16, f32>,
+    custom_tints: &HashMap<u16, [f32; 4]>,
+    out: &mut Vec<GlChunkVertex>,
+) {
     let verts = [&quad.v0, &quad.v1, &quad.v2, &quad.v3];
     let mut gverts = [GlChunkVertex {
         position: [0.0; 3],
@@ -754,7 +818,8 @@ fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
         let norm = v.normal();
         let uv = v.uv();
         let mat = v.material();
-        let layer = get_gl_texture_layer(mat, FaceDir::PosY);
+        let layer = get_gl_texture_layer(mat, FaceDir::PosY, custom_layers);
+        let tint = get_material_tint(mat, FaceDir::PosY, custom_tints);
         let ao = f32::from(v.ao());
         let sky = f32::from(v.sky());
         let block = f32::from(v.block());
@@ -765,7 +830,7 @@ fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
             uv,
             layer,
             light: [ao, sky, block],
-            tint: [1.0, 1.0, 1.0, 1.0],
+            tint,
         };
     }
 
@@ -774,7 +839,10 @@ fn unpack_t2_quad(quad: &T2Quad, origin: Vec3, out: &mut Vec<GlChunkVertex>) {
     ]);
 }
 
-fn get_gl_texture_layer(mat: u16, dir: FaceDir) -> f32 {
+fn get_gl_texture_layer(mat: u16, dir: FaceDir, custom_layers: &HashMap<u16, f32>) -> f32 {
+    if let Some(&layer) = custom_layers.get(&mat) {
+        return layer;
+    }
     match mat {
         1 => 0.0, // Stone
         2 => 1.0, // Dirt
@@ -809,7 +877,10 @@ fn get_gl_texture_layer(mat: u16, dir: FaceDir) -> f32 {
     }
 }
 
-fn get_material_tint(mat: u16, dir: FaceDir) -> [f32; 4] {
+fn get_material_tint(mat: u16, dir: FaceDir, custom_tints: &HashMap<u16, [f32; 4]>) -> [f32; 4] {
+    if let Some(&tint) = custom_tints.get(&mat) {
+        return tint;
+    }
     match mat {
         3 => {
             // Grass
