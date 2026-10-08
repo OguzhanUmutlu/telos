@@ -46,9 +46,10 @@ void main() {
     vec3 lit_color = v_color.rgb * total_light;
 
     // Atmospheric distance fog to seamlessly blend far terrain into sky
-    float fog_start = pc.max_distance * 0.75;
+    float fog_start = pc.max_distance * 0.70;
     float fog_end = pc.max_distance;
-    float fog_factor = clamp((v_distance - fog_start) / max(1.0, fog_end - fog_start), 0.0, 1.0);
+    float fog_linear = clamp((v_distance - fog_start) / max(1.0, fog_end - fog_start), 0.0, 1.0);
+    float fog_factor = fog_linear * fog_linear; // Smooth extinction curve
     // Sky fog matches ambient sky light color and horizon gradient dynamically
     vec3 sky_day_color = vec3(0.68, 0.82, 0.98);
     vec3 light_intensity = texture(u_lightmap, vec2(0.5 / 16.0, 15.5 / 16.0)).rgb;

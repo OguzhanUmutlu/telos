@@ -51,22 +51,22 @@ void main() {
             dist = u_view_distance * 32.0;
         }
 
-        // Height-modulated exponential fog (denser in valleys, clearer at mountain peaks)
-        float height_factor = exp(-max(0.0, world_pos.y - 45.0) * 0.02);
+        // Height-modulated exponential atmospheric density (denser in valleys, clearer on mountain peaks)
+        float height_density = exp(-max(0.0, world_pos.y - 48.0) * 0.015);
         float effective_dist = min(dist, u_view_distance * 32.0);
-        float fog_factor = 1.0 - exp(-effective_dist * (u_fog_density * 0.0015) * (1.0 + height_factor * 1.5));
+        float fog_factor = 1.0 - exp(-effective_dist * (u_fog_density * 0.0016) * (1.0 + height_density * 1.8));
         fog_factor = clamp(fog_factor, 0.0, 1.0);
 
-        // Sun forward-scattering glare (Mie scattering)
+        // Dual-scattering Mie forward phase function
         float sun_cos = max(0.0, dot(ray_dir, normalize(u_sun_dir)));
-        float mie = pow(sun_cos, 8.0) * 0.5 + pow(sun_cos, 32.0) * 0.5;
+        float mie_phase = pow(max(0.0, sun_cos * 0.5 + 0.5), 6.0) * 0.7 + pow(max(0.0, sun_cos), 32.0) * 0.3;
 
-        // Time of day atmospheric colors:
+        // Time of day atmospheric colors harmonized with sky.frag
         // u_time_of_day: 0..=24000 (6000=noon, 12000=sunset, 18000=midnight, 24000=sunrise)
         float sun_elev = sin((u_time_of_day / 24000.0) * 6.2831853 - 1.5707963);
-        vec3 day_fog = vec3(0.68, 0.78, 0.90);
-        vec3 sunset_fog = vec3(0.95, 0.55, 0.25);
-        vec3 night_fog = vec3(0.03, 0.04, 0.08);
+        vec3 day_fog = vec3(0.68, 0.82, 0.98);
+        vec3 sunset_fog = vec3(0.98, 0.45, 0.15);
+        vec3 night_fog = vec3(0.04, 0.05, 0.09);
 
         vec3 base_fog_color;
         if (sun_elev > 0.2) {
@@ -79,16 +79,16 @@ void main() {
             base_fog_color = mix(night_fog, sunset_fog, t);
         }
 
-        vec3 sun_glow = vec3(1.0, 0.85, 0.55) * mie;
-        if (sun_elev <= 0.2 && sun_elev > -0.2) {
-            sun_glow = vec3(1.0, 0.45, 0.15) * mie * 1.5;
+        vec3 sun_glow = vec3(1.0, 0.90, 0.70) * mie_phase * 1.2;
+        if (sun_elev <= 0.25 && sun_elev > -0.15) {
+            sun_glow = vec3(1.0, 0.48, 0.16) * mie_phase * 2.2;
         }
 
         if (!is_sky) {
-            color = mix(color, base_fog_color, fog_factor) + sun_glow * fog_factor * 0.4;
+            color = mix(color, base_fog_color, fog_factor) + sun_glow * fog_factor * 0.45;
         } else {
-            float horizon_haze = clamp(1.0 - abs(ray_dir.y) * 4.0, 0.0, 1.0) * 0.35;
-            color = mix(color, base_fog_color, horizon_haze) + sun_glow * horizon_haze * 0.35;
+            float horizon_haze = exp(-max(0.0, ray_dir.y) * 4.0) * 0.40;
+            color = mix(color, base_fog_color, horizon_haze) + sun_glow * horizon_haze * 0.40;
         }
     }
 

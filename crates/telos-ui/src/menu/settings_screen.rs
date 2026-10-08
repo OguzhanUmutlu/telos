@@ -368,6 +368,21 @@ impl SettingsScreen {
                     22.0,
                     tone_str,
                 ));
+
+                let clouds_val = if self.settings.video.volumetric_clouds {
+                    on_str
+                } else {
+                    off_str
+                };
+                let clouds_str = format!("Clouds: {clouds_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    209,
+                    col1_x,
+                    start_y + 12.0 + row_h * 6.0 + 20.0,
+                    col_w,
+                    22.0,
+                    clouds_str,
+                ));
             }
             SettingsTab::Audio => {
                 self.scroll_y = 0.0;
@@ -697,6 +712,10 @@ impl SettingsScreen {
                     }
                     208 => {
                         self.settings.video.tonemapping = !self.settings.video.tonemapping;
+                    }
+                    209 => {
+                        self.settings.video.volumetric_clouds =
+                            !self.settings.video.volumetric_clouds;
                     }
                     301 => self.settings.gameplay.language = "en_us".to_string(),
                     302 => self.settings.gameplay.language = "es_es".to_string(),

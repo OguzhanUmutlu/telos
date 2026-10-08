@@ -526,8 +526,8 @@ struct SkyPushConstants {
     rain_level: f32,
     thunder_level: f32,
     lightning_flash: f32,
-    _pad0: f32,
-    _pad1: f32,
+    wind_time: f32,
+    cloud_coverage: f32,
 }
 const _: () = assert!(size_of::<SkyPushConstants>() == 128);
 
@@ -5626,8 +5626,12 @@ impl App {
                     rain_level: self.weather_rain_level,
                     thunder_level: self.weather_thunder_level,
                     lightning_flash: self.weather_lightning_flash,
-                    _pad0: 0.0,
-                    _pad1: 0.0,
+                    wind_time: self.start_time.elapsed().as_secs_f32(),
+                    cloud_coverage: if self.game_settings.video.volumetric_clouds {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 };
                 device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, sky_pipe.raw());
                 device.cmd_bind_descriptor_sets(

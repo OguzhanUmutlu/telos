@@ -58,6 +58,9 @@ pub struct VideoSettings {
     /// Enable volumetric horizon distance fog & scattering.
     #[serde(default = "default_true")]
     pub volumetric_fog: bool,
+    /// Enable 3D procedural ray-marched volumetric clouds.
+    #[serde(default = "default_true")]
+    pub volumetric_clouds: bool,
     /// Enable ACES filmic tonemapping.
     #[serde(default = "default_true")]
     pub tonemapping: bool,
@@ -77,6 +80,7 @@ impl Default for VideoSettings {
             post_processing: true,
             ssao: true,
             volumetric_fog: true,
+            volumetric_clouds: true,
             tonemapping: true,
         }
     }
@@ -236,6 +240,7 @@ mod tests {
                 post_processing: true,
                 ssao: true,
                 volumetric_fog: true,
+                volumetric_clouds: true,
                 tonemapping: true,
             },
             audio: AudioSettings {
