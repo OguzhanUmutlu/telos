@@ -34,6 +34,7 @@ layout(location = 4) out vec2 v_local_pos;
 layout(location = 5) flat out vec2 v_quad_size;
 layout(location = 6) flat out uint v_param0;
 layout(location = 7) flat out uint v_param1;
+layout(location = 8) flat out vec4 v_uv_bounds;
 
 const uint CORNERS[6] = uint[](0, 1, 2, 2, 1, 3);
 const vec2 CORNER_POS[4] = vec2[](
@@ -81,4 +82,5 @@ void main() {
     v_quad_size = quad_size;
     v_param0 = quad.param0;
     v_param1 = quad.param1;
+    v_uv_bounds = vec4(u0, v0, u1, v1);
 }

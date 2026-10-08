@@ -248,14 +248,9 @@ impl Default for HudState {
     }
 }
 
-/// Generates all HUD quads for the active frame.
-#[allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+use crate::style::HudThemeDef;
+
+/// Generates all HUD quads for the active frame using default Minecraft styling.
 pub fn render_hud(
     state: &HudState,
     font: &BitmapFont,
@@ -263,6 +258,37 @@ pub fn render_hud(
     screen_width: u32,
     screen_height: u32,
     gui_scale: u32,
+    out: &mut Vec<UiQuad>,
+) {
+    render_hud_styled(
+        state,
+        font,
+        layers,
+        screen_width,
+        screen_height,
+        gui_scale,
+        &HudThemeDef::default(),
+        out,
+    );
+}
+
+/// Generates all HUD quads for the active frame using a custom HUD theme.
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+pub fn render_hud_styled(
+    state: &HudState,
+    font: &BitmapFont,
+    layers: &UiLayers,
+    screen_width: u32,
+    screen_height: u32,
+    gui_scale: u32,
+    theme: &HudThemeDef,
     out: &mut Vec<UiQuad>,
 ) {
     let sw = screen_width as i32;
@@ -280,11 +306,11 @@ pub fn render_hud(
         layers.crosshair,
     ));
 
-    // 2. Hotbar (182×22 source px) anchored to bottom-center
-    let hotbar_w = to_physical_pixels(182, gui_scale) as u16;
-    let hotbar_h = to_physical_pixels(22, gui_scale) as u16;
+    // 2. Hotbar anchored to bottom-center
+    let hotbar_w = to_physical_pixels(i32::from(theme.hotbar_size[0]), gui_scale) as u16;
+    let hotbar_h = to_physical_pixels(i32::from(theme.hotbar_size[1]), gui_scale) as u16;
     let hotbar_x = (sw - i32::from(hotbar_w)) / 2;
-    let hotbar_y = sh - i32::from(hotbar_h);
+    let hotbar_y = sh - i32::from(hotbar_h) - to_physical_pixels(theme.hotbar_y_offset, gui_scale);
 
     out.push(UiQuad::sprite(
         [hotbar_x, hotbar_y],
@@ -295,13 +321,14 @@ pub fn render_hud(
         UiQuad::rgba(255, 255, 255, 255),
     ));
 
-    // 3. Hotbar selection indicator (24×23 source px)
+    // 3. Hotbar selection indicator
     let slot = state.selected_slot.min(8) as i32;
-    let sel_w = to_physical_pixels(24, gui_scale) as u16;
-    let sel_h = to_physical_pixels(23, gui_scale) as u16;
-    let sel_x =
-        hotbar_x - to_physical_pixels(1, gui_scale) + slot * to_physical_pixels(20, gui_scale);
-    let sel_y = sh - to_physical_pixels(23, gui_scale);
+    let sel_w = to_physical_pixels(i32::from(theme.selection_size[0]), gui_scale) as u16;
+    let sel_h = to_physical_pixels(i32::from(theme.selection_size[1]), gui_scale) as u16;
+    let sel_x = hotbar_x
+        + to_physical_pixels(theme.selection_offset[0], gui_scale)
+        + slot * to_physical_pixels(theme.hotbar_slot_stride, gui_scale);
+    let sel_y = hotbar_y + to_physical_pixels(theme.selection_offset[1], gui_scale);
 
     out.push(UiQuad::sprite(
         [sel_x, sel_y],
@@ -312,11 +339,11 @@ pub fn render_hud(
         UiQuad::rgba(255, 255, 255, 255),
     ));
 
-    // 4. Experience Bar (182x5) sitting directly above hotbar
-    let xp_w = hotbar_w;
-    let xp_h = to_physical_pixels(5, gui_scale) as u16;
-    let xp_x = hotbar_x;
-    let xp_y = hotbar_y - to_physical_pixels(6, gui_scale);
+    // 4. Experience Bar sitting directly above hotbar
+    let xp_w = to_physical_pixels(i32::from(theme.xp_bar_size[0]), gui_scale) as u16;
+    let xp_h = to_physical_pixels(i32::from(theme.xp_bar_size[1]), gui_scale) as u16;
+    let xp_x = (sw - i32::from(xp_w)) / 2;
+    let xp_y = sh - to_physical_pixels(theme.xp_bar_y_offset, gui_scale);
 
     out.push(UiQuad::sprite(
         [xp_x, xp_y],

@@ -4,6 +4,7 @@ use crate::font::BitmapFont;
 use crate::hud::UiLayers;
 use crate::quad::UiQuad;
 use crate::scale::to_physical_pixels;
+use crate::style::{ContainerLayoutDef, slot_at_pos_styled as generic_slot_at_pos};
 
 /// Width of the standard player survival inventory container in GUI pixels.
 pub const CONTAINER_WIDTH: u32 = 176;
@@ -93,6 +94,18 @@ pub fn item_icon_uv(item_id: u32) -> [f32; 4] {
     ]
 }
 
+/// Hit-tests a screen mouse position against the inventory slots using a custom layout.
+#[must_use]
+pub fn slot_at_pos_styled(
+    mouse_pos: [f32; 2],
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    layout: &ContainerLayoutDef,
+) -> Option<usize> {
+    generic_slot_at_pos(layout, mouse_pos, screen_w, screen_h, gui_scale)
+}
+
 /// Hit-tests a screen mouse position against the 46 inventory slots.
 ///
 /// Returns `Some(slot_index)` if the mouse is inside any slot's 16x16 bounds.
@@ -104,27 +117,13 @@ pub fn slot_at_pos(
     screen_h: u32,
     gui_scale: u32,
 ) -> Option<usize> {
-    let container_w = to_physical_pixels(CONTAINER_WIDTH as i32, gui_scale);
-    let container_h = to_physical_pixels(CONTAINER_HEIGHT as i32, gui_scale);
-    let origin_x = (screen_w as i32 - container_w) / 2;
-    let origin_y = (screen_h as i32 - container_h) / 2;
-
-    let mx = mouse_pos[0] as i32;
-    let my = mouse_pos[1] as i32;
-
-    let slot_sz = to_physical_pixels(16, gui_scale);
-
-    for i in 0..INVENTORY_SLOT_COUNT {
-        if let Some([sx, sy]) = slot_pos(i) {
-            let px = origin_x + to_physical_pixels(sx, gui_scale);
-            let py = origin_y + to_physical_pixels(sy, gui_scale);
-            if mx >= px && mx < px + slot_sz && my >= py && my < py + slot_sz {
-                return Some(i);
-            }
-        }
-    }
-
-    None
+    slot_at_pos_styled(
+        mouse_pos,
+        screen_w,
+        screen_h,
+        gui_scale,
+        &ContainerLayoutDef::default_inventory(),
+    )
 }
 
 /// Renders the complete interactive inventory screen:
@@ -135,14 +134,7 @@ pub fn slot_at_pos(
 /// - Slot hover highlight
 /// - Carried cursor item stack
 /// - Hover tooltip with formatted item name and border
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+#[allow(clippy::too_many_arguments)]
 pub fn render_inventory_screen<'a>(
     slots: &[UiSlotItem],
     carried: UiSlotItem,
@@ -152,6 +144,45 @@ pub fn render_inventory_screen<'a>(
     gui_scale: u32,
     font: &BitmapFont,
     layers: &UiLayers,
+    item_names: impl Fn(u32) -> &'a str,
+    mouse_pos: [f32; 2],
+    out: &mut Vec<UiQuad>,
+) {
+    render_inventory_screen_styled(
+        slots,
+        carried,
+        hovered_slot,
+        screen_w,
+        screen_h,
+        gui_scale,
+        font,
+        layers,
+        &ContainerLayoutDef::default_inventory(),
+        item_names,
+        mouse_pos,
+        out,
+    );
+}
+
+/// Renders the complete interactive inventory screen using a custom container layout.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+pub fn render_inventory_screen_styled<'a>(
+    slots: &[UiSlotItem],
+    carried: UiSlotItem,
+    hovered_slot: Option<usize>,
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    font: &BitmapFont,
+    layers: &UiLayers,
+    layout: &ContainerLayoutDef,
     item_names: impl Fn(u32) -> &'a str,
     mouse_pos: [f32; 2],
     out: &mut Vec<UiQuad>,
@@ -166,102 +197,131 @@ pub fn render_inventory_screen<'a>(
         UiQuad::rgba(0, 0, 0, 128),
     ));
 
-    // 2. Centered container background (176x166 source px)
-    let container_w = to_physical_pixels(CONTAINER_WIDTH as i32, gui_scale) as u16;
-    let container_h = to_physical_pixels(CONTAINER_HEIGHT as i32, gui_scale) as u16;
+    // 2. Centered container background
+    let container_w = to_physical_pixels(layout.width as i32, gui_scale) as u16;
+    let container_h = to_physical_pixels(layout.height as i32, gui_scale) as u16;
     let origin_x = (sw - i32::from(container_w)) / 2;
     let origin_y = (sh - i32::from(container_h)) / 2;
 
-    out.push(UiQuad::sprite(
-        [origin_x, origin_y],
-        [container_w, container_h],
-        [layers.inventory_bg_uv[0], layers.inventory_bg_uv[1]],
-        [layers.inventory_bg_uv[2], layers.inventory_bg_uv[3]],
-        layers.inventory_bg,
-        UiQuad::rgba(255, 255, 255, 255),
-    ));
+    if let Some(ns) = layout.nine_slice {
+        let borders = [
+            (u32::from(ns.left) * gui_scale).min(255) as u8,
+            (u32::from(ns.top) * gui_scale).min(255) as u8,
+            (u32::from(ns.right) * gui_scale).min(255) as u8,
+            (u32::from(ns.bottom) * gui_scale).min(255) as u8,
+        ];
+        let src_size = [
+            (layout.width * gui_scale).min(65535) as u16,
+            (layout.height * gui_scale).min(65535) as u16,
+        ];
+        out.push(UiQuad::nine_slice(
+            [origin_x, origin_y],
+            [container_w, container_h],
+            [layers.inventory_bg_uv[0], layers.inventory_bg_uv[1]],
+            [layers.inventory_bg_uv[2], layers.inventory_bg_uv[3]],
+            layers.inventory_bg,
+            borders,
+            src_size,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+    } else {
+        out.push(UiQuad::sprite(
+            [origin_x, origin_y],
+            [container_w, container_h],
+            [layers.inventory_bg_uv[0], layers.inventory_bg_uv[1]],
+            [layers.inventory_bg_uv[2], layers.inventory_bg_uv[3]],
+            layers.inventory_bg,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+    }
 
     // 3. Titles: "Crafting" and "Inventory"
     let title_color = UiQuad::rgba(64, 64, 64, 255);
     let scale_f = gui_scale as f32;
     font.layout_text(
         "Crafting",
-        (origin_x as f32 / scale_f) + 97.0,
-        (origin_y as f32 / scale_f) + 6.0,
+        (origin_x as f32 / scale_f) + layout.title_pos[0] as f32,
+        (origin_y as f32 / scale_f) + layout.title_pos[1] as f32,
         title_color,
         false,
         gui_scale,
         out,
     );
+    let inv_title_pos = layout.inventory_title_pos.unwrap_or([8, 72]);
     font.layout_text(
         "Inventory",
-        (origin_x as f32 / scale_f) + 8.0,
-        (origin_y as f32 / scale_f) + 72.0,
+        (origin_x as f32 / scale_f) + inv_title_pos[0] as f32,
+        (origin_y as f32 / scale_f) + inv_title_pos[1] as f32,
         title_color,
         false,
         gui_scale,
         out,
     );
 
-    let slot_sz = to_physical_pixels(16, gui_scale) as u16;
+    let default_slot_sz = to_physical_pixels(16, gui_scale) as u16;
 
     // 4. Slots quads
-    for (i, item) in slots.iter().copied().enumerate().take(INVENTORY_SLOT_COUNT) {
-        if let Some([sx, sy]) = slot_pos(i) {
-            let slot_x = origin_x + to_physical_pixels(sx, gui_scale);
-            let slot_y = origin_y + to_physical_pixels(sy, gui_scale);
+    for slot_def in &layout.slots {
+        let i = slot_def.index;
+        if i >= slots.len() {
+            continue;
+        }
+        let item = slots[i];
+        let slot_x = origin_x + to_physical_pixels(slot_def.x, gui_scale);
+        let slot_y = origin_y + to_physical_pixels(slot_def.y, gui_scale);
+        let slot_w = to_physical_pixels(i32::from(slot_def.size[0]), gui_scale) as u16;
+        let slot_h = to_physical_pixels(i32::from(slot_def.size[1]), gui_scale) as u16;
 
-            // Slot hover highlight (semi-transparent white)
-            if hovered_slot == Some(i) {
-                out.push(UiQuad::solid(
-                    [slot_x, slot_y],
-                    [slot_sz, slot_sz],
-                    UiQuad::rgba(255, 255, 255, 80),
-                ));
-            }
+        // Slot hover highlight (semi-transparent white)
+        if hovered_slot == Some(i) {
+            out.push(UiQuad::solid(
+                [slot_x, slot_y],
+                [slot_w, slot_h],
+                UiQuad::rgba(255, 255, 255, 80),
+            ));
+        }
 
-            if !item.is_empty() {
-                let uv = item_icon_uv(item.item);
-                // Item icon
-                out.push(UiQuad::sprite(
-                    [slot_x, slot_y],
-                    [slot_sz, slot_sz],
-                    [uv[0], uv[1]],
-                    [uv[2], uv[3]],
-                    layers.item_icons,
+        if !item.is_empty() {
+            let uv = item_icon_uv(item.item);
+            // Item icon
+            out.push(UiQuad::sprite(
+                [slot_x, slot_y],
+                [slot_w, slot_h],
+                [uv[0], uv[1]],
+                [uv[2], uv[3]],
+                layers.item_icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+
+            // Stack count if > 1
+            if item.count > 1 {
+                let count_str = format!("{}", item.count);
+                let (text_w, _) = font.measure_text(&count_str);
+                let text_x = (slot_x as f32 / scale_f) + 17.0 - text_w;
+                let text_y = (slot_y as f32 / scale_f) + 9.0;
+                font.layout_text(
+                    &count_str,
+                    text_x,
+                    text_y,
                     UiQuad::rgba(255, 255, 255, 255),
-                ));
-
-                // Stack count if > 1
-                if item.count > 1 {
-                    let count_str = format!("{}", item.count);
-                    let (text_w, _) = font.measure_text(&count_str);
-                    let text_x = (slot_x as f32 / scale_f) + 17.0 - text_w;
-                    let text_y = (slot_y as f32 / scale_f) + 9.0;
-                    font.layout_text(
-                        &count_str,
-                        text_x,
-                        text_y,
-                        UiQuad::rgba(255, 255, 255, 255),
-                        true,
-                        gui_scale,
-                        out,
-                    );
-                }
+                    true,
+                    gui_scale,
+                    out,
+                );
             }
         }
     }
 
     // 5. Carried stack on cursor
     if !carried.is_empty() {
-        let half_sz = i32::from(slot_sz / 2);
+        let half_sz = i32::from(default_slot_sz / 2);
         let carried_x = mouse_pos[0] as i32 - half_sz;
         let carried_y = mouse_pos[1] as i32 - half_sz;
         let uv = item_icon_uv(carried.item);
 
         out.push(UiQuad::sprite(
             [carried_x, carried_y],
-            [slot_sz, slot_sz],
+            [default_slot_sz, default_slot_sz],
             [uv[0], uv[1]],
             [uv[2], uv[3]],
             layers.item_icons,

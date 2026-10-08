@@ -906,7 +906,11 @@ fn get_material_tint(mat: u16, dir: FaceDir, custom_tints: &HashMap<u16, [f32; 4
 }
 
 /// Converts an array of retained 2D `UiQuad` items into vertex data suitable for OpenGL drawing.
-#[allow(clippy::similar_names, clippy::many_single_char_names)]
+#[allow(
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::too_many_lines
+)]
 pub fn ui_quads_to_gl_vertices(quads: &[telos_ui::UiQuad], out: &mut Vec<GlUiVertex>) {
     out.clear();
     out.reserve(quads.len() * 6);
@@ -929,6 +933,95 @@ pub fn ui_quads_to_gl_vertices(quads: &[telos_ui::UiQuad], out: &mut Vec<GlUiVer
         let b = ((q.color >> 16) & 0xFF) as f32 / 255.0;
         let a = ((q.color >> 24) & 0xFF) as f32 / 255.0;
         let color = [r, g, b, a];
+
+        if q.kind() == telos_ui::QuadKind::NineSlice {
+            let borders = q.nine_slice_borders();
+            let src_size = q.nine_slice_src_size();
+            let b_left = f32::from(borders[0]);
+            let b_top = f32::from(borders[1]);
+            let b_right = f32::from(borders[2]);
+            let b_bottom = f32::from(borders[3]);
+            let src_w = f32::from(src_size[0]);
+            let src_h = f32::from(src_size[1]);
+
+            if src_w > 0.0
+                && src_h > 0.0
+                && (b_left > 0.0 || b_top > 0.0 || b_right > 0.0 || b_bottom > 0.0)
+            {
+                let bl = b_left.min(w * 0.5);
+                let br = b_right.min(w * 0.5);
+                let bt = b_top.min(h * 0.5);
+                let bb = b_bottom.min(h * 0.5);
+
+                let x_edges = [x0, x0 + bl, x0 + w - br, x0 + w];
+                let y_edges = [y0, y0 + bt, y0 + h - bb, y0 + h];
+
+                let u_fracs = [
+                    0.0,
+                    (b_left / src_w).clamp(0.0, 1.0),
+                    ((src_w - b_right) / src_w).clamp(0.0, 1.0),
+                    1.0,
+                ];
+                let v_fracs = [
+                    0.0,
+                    (b_top / src_h).clamp(0.0, 1.0),
+                    ((src_h - b_bottom) / src_h).clamp(0.0, 1.0),
+                    1.0,
+                ];
+
+                for r_idx in 0..3 {
+                    let sy0 = y_edges[r_idx];
+                    let sy1 = y_edges[r_idx + 1];
+                    if sy1 <= sy0 {
+                        continue;
+                    }
+                    let sv0 = v0 + v_fracs[r_idx] * (v1 - v0);
+                    let sv1 = v0 + v_fracs[r_idx + 1] * (v1 - v0);
+
+                    for c_idx in 0..3 {
+                        let sx0 = x_edges[c_idx];
+                        let sx1 = x_edges[c_idx + 1];
+                        if sx1 <= sx0 {
+                            continue;
+                        }
+                        let su0 = u0 + u_fracs[c_idx] * (u1 - u0);
+                        let su1 = u0 + u_fracs[c_idx + 1] * (u1 - u0);
+
+                        let v_tl = GlUiVertex {
+                            position: [sx0, sy0],
+                            uv: [su0, sv0],
+                            color,
+                            mode: 1.0,
+                            layer,
+                        };
+                        let v_tr = GlUiVertex {
+                            position: [sx1, sy0],
+                            uv: [su1, sv0],
+                            color,
+                            mode: 1.0,
+                            layer,
+                        };
+                        let v_br = GlUiVertex {
+                            position: [sx1, sy1],
+                            uv: [su1, sv1],
+                            color,
+                            mode: 1.0,
+                            layer,
+                        };
+                        let v_bl = GlUiVertex {
+                            position: [sx0, sy1],
+                            uv: [su0, sv1],
+                            color,
+                            mode: 1.0,
+                            layer,
+                        };
+
+                        out.extend_from_slice(&[v_tl, v_tr, v_br, v_tl, v_br, v_bl]);
+                    }
+                }
+                continue;
+            }
+        }
 
         let mode = if kind == 0 { 0.0 } else { 1.0 }; // 0: solid, 1: texture/font
 

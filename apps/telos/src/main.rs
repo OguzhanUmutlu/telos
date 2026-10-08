@@ -54,10 +54,12 @@ use telos_ui::menu::{
 use telos_ui::settings::GameSettings;
 use telos_ui::{
     BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_CRAFTING_TABLE_SLOT_COUNT,
-    DUAL_FURNACE_SLOT_COUNT, HudState, ToastState, UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos,
-    compute_gui_scale, crafting_table_slot_at_pos, furnace_slot_at_pos, render_chat_hud,
-    render_chest_container, render_crafting_table_container, render_furnace_container, render_hud,
-    render_inventory_screen, slot_at_pos, snap_to_physical,
+    DUAL_FURNACE_SLOT_COUNT, GuiStyleSheet, HudState, ToastState, UiLayers, UiQuad, UiSlotItem,
+    chest_slot_at_pos_styled, compute_gui_scale, crafting_table_slot_at_pos_styled,
+    furnace_slot_at_pos_styled, inventory_slot_at_pos_styled, render_chat_hud,
+    render_chest_container_styled, render_crafting_table_container_styled,
+    render_furnace_container_styled, render_hud_styled, render_inventory_screen_styled,
+    snap_to_physical,
 };
 use telos_ui::{InputKey, KeyAction};
 
@@ -1428,6 +1430,7 @@ struct App {
     ui_buffer: Option<GpuBuffer>,
     ui_font: Option<BitmapFont>,
     ui_layers: UiLayers,
+    gui_style: GuiStyleSheet,
     hud_state: HudState,
     inventory_sim: telos_sim::Inventory,
     fuel_registry: telos_sim::FuelRegistry,
@@ -1728,6 +1731,7 @@ impl App {
         mount_asset_roots(&mut pack_stack);
         let mut catalog = LanguageCatalog::with_default_embedded();
         pack_stack.populate_language_catalog(&mut catalog);
+        let gui_style = pack_stack.load_gui_style_sheet();
 
         if game_settings.gameplay.language.is_empty() {
             let sys = detect_system_locale();
@@ -1922,6 +1926,7 @@ impl App {
             ui_buffer: None,
             ui_font: None,
             ui_layers: UiLayers::default(),
+            gui_style,
             hud_state: HudState::default(),
             inventory_sim: telos_sim::Inventory::default(),
             fuel_registry: telos_sim::FuelRegistry::standard(),
@@ -6089,13 +6094,14 @@ impl App {
                                 &mut ui_quads,
                             );
                         } else {
-                            render_hud(
+                            render_hud_styled(
                                 &self.hud_state,
                                 font,
                                 &self.ui_layers,
                                 swapchain_extent.width,
                                 swapchain_extent.height,
                                 gui_scale,
+                                &self.gui_style.hud,
                                 &mut ui_quads,
                             );
 
@@ -6128,7 +6134,7 @@ impl App {
                                     {
                                         ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
                                     }
-                                    render_crafting_table_container(
+                                    render_crafting_table_container_styled(
                                         &ui_slots,
                                         ui_carried,
                                         self.container_hovered_slot,
@@ -6140,6 +6146,7 @@ impl App {
                                         &cont.title,
                                         item_lookup,
                                         self.mouse_cursor_pos,
+                                        &self.gui_style.crafting_table,
                                         &mut ui_quads,
                                     );
                                 } else if cont.container_kind == 1 {
@@ -6155,7 +6162,7 @@ impl App {
                                     {
                                         ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
                                     }
-                                    render_furnace_container(
+                                    render_furnace_container_styled(
                                         &ui_slots,
                                         ui_carried,
                                         self.container_hovered_slot,
@@ -6171,6 +6178,7 @@ impl App {
                                         &cont.title,
                                         item_lookup,
                                         self.mouse_cursor_pos,
+                                        &self.gui_style.furnace,
                                         &mut ui_quads,
                                     );
                                 } else {
@@ -6187,7 +6195,7 @@ impl App {
                                     {
                                         ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
                                     }
-                                    render_chest_container(
+                                    render_chest_container_styled(
                                         &ui_slots,
                                         ui_carried,
                                         self.container_hovered_slot,
@@ -6199,6 +6207,7 @@ impl App {
                                         &cont.title,
                                         item_lookup,
                                         self.mouse_cursor_pos,
+                                        &self.gui_style.chest,
                                         &mut ui_quads,
                                     );
                                 }
@@ -6228,7 +6237,7 @@ impl App {
                                         telos_sim::item_name(id)
                                     }
                                 };
-                                render_inventory_screen(
+                                render_inventory_screen_styled(
                                     &ui_slots,
                                     ui_carried,
                                     self.inventory_hovered_slot,
@@ -6237,6 +6246,7 @@ impl App {
                                     gui_scale,
                                     font,
                                     &self.ui_layers,
+                                    &self.gui_style.inventory,
                                     item_lookup,
                                     self.mouse_cursor_pos,
                                     &mut ui_quads,
@@ -6574,13 +6584,14 @@ impl App {
                     self.pause_menu
                         .render(font, width_gui, height_gui, gui_scale, &mut ui_quads);
                 } else {
-                    render_hud(
+                    render_hud_styled(
                         &self.hud_state,
                         font,
                         &self.ui_layers,
                         width,
                         height,
                         gui_scale,
+                        &self.gui_style.hud,
                         &mut ui_quads,
                     );
 
@@ -6607,7 +6618,7 @@ impl App {
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
                                 ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
                             }
-                            render_crafting_table_container(
+                            render_crafting_table_container_styled(
                                 &ui_slots,
                                 ui_carried,
                                 self.container_hovered_slot,
@@ -6619,6 +6630,7 @@ impl App {
                                 &cont.title,
                                 item_lookup,
                                 self.mouse_cursor_pos,
+                                &self.gui_style.crafting_table,
                                 &mut ui_quads,
                             );
                         } else if cont.container_kind == 1 {
@@ -6630,7 +6642,7 @@ impl App {
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
                                 ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
                             }
-                            render_furnace_container(
+                            render_furnace_container_styled(
                                 &ui_slots,
                                 ui_carried,
                                 self.container_hovered_slot,
@@ -6646,6 +6658,7 @@ impl App {
                                 &cont.title,
                                 item_lookup,
                                 self.mouse_cursor_pos,
+                                &self.gui_style.furnace,
                                 &mut ui_quads,
                             );
                         } else {
@@ -6657,7 +6670,7 @@ impl App {
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
                                 ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
                             }
-                            render_chest_container(
+                            render_chest_container_styled(
                                 &ui_slots,
                                 ui_carried,
                                 self.container_hovered_slot,
@@ -6669,6 +6682,7 @@ impl App {
                                 &cont.title,
                                 item_lookup,
                                 self.mouse_cursor_pos,
+                                &self.gui_style.chest,
                                 &mut ui_quads,
                             );
                         }
@@ -6696,7 +6710,7 @@ impl App {
                                 telos_sim::item_name(id)
                             }
                         };
-                        render_inventory_screen(
+                        render_inventory_screen_styled(
                             &ui_slots,
                             ui_carried,
                             self.inventory_hovered_slot,
@@ -6705,6 +6719,7 @@ impl App {
                             gui_scale,
                             font,
                             &self.ui_layers,
+                            &self.gui_style.inventory,
                             item_lookup,
                             self.mouse_cursor_pos,
                             &mut ui_quads,
@@ -8797,33 +8812,37 @@ impl ApplicationHandler for App {
                                 .handle_mouse_move(mx, my, width_gui, height_gui);
                         } else if let Some(ref cont) = self.container_state {
                             self.container_hovered_slot = if cont.container_kind == 2 {
-                                crafting_table_slot_at_pos(
+                                crafting_table_slot_at_pos_styled(
                                     self.mouse_cursor_pos,
                                     win_size.width,
                                     win_size.height,
                                     gui_scale,
+                                    &self.gui_style.crafting_table,
                                 )
                             } else if cont.container_kind == 1 {
-                                furnace_slot_at_pos(
+                                furnace_slot_at_pos_styled(
                                     self.mouse_cursor_pos,
                                     win_size.width,
                                     win_size.height,
                                     gui_scale,
+                                    &self.gui_style.furnace,
                                 )
                             } else {
-                                chest_slot_at_pos(
+                                chest_slot_at_pos_styled(
                                     self.mouse_cursor_pos,
                                     win_size.width,
                                     win_size.height,
                                     gui_scale,
+                                    &self.gui_style.chest,
                                 )
                             };
                         } else if self.inventory_open {
-                            self.inventory_hovered_slot = slot_at_pos(
+                            self.inventory_hovered_slot = inventory_slot_at_pos_styled(
                                 self.mouse_cursor_pos,
                                 win_size.width,
                                 win_size.height,
                                 gui_scale,
+                                &self.gui_style.inventory,
                             );
                         }
                     }
@@ -9923,11 +9942,12 @@ impl ApplicationHandler for App {
                         self.controller.down = false;
                         let win_size = self.window_size();
                         let gui_scale = compute_gui_scale(win_size.width, win_size.height);
-                        self.inventory_hovered_slot = slot_at_pos(
+                        self.inventory_hovered_slot = inventory_slot_at_pos_styled(
                             self.mouse_cursor_pos,
                             win_size.width,
                             win_size.height,
                             gui_scale,
+                            &self.gui_style.inventory,
                         );
                     } else if kb.matches(KeyAction::Advancements, key) {
                         self.advancements_open = true;

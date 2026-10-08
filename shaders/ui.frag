@@ -8,12 +8,13 @@ layout(location = 4) in vec2 v_local_pos;
 layout(location = 5) flat in vec2 v_quad_size;
 layout(location = 6) flat in uint v_param0;
 layout(location = 7) flat in uint v_param1;
+layout(location = 8) flat in vec4 v_uv_bounds;
 
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_ui_textures;
 
-vec2 compute_nine_slice_uv(vec2 local_pos, vec2 quad_size, uint borders, uint src_size, vec2 uv) {
+vec2 compute_nine_slice_uv(vec2 local_pos, vec2 quad_size, uint borders, uint src_size, vec4 uv_bounds) {
     float b_left = float(borders & 0xFFu);
     float b_top = float((borders >> 8u) & 0xFFu);
     float b_right = float((borders >> 16u) & 0xFFu);
@@ -23,7 +24,7 @@ vec2 compute_nine_slice_uv(vec2 local_pos, vec2 quad_size, uint borders, uint sr
     float src_h = float((src_size >> 16u) & 0xFFFFu);
 
     if (src_w <= 0.0 || src_h <= 0.0) {
-        return uv;
+        return mix(uv_bounds.xy, uv_bounds.zw, local_pos / max(quad_size, vec2(1.0)));
     }
 
     // Piecewise mapping for X
@@ -52,7 +53,7 @@ vec2 compute_nine_slice_uv(vec2 local_pos, vec2 quad_size, uint borders, uint sr
         norm_y = (b_top + (y - b_top) * (src_mid_h / mid_h)) / src_h;
     }
 
-    return vec2(clamp(norm_x, 0.0, 1.0), clamp(norm_y, 0.0, 1.0));
+    return mix(uv_bounds.xy, uv_bounds.zw, vec2(clamp(norm_x, 0.0, 1.0), clamp(norm_y, 0.0, 1.0)));
 }
 
 void main() {
@@ -75,7 +76,7 @@ void main() {
             break;
         }
         case 3u: { // NineSlice
-            vec2 slice_uv = compute_nine_slice_uv(v_local_pos, v_quad_size, v_param0, v_param1, v_uv);
+            vec2 slice_uv = compute_nine_slice_uv(v_local_pos, v_quad_size, v_param0, v_param1, v_uv_bounds);
             vec4 tex = texture(u_ui_textures, vec3(slice_uv, float(v_layer)));
             out_color = tex * v_color;
             break;

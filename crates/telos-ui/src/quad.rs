@@ -193,4 +193,36 @@ impl UiQuad {
             param1: Self::pack_size(src_size[0], src_size[1]),
         }
     }
+
+    /// Returns the `QuadKind` of this quad.
+    #[must_use]
+    pub const fn kind(&self) -> QuadKind {
+        match (self.size_kind[1] & 0xFFFF) as u16 {
+            1 => QuadKind::Sprite,
+            2 => QuadKind::GlyphBitmap,
+            3 => QuadKind::NineSlice,
+            4 => QuadKind::Crosshair,
+            _ => QuadKind::Solid,
+        }
+    }
+
+    /// Unpacks the 9-slice borders `[left, top, right, bottom]`.
+    #[must_use]
+    pub const fn nine_slice_borders(&self) -> [u8; 4] {
+        [
+            (self.param0 & 0xFF) as u8,
+            ((self.param0 >> 8) & 0xFF) as u8,
+            ((self.param0 >> 16) & 0xFF) as u8,
+            ((self.param0 >> 24) & 0xFF) as u8,
+        ]
+    }
+
+    /// Unpacks the 9-slice source image size `[w, h]`.
+    #[must_use]
+    pub const fn nine_slice_src_size(&self) -> [u16; 2] {
+        [
+            (self.param1 & 0xFFFF) as u16,
+            ((self.param1 >> 16) & 0xFFFF) as u16,
+        ]
+    }
 }

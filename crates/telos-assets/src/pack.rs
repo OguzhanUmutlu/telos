@@ -2,7 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{error::AssetError, image_buf::RgbaImage, mcmeta::AnimationDef};
+use crate::{
+    error::AssetError,
+    gui::{ContainerLayoutDef, GuiStyleSheet, NineSliceBorderDef},
+    image_buf::RgbaImage,
+    mcmeta::{AnimationDef, GuiMetaDef, GuiScaling},
+};
 
 /// Ordered stack of resource packs resolving assets from highest to lowest priority.
 #[derive(Debug, Clone, Default)]
@@ -231,5 +236,173 @@ impl ResourcePackStack {
             }
         }
         scripts
+    }
+
+    /// Finds a GUI sprite metadata file by name (e.g. `"container/slot"`, `"widget/button"`).
+    #[must_use]
+    pub fn find_gui_sprite_mcmeta(&self, name: &str) -> Option<PathBuf> {
+        let rel_path = format!("textures/gui/sprites/{name}.png.mcmeta");
+        self.find_texture(&rel_path)
+    }
+
+    /// Loads GUI metadata for a sprite from its `.mcmeta` file if present.
+    #[must_use]
+    pub fn load_gui_sprite_mcmeta(&self, name: &str) -> Option<GuiMetaDef> {
+        let path = self.find_gui_sprite_mcmeta(name)?;
+        let content = std::fs::read_to_string(&path).ok()?;
+        GuiMetaDef::from_json_str(&content).ok()
+    }
+
+    /// Loads a container layout definition by name from mounted resource packs.
+    ///
+    /// Searches `assets/<namespace>/gui/containers/<name>.json` and `.ron`.
+    #[must_use]
+    pub fn load_container_layout(&self, name: &str) -> Option<ContainerLayoutDef> {
+        for root in &self.roots {
+            let assets_dir = root.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let containers_dir = entry.path().join("gui").join("containers");
+                    let json_file = containers_dir.join(format!("{name}.json"));
+                    if json_file.is_file()
+                        && let Ok(content) = std::fs::read_to_string(&json_file)
+                        && let Ok(def) = ContainerLayoutDef::from_json_str(&content)
+                    {
+                        return Some(def);
+                    }
+                    let ron_file = containers_dir.join(format!("{name}.ron"));
+                    if ron_file.is_file()
+                        && let Ok(content) = std::fs::read_to_string(&ron_file)
+                        && let Ok(def) = ContainerLayoutDef::from_ron_str(&content)
+                    {
+                        return Some(def);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn scan_sprite_nine_slices(
+        root: &Path,
+        nine_slices: &mut std::collections::HashMap<String, NineSliceBorderDef>,
+    ) {
+        let mut candidates = Vec::new();
+        candidates.push(root.join("textures").join("gui").join("sprites"));
+
+        let assets_dir = root.join("assets");
+        if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+            for entry in entries.flatten() {
+                candidates.push(entry.path().join("textures").join("gui").join("sprites"));
+            }
+        }
+
+        for base_dir in candidates {
+            if base_dir.is_dir() {
+                Self::walk_and_collect_mcmeta(&base_dir, &base_dir, nine_slices);
+            }
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn walk_and_collect_mcmeta(
+        current_dir: &Path,
+        base_dir: &Path,
+        nine_slices: &mut std::collections::HashMap<String, NineSliceBorderDef>,
+    ) {
+        if let Ok(entries) = std::fs::read_dir(current_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    Self::walk_and_collect_mcmeta(&path, base_dir, nine_slices);
+                } else if path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.ends_with(".png.mcmeta"))
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(gui_meta) = GuiMetaDef::from_json_str(&content)
+                    && let GuiScaling::NineSlice {
+                        border,
+                        stretch_inner,
+                        ..
+                    } = gui_meta.scaling
+                    && let Ok(rel) = path.strip_prefix(base_dir)
+                {
+                    let rel_str = rel.to_string_lossy();
+                    if let Some(sprite_name) = rel_str.strip_suffix(".png.mcmeta") {
+                        nine_slices.insert(
+                            sprite_name.to_string(),
+                            NineSliceBorderDef {
+                                left: border.left() as u8,
+                                top: border.top() as u8,
+                                right: border.right() as u8,
+                                bottom: border.bottom() as u8,
+                                stretch_inner,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Loads the combined GUI style sheet by merging mounted resource packs over default styles.
+    #[must_use]
+    pub fn load_gui_style_sheet(&self) -> GuiStyleSheet {
+        let mut stylesheet = GuiStyleSheet::default();
+
+        // Iterate in reverse root priority so higher-priority packs override lower-priority packs
+        for root in self.roots.iter().rev() {
+            // 1. Scan sprite nine-slice borders
+            Self::scan_sprite_nine_slices(root, &mut stylesheet.nine_slices);
+
+            // 2. Scan assets/<namespace>/gui/style.{json,ron}
+            let assets_dir = root.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let gui_dir = entry.path().join("gui");
+                    let style_json = gui_dir.join("style.json");
+                    if style_json.is_file()
+                        && let Ok(content) = std::fs::read_to_string(&style_json)
+                        && let Ok(sheet_override) = GuiStyleSheet::from_json_str(&content)
+                    {
+                        stylesheet.merge(sheet_override);
+                    }
+                    let style_ron = gui_dir.join("style.ron");
+                    if style_ron.is_file()
+                        && let Ok(content) = std::fs::read_to_string(&style_ron)
+                        && let Ok(sheet_override) = GuiStyleSheet::from_ron_str(&content)
+                    {
+                        stylesheet.merge(sheet_override);
+                    }
+
+                    // 3. Scan assets/<namespace>/gui/containers/*.{json,ron}
+                    let containers_dir = gui_dir.join("containers");
+                    if let Ok(c_entries) = std::fs::read_dir(&containers_dir) {
+                        for c_entry in c_entries.flatten() {
+                            let path = c_entry.path();
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default();
+                            let ext = path.extension().and_then(|s| s.to_str());
+                            if ext == Some("json")
+                                && let Ok(content) = std::fs::read_to_string(&path)
+                                && let Ok(layout) = ContainerLayoutDef::from_json_str(&content)
+                            {
+                                stylesheet.override_container(stem, layout);
+                            } else if ext == Some("ron")
+                                && let Ok(content) = std::fs::read_to_string(&path)
+                                && let Ok(layout) = ContainerLayoutDef::from_ron_str(&content)
+                            {
+                                stylesheet.override_container(stem, layout);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stylesheet
     }
 }
