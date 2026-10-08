@@ -172,3 +172,53 @@ fn test_server_list_screen() {
     screen.retain_active_lan_addresses(&[]);
     assert!(screen.servers.is_empty());
 }
+
+#[test]
+fn test_server_list_direct_connect_actions() {
+    use telos_ui::ServerListAction;
+
+    let font = BitmapFont::new_fallback(0);
+    let mut screen = ServerListScreen::new();
+    screen.add_or_update_lan_server(ServerEntry::new(
+        "Test Server",
+        "127.0.0.1:25565",
+        "MOTD",
+        1,
+        10,
+        true,
+    ));
+
+    screen.update_layout(800.0, 600.0);
+
+    // Join selected server action
+    let join_action = screen.handle_enter();
+    assert_eq!(
+        join_action,
+        Some(ServerListAction::Connect("127.0.0.1:25565".to_string()))
+    );
+
+    // Click direct connect button
+    let direct_btn_x = screen.buttons[1].x + 5.0;
+    let direct_btn_y = screen.buttons[1].y + 5.0;
+    let click_res = screen.handle_mouse_click(direct_btn_x, direct_btn_y, 800.0, 600.0);
+    assert_eq!(click_res, None);
+    assert!(screen.direct_connect_mode);
+
+    // Type invite link into direct connect input
+    for ch in "telos://connect/xyz".chars() {
+        screen.handle_char(ch);
+    }
+    assert_eq!(screen.direct_input.text, "telos://connect/xyz");
+
+    // Press enter to connect
+    let conn_action = screen.handle_enter();
+    assert_eq!(
+        conn_action,
+        Some(ServerListAction::Connect("telos://connect/xyz".to_string()))
+    );
+
+    // Render direct connect view
+    let mut quads = Vec::new();
+    render_server_list(&screen, &font, 800, 600, 1, &mut quads);
+    assert!(!quads.is_empty());
+}

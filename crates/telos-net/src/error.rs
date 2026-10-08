@@ -47,6 +47,14 @@ pub enum NetError {
         /// Explanation provided by the peer.
         message: String,
     },
+
+    /// Transport or NAT traversal error.
+    #[error("Transport error: {0}")]
+    Transport(String),
+
+    /// Codec or encoding error.
+    #[error("Codec error: {0}")]
+    Codec(String),
 }
 
 /// Specialized result type for networking operations.

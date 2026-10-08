@@ -51,7 +51,7 @@ pub use menu::{
 
 pub use quad::{QuadKind, UiQuad};
 pub use scale::{compute_gui_scale, snap_to_physical, to_physical_pixels};
-pub use server_list::{ServerEntry, ServerListScreen, render_server_list};
+pub use server_list::{ServerEntry, ServerListAction, ServerListScreen, render_server_list};
 pub use settings::{AudioSettings, ControlSettings, GameSettings, GameplaySettings, VideoSettings};
 pub use style::{
     ContainerLayoutDef, GuiStyleSheet, HudThemeDef, NineSliceBorderDef, SlotLayoutDef,

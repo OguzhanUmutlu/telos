@@ -151,3 +151,79 @@ async fn test_quic_listener_and_connection_trait() {
     server_conn.close(DisconnectReason::Normal);
     listener.close();
 }
+
+#[test]
+fn test_connect_to_target_sync_with_invite_ticket() {
+    use std::time::{Duration, Instant};
+    use telos_net::nat::NatMappingResult;
+    use telos_net::ticket::{ConnectionTicket, connect_to_target_sync};
+    use telos_net::{Lane, Payload, QuicListener};
+    use telos_protocol::bounded::BoundedString;
+    use telos_protocol::messages::{C2sHello, C2sMessage, DisconnectReason};
+
+    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap()).expect("bind listener");
+    let addr = listener.local_addr();
+    let cert_fingerprint = listener.cert_spki_sha256();
+    assert_ne!(cert_fingerprint, [0u8; 32]);
+
+    let mapping = NatMappingResult {
+        local_port: addr.port(),
+        upnp_mapped: None,
+        nat_pmp_mapped: None,
+        stun_reflexive: None,
+        lan_addresses: vec![addr],
+    };
+
+    let secret_key = [99u8; 32];
+    let ticket = ConnectionTicket::create(
+        "LAN Test Server",
+        &mapping,
+        cert_fingerprint,
+        [1u8; 16],
+        3600,
+        &secret_key,
+    );
+    let invite_link = ticket.to_invite_link().expect("create invite link");
+
+    // Connect via synchronous connect_to_target_sync with invite link
+    let client_conn = connect_to_target_sync(&invite_link).expect("connect via invite link");
+
+    let hello = C2sMessage::Hello(C2sHello {
+        protocol: 1,
+        build: BoundedString::new("test-p2p").unwrap(),
+        features: 0x99,
+    });
+    client_conn
+        .send(Lane::Control, Payload::Msg(hello))
+        .expect("send hello");
+
+    let start = Instant::now();
+    let mut server_conn = None;
+    while start.elapsed() < Duration::from_secs(3) {
+        if let Some(conn) = listener.try_accept() {
+            server_conn = Some(conn);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let server_conn = server_conn.expect("server must accept connection");
+
+    let start = Instant::now();
+    let mut got_msg = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        if let Ok(Some(incoming)) = server_conn.try_recv()
+            && let Some(C2sMessage::Hello(h)) = incoming.into_msg()
+        {
+            assert_eq!(h.protocol, 1);
+            assert_eq!(h.features, 0x99);
+            got_msg = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(got_msg);
+
+    client_conn.close(DisconnectReason::Normal);
+    server_conn.close(DisconnectReason::Normal);
+    listener.close();
+}

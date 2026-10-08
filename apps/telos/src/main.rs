@@ -54,13 +54,13 @@ use telos_ui::menu::{
 use telos_ui::settings::GameSettings;
 use telos_ui::{
     BitmapFont, ChatHudState, DUAL_ANVIL_SLOT_COUNT, DUAL_CONTAINER_SLOT_COUNT,
-    DUAL_CRAFTING_TABLE_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, GuiStyleSheet, HudState, ToastState,
-    UiLayers, UiQuad, UiSlotItem, anvil_slot_at_pos_styled, chest_slot_at_pos_styled,
-    compute_gui_scale, crafting_table_slot_at_pos_styled, furnace_slot_at_pos_styled,
-    inventory_slot_at_pos_styled, render_anvil_container_styled, render_chat_hud,
-    render_chest_container_styled, render_crafting_table_container_styled,
-    render_furnace_container_styled, render_hud_styled, render_inventory_screen_styled,
-    snap_to_physical,
+    DUAL_CRAFTING_TABLE_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, GuiStyleSheet, HudState,
+    ServerListAction, ServerListScreen, ToastState, UiLayers, UiQuad, UiSlotItem,
+    anvil_slot_at_pos_styled, chest_slot_at_pos_styled, compute_gui_scale,
+    crafting_table_slot_at_pos_styled, furnace_slot_at_pos_styled, inventory_slot_at_pos_styled,
+    render_anvil_container_styled, render_chat_hud, render_chest_container_styled,
+    render_crafting_table_container_styled, render_furnace_container_styled, render_hud_styled,
+    render_inventory_screen_styled, snap_to_physical,
 };
 use telos_ui::{InputKey, KeyAction};
 
@@ -78,6 +78,8 @@ pub enum AppScreen {
         /// Whether returning from settings resumes the pause menu.
         return_to_pause: bool,
     },
+    /// Multiplayer server browser and direct connect screen.
+    Multiplayer,
     /// Active 3D gameplay view.
     InGame,
 }
@@ -1530,6 +1532,10 @@ struct App {
     settings_screen: SettingsScreen,
     pause_menu: PauseMenuScreen,
     is_paused: bool,
+    server_list: ServerListScreen,
+    server_listener_tx: Option<std::sync::mpsc::Sender<telos_net::QuicListener>>,
+    lan_opened_port: Option<u16>,
+    last_invite_link: Option<String>,
     advancements_screen: AdvancementsScreen,
     advancements_open: bool,
     toast_queue: VecDeque<ToastState>,
@@ -2020,6 +2026,10 @@ impl App {
             settings_screen,
             pause_menu,
             is_paused: false,
+            server_list: ServerListScreen::new(),
+            server_listener_tx: None,
+            lan_opened_port: None,
+            last_invite_link: None,
             advancements_screen,
             advancements_open: false,
             toast_queue: VecDeque::new(),
@@ -2086,6 +2096,11 @@ impl App {
         let server_conn: Box<dyn Connection<S2cMessage, C2sMessage>> = Box::new(server_conn);
         self.client_conn = Box::new(client_conn);
 
+        let (listener_tx, listener_rx) = std::sync::mpsc::channel::<telos_net::QuicListener>();
+        self.server_listener_tx = Some(listener_tx);
+        self.lan_opened_port = None;
+        self.last_invite_link = None;
+
         let server_running = Arc::new(AtomicBool::new(true));
         self.server_running = server_running.clone();
         let running_clone = server_running;
@@ -2100,6 +2115,13 @@ impl App {
 
                 let mut timestep = FixedTimestep::new(20);
                 while running_clone.load(Ordering::Relaxed) {
+                    if let Ok(listener) = listener_rx.try_recv() {
+                        let port = listener.local_addr().port();
+                        let beacon = telos_net::LanBeacon::new(port, &server.config().motd);
+                        server.lan_emitter = telos_net::LanBeaconEmitter::spawn(beacon, port).ok();
+                        server.listener = Some(listener);
+                        info!(port, "Server opened to LAN & P2P with active QUIC listener");
+                    }
                     timestep.advance(|_| {
                         server.tick();
                     });
@@ -2152,8 +2174,168 @@ impl App {
         if let Some(handle) = self.server_handle.take() {
             let _ = handle.join();
         }
+        self.server_listener_tx = None;
+        self.lan_opened_port = None;
+        self.last_invite_link = None;
         self.client_phase = ConnectionPhase::Hello;
         info!("Stopped singleplayer server session");
+    }
+
+    fn connect_to_remote_server(&mut self, target: &str) {
+        info!(
+            target,
+            "Connecting to remote multiplayer server / invite ticket"
+        );
+        self.stop_singleplayer_server();
+
+        match telos_net::ticket::connect_to_target_sync(target) {
+            Ok(conn) => {
+                self.client_conn = conn;
+                self.chunks.clear();
+                self.chunk_meshes.clear();
+                self.dirty_chunks.clear();
+                self.lod_meshes.clear();
+                self.pending_lod_uploads.clear();
+                self.entity_store = ClientEntityStore::new();
+                self.client_effects.clear();
+                self.advancements_open = false;
+                self.hud_state.active_toast = None;
+                self.toast_queue.clear();
+                for node in &mut self.advancements_screen.nodes {
+                    node.completed = false;
+                }
+
+                let _ = self.client_conn.send(
+                    Lane::Control,
+                    Payload::Msg(C2sMessage::Hello(C2sHello {
+                        protocol: 1,
+                        build: BoundedString::new("0.1.0").unwrap(),
+                        features: 0,
+                    })),
+                );
+
+                let initial_mode = match self
+                    .game_settings
+                    .gameplay
+                    .game_mode
+                    .to_lowercase()
+                    .as_str()
+                {
+                    "survival" => GameMode::Survival,
+                    _ => GameMode::Creative,
+                };
+                self.physics =
+                    PlayerPhysicsController::new(DVec3::new(128.0, 45.0, 160.0), initial_mode);
+                self.camera.position = self.physics.eye_pos();
+                self.client_phase = ConnectionPhase::Hello;
+                self.is_paused = false;
+                self.current_screen = AppScreen::InGame;
+                self.controller.mouse_captured = true;
+                self.set_cursor_captured(true);
+
+                info!("Connected to remote server successfully");
+            }
+            Err(e) => {
+                warn!("Failed to connect to {}: {}", target, e);
+                let toast = ToastState {
+                    id: "connect_err".to_string(),
+                    title: format!("Connect Failed: {e}"),
+                    icon_item: 0,
+                    frame: 2,
+                    elapsed_secs: 0.0,
+                    duration_secs: 5.0,
+                };
+                self.hud_state.active_toast = Some(toast);
+            }
+        }
+    }
+
+    fn open_singleplayer_to_lan_and_invite(&mut self) {
+        if let Some(link) = &self.last_invite_link {
+            info!(link, "Invite link already generated");
+            let toast = ToastState {
+                id: "lan".to_string(),
+                title: "Invite Link Ready in Chat".to_string(),
+                icon_item: 0,
+                frame: 1,
+                elapsed_secs: 0.0,
+                duration_secs: 5.0,
+            };
+            self.hud_state.active_toast = Some(toast);
+            let now_secs = self.start_time.elapsed().as_secs_f64();
+            self.chat_state.add_system_message(
+                format!("Invite link: {link}"),
+                UiQuad::rgba(85, 255, 85, 255),
+                now_secs,
+            );
+            return;
+        }
+
+        let Some(listener_tx) = &self.server_listener_tx else {
+            warn!("Cannot open to LAN: server listener channel unavailable");
+            return;
+        };
+
+        // Attempt standard port 25565 first, fallback to ephemeral port 0
+        let listener = telos_net::QuicListener::bind("0.0.0.0:25565".parse().unwrap())
+            .or_else(|_| telos_net::QuicListener::bind("0.0.0.0:0".parse().unwrap()));
+
+        let Ok(listener) = listener else {
+            warn!("Failed to bind QUIC listener on 0.0.0.0");
+            return;
+        };
+
+        let bound_port = listener.local_addr().port();
+        let cert_spki = listener.cert_spki_sha256();
+        let _ = listener_tx.send(listener);
+        self.lan_opened_port = Some(bound_port);
+
+        // Port mapper discovery (UPnP, NAT-PMP, STUN)
+        let rt = telos_net::quic::runtime();
+        let mapping = rt.block_on(async {
+            let mut mapper = telos_net::nat::PortMapper::new();
+            mapper
+                .map_port(bound_port, 7200, Duration::from_millis(1500))
+                .await
+        });
+
+        let signing_key = [
+            0x54, 0x45, 0x4c, 0x4f, 0x53, 0x5f, 0x4c, 0x41, 0x4e, 0x5f, 0x53, 0x45, 0x43, 0x52,
+            0x45, 0x54, 0x20, 0x32, 0x30, 0x32, 0x36, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b,
+        ];
+
+        let ticket = telos_net::ticket::ConnectionTicket::create(
+            "Telos LAN Game",
+            &mapping,
+            cert_spki,
+            [0u8; 16],
+            86400,
+            &signing_key,
+        );
+
+        let link = ticket
+            .to_invite_link()
+            .unwrap_or_else(|_| format!("127.0.0.1:{bound_port}"));
+        self.last_invite_link = Some(link.clone());
+
+        info!(bound_port, link, "Opened game session to LAN and P2P");
+        let toast = ToastState {
+            id: "lan".to_string(),
+            title: format!("Opened on Port {bound_port}! Link in Chat"),
+            icon_item: 0,
+            frame: 1,
+            elapsed_secs: 0.0,
+            duration_secs: 5.0,
+        };
+        self.hud_state.active_toast = Some(toast);
+
+        let now_secs = self.start_time.elapsed().as_secs_f64();
+        self.chat_state.add_system_message(
+            format!("Game opened on port {bound_port}! Invite Link: {link}"),
+            UiQuad::rgba(85, 255, 85, 255),
+            now_secs,
+        );
     }
 
     fn set_cursor_captured(&self, captured: bool) {
@@ -3216,6 +3398,18 @@ impl App {
 
         if let Some(listener) = &mut self.lan_listener {
             listener.poll();
+            for s in listener.active_servers() {
+                let addr = format!("{}:{}", s.sender_addr.ip(), s.beacon.quic_port);
+                self.server_list
+                    .add_or_update_lan_server(telos_ui::ServerEntry::new(
+                        &s.beacon.motd,
+                        addr,
+                        &s.beacon.motd,
+                        s.beacon.current_players,
+                        s.beacon.max_players,
+                        true,
+                    ));
+            }
         }
     }
 
@@ -6148,6 +6342,17 @@ impl App {
                             &mut ui_quads,
                         );
                     }
+                    AppScreen::Multiplayer => {
+                        self.server_list.update_layout(width_gui, height_gui);
+                        telos_ui::render_server_list(
+                            &self.server_list,
+                            font,
+                            swapchain_extent.width,
+                            swapchain_extent.height,
+                            gui_scale,
+                            &mut ui_quads,
+                        );
+                    }
                     AppScreen::InGame => {
                         if self.is_paused {
                             self.pause_menu.update_layout_i18n(
@@ -6713,6 +6918,17 @@ impl App {
                     .update_layout_i18n(width_gui, height_gui, &self.catalog);
                 self.settings_screen
                     .render(font, width_gui, height_gui, gui_scale, &mut ui_quads);
+            }
+            AppScreen::Multiplayer => {
+                self.server_list.update_layout(width_gui, height_gui);
+                telos_ui::render_server_list(
+                    &self.server_list,
+                    font,
+                    width,
+                    height,
+                    gui_scale,
+                    &mut ui_quads,
+                );
             }
             AppScreen::InGame => {
                 if self.is_paused {
@@ -9003,6 +9219,9 @@ impl ApplicationHandler for App {
                     AppScreen::Settings { .. } => {
                         self.settings_screen.handle_mouse_move(mx, my);
                     }
+                    AppScreen::Multiplayer => {
+                        self.server_list.handle_mouse_move(mx, my);
+                    }
                     AppScreen::InGame => {
                         if self.is_paused {
                             self.pause_menu.handle_mouse_move(mx, my);
@@ -9078,6 +9297,19 @@ impl ApplicationHandler for App {
                                 .iter()
                                 .any(|b| b.hovered)
                             || self.settings_screen.done_button.hovered
+                    }
+                    AppScreen::Multiplayer => {
+                        if self.server_list.direct_connect_mode {
+                            self.server_list
+                                .direct_buttons
+                                .iter()
+                                .any(|b| b.hovered && b.enabled)
+                        } else {
+                            self.server_list
+                                .buttons
+                                .iter()
+                                .any(|b| b.hovered && b.enabled)
+                        }
                     }
                     AppScreen::InGame => {
                         if self.is_paused {
@@ -9197,7 +9429,8 @@ impl ApplicationHandler for App {
                                     self.current_screen = AppScreen::WorldSelect;
                                 }
                                 MainMenuAction::Multiplayer => {
-                                    info!("Multiplayer screen requested (placeholder)");
+                                    self.server_list.update_layout(width_gui, height_gui);
+                                    self.current_screen = AppScreen::Multiplayer;
                                 }
                                 MainMenuAction::Options => {
                                     self.settings_screen =
@@ -9349,6 +9582,23 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    AppScreen::Multiplayer => {
+                        if button == MouseButton::Left
+                            && let Some(action) = self
+                                .server_list
+                                .handle_mouse_click(mx, my, width_gui, height_gui)
+                        {
+                            match action {
+                                ServerListAction::Connect(target) => {
+                                    self.connect_to_remote_server(&target);
+                                }
+                                ServerListAction::Cancel => {
+                                    self.current_screen = AppScreen::MainMenu;
+                                }
+                            }
+                        }
+                        return;
+                    }
                     AppScreen::InGame => {
                         if self.is_paused {
                             if button == MouseButton::Left
@@ -9377,6 +9627,9 @@ impl ApplicationHandler for App {
                                         self.current_screen = AppScreen::Settings {
                                             return_to_pause: true,
                                         };
+                                    }
+                                    PauseMenuAction::OpenToLan => {
+                                        self.open_singleplayer_to_lan_and_invite();
                                     }
                                     PauseMenuAction::SaveAndQuit => {
                                         self.stop_singleplayer_server();
@@ -9881,6 +10134,45 @@ impl ApplicationHandler for App {
                 }
 
                 match &mut self.current_screen {
+                    AppScreen::Multiplayer => {
+                        if pressed {
+                            match code {
+                                KeyCode::Escape => {
+                                    if self.server_list.direct_connect_mode {
+                                        self.server_list.direct_connect_mode = false;
+                                        self.server_list.direct_connect_focused = false;
+                                    } else {
+                                        self.current_screen = AppScreen::MainMenu;
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(action) = self.server_list.handle_enter() {
+                                        match action {
+                                            ServerListAction::Connect(target) => {
+                                                self.connect_to_remote_server(&target);
+                                            }
+                                            ServerListAction::Cancel => {
+                                                self.current_screen = AppScreen::MainMenu;
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    self.server_list.handle_backspace();
+                                }
+                                _ => {
+                                    if let Some(txt) = text {
+                                        for ch in txt.chars() {
+                                            if !ch.is_control() {
+                                                self.server_list.handle_char(ch);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return;
+                    }
                     AppScreen::WorldCreate => {
                         if pressed {
                             match code {
@@ -10456,6 +10748,11 @@ impl ApplicationHandler for App {
                     self.settings_screen.handle_mouse_wheel(scroll);
                     self.settings_screen
                         .update_layout_i18n(width_gui, height_gui, &self.catalog);
+                    return;
+                }
+                if self.current_screen == AppScreen::Multiplayer {
+                    self.server_list.scroll_offset =
+                        (self.server_list.scroll_offset - scroll * 16.0).max(0.0);
                     return;
                 }
                 if self.current_screen == AppScreen::WorldSelect {

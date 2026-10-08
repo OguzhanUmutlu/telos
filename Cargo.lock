@@ -3563,11 +3563,14 @@ dependencies = [
 name = "telos-net"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytes",
  "proptest",
  "quinn",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
  "telos-core",
  "telos-protocol",
  "telos-voxel",

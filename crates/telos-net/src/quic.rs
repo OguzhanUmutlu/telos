@@ -429,12 +429,13 @@ pub struct QuicListener {
     local_addr: SocketAddr,
     incoming_rx: mpsc::Receiver<Box<dyn Connection<S2cMessage, C2sMessage>>>,
     closed: Arc<AtomicBool>,
+    cert_der: Vec<u8>,
 }
 
 impl QuicListener {
     /// Binds a QUIC server listener on the specified local socket address.
     pub fn bind(addr: SocketAddr) -> Result<Self> {
-        let (server_endpoint, _cert) = QuicServerEndpoint::bind(addr)?;
+        let (server_endpoint, cert_der) = QuicServerEndpoint::bind(addr)?;
         let local_addr = server_endpoint.local_addr()?;
         let endpoint = server_endpoint.endpoint;
         let (incoming_tx, incoming_rx) = mpsc::channel();
@@ -472,6 +473,7 @@ impl QuicListener {
             local_addr,
             incoming_rx,
             closed,
+            cert_der,
         })
     }
 
@@ -479,6 +481,18 @@ impl QuicListener {
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Underlying TLS certificate in DER format.
+    #[must_use]
+    pub fn cert_der(&self) -> &[u8] {
+        &self.cert_der
+    }
+
+    /// Cryptographic fingerprint of the certificate DER bytes for pinning.
+    #[must_use]
+    pub fn cert_spki_sha256(&self) -> [u8; 32] {
+        *blake3::hash(&self.cert_der).as_bytes()
     }
 
     /// Non-blocking check for a newly connected client.
@@ -491,4 +505,17 @@ impl QuicListener {
         self.closed.store(true, Ordering::Release);
         self.endpoint.close(quinn::VarInt::from_u32(0), b"closed");
     }
+}
+
+/// Connects to a remote QUIC server on `addr` using Quinn.
+pub async fn connect_remote_quic(
+    addr: SocketAddr,
+) -> Result<Box<dyn Connection<C2sMessage, S2cMessage>>> {
+    let bind_addr = if addr.is_ipv4() {
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+    } else {
+        SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0)
+    };
+    let client_ep = QuicClientEndpoint::bind(bind_addr)?;
+    client_ep.connect_to(addr, "localhost").await
 }

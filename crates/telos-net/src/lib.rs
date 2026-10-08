@@ -13,8 +13,10 @@ pub mod error;
 pub mod lan;
 pub mod loopback;
 pub mod memory;
+pub mod nat;
 /// QUIC transport and endpoint runtime over Quinn and TLS 1.3.
 pub mod quic;
+pub mod ticket;
 pub mod transport;
 
 pub use error::{NetError, Result};
@@ -24,8 +26,16 @@ pub use loopback::{
     loopback_pair,
 };
 pub use memory::{DEFAULT_RELIABLE_CAPACITY, DEFAULT_UNRELIABLE_CAPACITY, MemoryConnection};
+pub use nat::{
+    CandidatePriority, HolePunchCoordinator, HolePunchPacket, NatCandidate, NatMappingResult,
+    NatPmpClient, NatPmpMapping, PortMapper, StunClient, StunEndpoint, UpnpClient, UpnpGateway,
+};
 pub use quic::{
     QuicClientEndpoint, QuicConnection, QuicListener, QuicServerEndpoint, create_client_config,
     create_server_config, generate_self_signed_cert,
+};
+pub use ticket::{
+    CandidateAddress, CandidateType, ConnectionTicket, INVITE_SCHEME_PREFIX, base64_url_decode,
+    base64_url_encode,
 };
 pub use transport::{ConnStats, Connection, Incoming, Lane, Payload};

@@ -14,6 +14,8 @@ pub enum PauseMenuAction {
     Advancements,
     /// Open options screen.
     Options,
+    /// Open singleplayer game to LAN / P2P invite.
+    OpenToLan,
     /// Save and cleanly quit to title.
     SaveAndQuit,
 }
@@ -54,7 +56,7 @@ impl PauseMenuScreen {
         let btn_w = 180.0;
         let btn_h = 24.0;
         let btn_x = center_x - btn_w * 0.5;
-        let start_y = height_gui * 0.30;
+        let start_y = height_gui * 0.28;
 
         self.title = catalog.translate("menu.game").to_string();
 
@@ -84,9 +86,17 @@ impl PauseMenuScreen {
                 catalog.translate("menu.options"),
             ),
             MenuButton::new(
-                3,
+                5,
                 btn_x,
                 start_y + 96.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.shareToLan"),
+            ),
+            MenuButton::new(
+                3,
+                btn_x,
+                start_y + 128.0,
                 btn_w,
                 btn_h,
                 catalog.translate("menu.returnToMenu"),
@@ -117,6 +127,7 @@ impl PauseMenuScreen {
                     2 => Some(PauseMenuAction::Options),
                     3 => Some(PauseMenuAction::SaveAndQuit),
                     4 => Some(PauseMenuAction::Advancements),
+                    5 => Some(PauseMenuAction::OpenToLan),
                     _ => None,
                 };
             }

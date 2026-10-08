@@ -1,6 +1,7 @@
 //! Multiplayer server browser screen, LAN server discovery cards, and direct connect.
 
 use crate::font::BitmapFont;
+use crate::menu::widgets::{ButtonStyle, MenuButton, MenuTextInput};
 use crate::quad::UiQuad;
 use crate::scale::snap_to_physical;
 
@@ -46,8 +47,17 @@ impl ServerEntry {
     }
 }
 
+/// Action produced by user interaction with the server list screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerListAction {
+    /// Connect to a server by address or ticket.
+    Connect(String),
+    /// Return to main menu.
+    Cancel,
+}
+
 /// Interactive state and card layout for the multiplayer server browser.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ServerListScreen {
     /// Registered and discovered servers.
     pub servers: Vec<ServerEntry>,
@@ -59,13 +69,226 @@ pub struct ServerListScreen {
     pub direct_connect_focused: bool,
     /// Vertical scroll offset in GUI pixels.
     pub scroll_offset: f32,
+    /// Whether the direct connect input view is currently open.
+    pub direct_connect_mode: bool,
+    /// Direct connect text input widget.
+    pub direct_input: MenuTextInput,
+    /// Bottom navigation buttons for server list view.
+    pub buttons: Vec<MenuButton>,
+    /// Navigation buttons for direct connect view.
+    pub direct_buttons: Vec<MenuButton>,
+}
+
+impl Default for ServerListScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServerListScreen {
     /// Creates a new empty `ServerListScreen`.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let direct_input = MenuTextInput::new(
+            10,
+            0.0,
+            0.0,
+            320.0,
+            24.0,
+            "Enter host:port or telos://connect/<ticket>",
+        );
+
+        Self {
+            servers: Vec::new(),
+            selected_index: None,
+            direct_connect_address: String::new(),
+            direct_connect_focused: false,
+            scroll_offset: 0.0,
+            direct_connect_mode: false,
+            direct_input,
+            buttons: Vec::new(),
+            direct_buttons: Vec::new(),
+        }
+    }
+
+    /// Updates layout of buttons and input widgets based on current GUI dimensions.
+    pub fn update_layout(&mut self, width_gui: f32, height_gui: f32) {
+        let btn_y = height_gui - 36.0;
+        let btn_w = 90.0f32;
+        let btn_h = 20.0f32;
+
+        let total_btns_w = (btn_w * 3.0) + (8.0 * 2.0);
+        let start_btn_x = (width_gui - total_btns_w) / 2.0;
+
+        let has_sel = self.selected_index.is_some();
+
+        let mut join_btn = MenuButton::new(1, start_btn_x, btn_y, btn_w, btn_h, "Join Server");
+        join_btn.enabled = has_sel;
+
+        let direct_btn = MenuButton::new(
+            2,
+            start_btn_x + btn_w + 8.0,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Direct Connect",
+        );
+
+        let cancel_btn = MenuButton::new(
+            3,
+            start_btn_x + (btn_w + 8.0) * 2.0,
+            btn_y,
+            btn_w,
+            btn_h,
+            "Cancel",
+        );
+
+        self.buttons = vec![join_btn, direct_btn, cancel_btn];
+
+        // Direct connect mode layout
+        let input_w = 320.0f32.min(width_gui - 32.0);
+        let input_x = (width_gui - input_w) / 2.0;
+        let input_y = height_gui * 0.40;
+
+        self.direct_input.x = input_x;
+        self.direct_input.y = input_y;
+        self.direct_input.width = input_w;
+
+        let d_total_w = (btn_w * 2.0) + 8.0;
+        let d_start_x = (width_gui - d_total_w) / 2.0;
+        let d_btn_y = input_y + 36.0;
+
+        let conn_btn = MenuButton::new(11, d_start_x, d_btn_y, btn_w, btn_h, "Connect")
+            .with_style(ButtonStyle::Primary);
+        let back_btn = MenuButton::new(12, d_start_x + btn_w + 8.0, d_btn_y, btn_w, btn_h, "Back");
+
+        self.direct_buttons = vec![conn_btn, back_btn];
+    }
+
+    /// Handles mouse motion in GUI pixels.
+    pub fn handle_mouse_move(&mut self, mouse_x: f32, mouse_y: f32) {
+        if self.direct_connect_mode {
+            self.direct_input.hovered = self.direct_input.contains(mouse_x, mouse_y);
+            for btn in &mut self.direct_buttons {
+                btn.hovered = btn.contains(mouse_x, mouse_y);
+            }
+        } else {
+            for btn in &mut self.buttons {
+                btn.hovered = btn.contains(mouse_x, mouse_y);
+            }
+        }
+    }
+
+    /// Handles mouse clicks in GUI pixels, returning an action if triggered.
+    #[allow(clippy::similar_names)]
+    pub fn handle_mouse_click(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        width_gui: f32,
+        height_gui: f32,
+    ) -> Option<ServerListAction> {
+        self.update_layout(width_gui, height_gui);
+
+        if self.direct_connect_mode {
+            let inside_input = self.direct_input.contains(mouse_x, mouse_y);
+            self.direct_input.focused = inside_input;
+            self.direct_connect_focused = inside_input;
+
+            for btn in &self.direct_buttons {
+                if btn.enabled && btn.contains(mouse_x, mouse_y) {
+                    match btn.id {
+                        11 => {
+                            let text = self.direct_input.text.trim().to_string();
+                            if !text.is_empty() {
+                                return Some(ServerListAction::Connect(text));
+                            }
+                        }
+                        12 => {
+                            self.direct_connect_mode = false;
+                            self.direct_connect_focused = false;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return None;
+        }
+
+        // 1. Check card list clicks
+        let list_top_gui = 32.0f32;
+        let list_bottom_gui = height_gui - 52.0f32;
+        let card_w_gui = 300.0f32.min(width_gui - 20.0);
+        let card_h_gui = 36.0f32;
+        let card_x_gui = (width_gui - card_w_gui) / 2.0;
+
+        if mouse_x >= card_x_gui
+            && mouse_x <= card_x_gui + card_w_gui
+            && mouse_y >= list_top_gui
+            && mouse_y <= list_bottom_gui
+        {
+            let mut current_y = list_top_gui - self.scroll_offset;
+            for i in 0..self.servers.len() {
+                if mouse_y >= current_y && mouse_y <= current_y + card_h_gui {
+                    self.select_server(i);
+                    break;
+                }
+                current_y += card_h_gui + 4.0;
+            }
+        }
+
+        // 2. Check bottom buttons
+        for btn in &self.buttons {
+            if btn.enabled && btn.contains(mouse_x, mouse_y) {
+                match btn.id {
+                    1 => {
+                        if let Some(server) = self.selected_server() {
+                            return Some(ServerListAction::Connect(server.address.clone()));
+                        }
+                    }
+                    2 => {
+                        self.direct_connect_mode = true;
+                        self.direct_input.focused = true;
+                        self.direct_connect_focused = true;
+                    }
+                    3 => {
+                        return Some(ServerListAction::Cancel);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Handles typed characters into the direct connect input box.
+    pub fn handle_char(&mut self, ch: char) {
+        if self.direct_connect_mode && self.direct_input.focused {
+            self.direct_input.insert_char(ch);
+            self.direct_connect_address = self.direct_input.text.clone();
+        }
+    }
+
+    /// Handles backspace in the direct connect input box.
+    pub fn handle_backspace(&mut self) {
+        if self.direct_connect_mode && self.direct_input.focused {
+            self.direct_input.backspace();
+            self.direct_connect_address = self.direct_input.text.clone();
+        }
+    }
+
+    /// Handles Enter key, connecting to selected server or direct input.
+    pub fn handle_enter(&mut self) -> Option<ServerListAction> {
+        if self.direct_connect_mode {
+            let text = self.direct_input.text.trim().to_string();
+            if !text.is_empty() {
+                return Some(ServerListAction::Connect(text));
+            }
+        } else if let Some(server) = self.selected_server() {
+            return Some(ServerListAction::Connect(server.address.clone()));
+        }
+        None
     }
 
     /// Adds or updates a LAN discovered server entry by address.
@@ -132,6 +355,43 @@ pub fn render_server_list(
         [screen_w as u16, screen_h as u16],
         UiQuad::rgba(16, 16, 16, 235),
     ));
+
+    if screen.direct_connect_mode {
+        // Direct Connect View
+        let title = "Direct Connect";
+        let (title_w, _) = font.measure_text(title);
+        let title_x = (screen_w_gui - title_w) / 2.0;
+        font.layout_text(
+            title,
+            title_x,
+            screen_h_gui * 0.25,
+            UiQuad::rgba(255, 255, 255, 255),
+            true,
+            scale,
+            out,
+        );
+
+        let prompt = "Enter server address or invite link (telos://connect/...):";
+        let (prompt_w, _) = font.measure_text(prompt);
+        let prompt_x = (screen_w_gui - prompt_w) / 2.0;
+        font.layout_text(
+            prompt,
+            prompt_x,
+            screen_h_gui * 0.35,
+            UiQuad::rgba(180, 180, 180, 255),
+            true,
+            scale,
+            out,
+        );
+
+        screen.direct_input.render(font, scale, 0, out);
+
+        for btn in &screen.direct_buttons {
+            btn.render(font, scale, out);
+        }
+
+        return;
+    }
 
     // 2. Header title: "Play Multiplayer"
     let title = "Play Multiplayer";
@@ -266,47 +526,54 @@ pub fn render_server_list(
     }
 
     // 4. Bottom action buttons
-    let btn_y = screen_h_gui - 36.0;
-    let btn_w = 90.0f32;
-    let btn_h = 20.0f32;
-    let total_btns_w = (btn_w * 3.0) + (8.0 * 2.0);
-    let start_btn_x = (screen_w_gui - total_btns_w) / 2.0;
+    if screen.buttons.is_empty() {
+        // Fallback default buttons if update_layout wasn't called before render
+        let btn_y = screen_h_gui - 36.0;
+        let btn_w = 90.0f32;
+        let btn_h = 20.0f32;
+        let total_btns_w = (btn_w * 3.0) + (8.0 * 2.0);
+        let start_btn_x = (screen_w_gui - total_btns_w) / 2.0;
 
-    let buttons = ["Join Server", "Direct Connect", "Cancel"];
-    for (i, btn_label) in buttons.iter().enumerate() {
-        let bx = start_btn_x + (i as f32 * (btn_w + 8.0));
-        let phys_bx = snap_to_physical(bx, scale);
-        let phys_by = snap_to_physical(btn_y, scale);
-        let phys_bw = (btn_w * scale as f32).round() as u16;
-        let phys_bh = (btn_h * scale as f32).round() as u16;
+        let buttons = ["Join Server", "Direct Connect", "Cancel"];
+        for (i, btn_label) in buttons.iter().enumerate() {
+            let bx = start_btn_x + (i as f32 * (btn_w + 8.0));
+            let phys_bx = snap_to_physical(bx, scale);
+            let phys_by = snap_to_physical(btn_y, scale);
+            let phys_bw = (btn_w * scale as f32).round() as u16;
+            let phys_bh = (btn_h * scale as f32).round() as u16;
 
-        let has_sel = screen.selected_index.is_some() || i > 0;
-        let btn_bg = if has_sel {
-            UiQuad::rgba(60, 60, 60, 255)
-        } else {
-            UiQuad::rgba(35, 35, 35, 255)
-        };
+            let has_sel = screen.selected_index.is_some() || i > 0;
+            let btn_bg = if has_sel {
+                UiQuad::rgba(60, 60, 60, 255)
+            } else {
+                UiQuad::rgba(35, 35, 35, 255)
+            };
 
-        out.push(UiQuad::solid(
-            [phys_bx, phys_by],
-            [phys_bw, phys_bh],
-            btn_bg,
-        ));
-        out.push(UiQuad::solid(
-            [phys_bx, phys_by],
-            [phys_bw, scale as u16],
-            UiQuad::rgba(120, 120, 120, 255),
-        ));
+            out.push(UiQuad::solid(
+                [phys_bx, phys_by],
+                [phys_bw, phys_bh],
+                btn_bg,
+            ));
+            out.push(UiQuad::solid(
+                [phys_bx, phys_by],
+                [phys_bw, scale as u16],
+                UiQuad::rgba(120, 120, 120, 255),
+            ));
 
-        let (lw, _) = font.measure_text(btn_label);
-        let tx = bx + ((btn_w - lw) / 2.0);
-        let ty = btn_y + ((btn_h - 9.0) / 2.0);
-        let text_color = if has_sel {
-            UiQuad::rgba(255, 255, 255, 255)
-        } else {
-            UiQuad::rgba(120, 120, 120, 255)
-        };
+            let (lw, _) = font.measure_text(btn_label);
+            let tx = bx + ((btn_w - lw) / 2.0);
+            let ty = btn_y + ((btn_h - 9.0) / 2.0);
+            let text_color = if has_sel {
+                UiQuad::rgba(255, 255, 255, 255)
+            } else {
+                UiQuad::rgba(120, 120, 120, 255)
+            };
 
-        font.layout_text(btn_label, tx, ty, text_color, true, scale, out);
+            font.layout_text(btn_label, tx, ty, text_color, true, scale, out);
+        }
+    } else {
+        for btn in &screen.buttons {
+            btn.render(font, scale, out);
+        }
     }
 }

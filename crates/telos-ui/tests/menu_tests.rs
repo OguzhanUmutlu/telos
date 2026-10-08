@@ -187,18 +187,22 @@ fn test_pause_menu_i18n_translation() {
     catalog.set_active_locale("tr_tr");
     pause.update_layout_i18n(800.0, 600.0, &catalog);
     assert_eq!(pause.title, "Oyun Duraklatıldı");
+    assert_eq!(pause.buttons.len(), 5);
     assert_eq!(pause.buttons[0].label, "Oyuna Dön");
     assert_eq!(pause.buttons[1].label, "Gelişmeler");
     assert_eq!(pause.buttons[2].label, "Ayarlar...");
-    assert_eq!(pause.buttons[3].label, "Kaydet ve Başlığa Dön");
+    assert_eq!(pause.buttons[3].label, "Yerel Ağda Paylaş / Davet Et");
+    assert_eq!(pause.buttons[4].label, "Kaydet ve Başlığa Dön");
 
     catalog.set_active_locale("de_de");
     pause.update_layout_i18n(800.0, 600.0, &catalog);
     assert_eq!(pause.title, "Spiel pausiert");
+    assert_eq!(pause.buttons.len(), 5);
     assert_eq!(pause.buttons[0].label, "Zurück zum Spiel");
     assert_eq!(pause.buttons[1].label, "Fortschritte");
     assert_eq!(pause.buttons[2].label, "Optionen...");
-    assert_eq!(pause.buttons[3].label, "Speichern und zum Hauptmenü");
+    assert_eq!(pause.buttons[3].label, "Im LAN öffnen / Einladen");
+    assert_eq!(pause.buttons[4].label, "Speichern und zum Hauptmenü");
 }
 
 #[test]
