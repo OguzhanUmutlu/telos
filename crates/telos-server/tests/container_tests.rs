@@ -6,8 +6,8 @@ use telos_core::coords::BlockPos;
 use telos_net::{Connection, Lane, MemoryConnection, Payload};
 use telos_protocol::bounded::BoundedString;
 use telos_protocol::messages::{
-    AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sConfigAck, C2sHello,
-    C2sInventoryClick, C2sLoginStart, C2sMessage, S2cMessage,
+    AuthMode, BlockActionKind, C2sBlockAction, C2sClientSettings, C2sCloseContainer, C2sConfigAck,
+    C2sHello, C2sInventoryClick, C2sLoginStart, C2sMessage, S2cMessage,
 };
 use telos_server::{Server, ServerConfig};
 use telos_sim::entity::ItemEntity;
@@ -611,4 +611,201 @@ fn test_furnace_interaction_and_combustion_ticking() {
             .iter()
             .any(|item| item.stack.item == 50 && item.stack.count == 1)
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_crafting_table_interaction_crafting_and_close_refund() {
+    let (mut server, client_conn, session_id, surface_y) = setup_server_and_player();
+
+    let ct_state = (0..server.world().registry().total_states() as u32)
+        .map(BlockStateId::new)
+        .find(|&id| server.world().registry().is_crafting_table(id))
+        .expect("crafting table block state registered");
+
+    let ct_pos = BlockPos::new(128, surface_y as i32 + 1, 161);
+    server.world_mut().set_block(ct_pos, ct_state);
+
+    // Give player wood planks (item 7) and sticks (item 13) in their inventory
+    let entity = server.get_session(session_id).unwrap().ecs_entity.unwrap();
+    if let Some(mut inv) = server.ecs_world_mut().get_mut::<Inventory>(entity) {
+        inv.slots[9] = ItemStack::new(7, 10); // storage slot 0
+        inv.slots[10] = ItemStack::new(13, 10); // storage slot 1
+    }
+
+    // Right-click the crafting table block
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::BlockAction(C2sBlockAction {
+                x: ct_pos.x(),
+                y: ct_pos.y(),
+                z: ct_pos.z(),
+                action: BlockActionKind::Interact,
+                sequence: 1,
+                input_tick: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify S2cOpenContainer received with container_kind = 2
+    let mut opened_crafting = false;
+    while let Ok(Some(payload)) = client_conn.try_recv() {
+        if let Some(S2cMessage::OpenContainer(open)) = payload.into_msg()
+            && open.container_kind == 2
+        {
+            assert_eq!(open.slots.len(), 10);
+            assert_eq!(open.title.as_str(), "Crafting");
+            opened_crafting = true;
+        }
+    }
+    assert!(
+        opened_crafting,
+        "Expected S2cOpenContainer with container_kind 2"
+    );
+
+    let session = server.get_session(session_id).unwrap();
+    assert_eq!(session.active_container.map(|c| c.container_kind), Some(2));
+
+    // Click slot 10 in dual container (which corresponds to player slot 9 = 10 wood planks)
+    // Pickup mode (0), left click (0) picks up the 10 planks into carried
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 10,
+                button: 0,
+                mode: 0,
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Right click (button 1) on grid slot 1, 2, 3 to deposit 1 plank in each
+    for grid_slot in 1..=3 {
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                    slot: grid_slot,
+                    button: 1,
+                    mode: 0,
+                    predicted_carried_item: 0,
+                    predicted_carried_count: 0,
+                })),
+            )
+            .unwrap();
+        server.tick();
+    }
+
+    // Put remaining planks back into player storage slot 10
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 10,
+                button: 0,
+                mode: 0,
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Pickup sticks from slot 11 (player slot 10)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 11,
+                button: 0,
+                mode: 0,
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Right click on grid slot 5 (row 1, col 1) and slot 8 (row 2, col 1) to form wooden pickaxe
+    for grid_slot in [5, 8] {
+        client_conn
+            .send(
+                Lane::Control,
+                Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                    slot: grid_slot,
+                    button: 1,
+                    mode: 0,
+                    predicted_carried_item: 0,
+                    predicted_carried_count: 0,
+                })),
+            )
+            .unwrap();
+        server.tick();
+    }
+
+    // Put remaining sticks back in slot 11
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 11,
+                button: 0,
+                mode: 0,
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify crafting table result is wooden pickaxe (item 68)
+    let session = server.get_session(session_id).unwrap();
+    assert_eq!(session.active_crafting_table.result.item, 68);
+    assert_eq!(session.active_crafting_table.result.count, 1);
+
+    // Click output slot (slot 0) to craft the wooden pickaxe into carried
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: 0,
+                button: 0,
+                mode: 0,
+                predicted_carried_item: 0,
+                predicted_carried_count: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let session = server.get_session(session_id).unwrap();
+    let entity = session.ecs_entity.unwrap();
+    let inv = server.ecs_world().get::<Inventory>(entity).unwrap();
+    assert_eq!(inv.carried.item, 68);
+    assert_eq!(inv.carried.count, 1);
+    assert_eq!(session.active_crafting_table.result, ItemStack::EMPTY);
+
+    // Send CloseContainer
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::CloseContainer(C2sCloseContainer {
+                window_id: 1,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify session active_container is None and carried stack returned
+    let session = server.get_session(session_id).unwrap();
+    assert!(session.active_container.is_none());
+    let inv = server.ecs_world().get::<Inventory>(entity).unwrap();
+    assert!(inv.carried.is_empty());
+    // Pickaxe is now in inventory
+    assert!(inv.slots.iter().any(|s| s.item == 68 && s.count == 1));
 }

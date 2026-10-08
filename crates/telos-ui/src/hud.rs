@@ -54,6 +54,10 @@ pub struct UiLayers {
     pub furnace_flame_uv: [f32; 4],
     /// Furnace cook progress arrow sprite UV bounds `[u0, v0, u1, v1]`.
     pub furnace_arrow_uv: [f32; 4],
+    /// Crafting table container background texture layer.
+    pub crafting_table_bg: u32,
+    /// Crafting table container background UV bounds `[u0, v0, u1, v1]`.
+    pub crafting_table_bg_uv: [f32; 4],
 }
 
 impl Default for UiLayers {
@@ -82,6 +86,8 @@ impl Default for UiLayers {
             furnace_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
             furnace_flame_uv: [176.0 / 256.0, 0.0 / 256.0, 190.0 / 256.0, 14.0 / 256.0],
             furnace_arrow_uv: [176.0 / 256.0, 16.0 / 256.0, 200.0 / 256.0, 32.0 / 256.0],
+            crafting_table_bg: 8,
+            crafting_table_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
         }
     }
 }

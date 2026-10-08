@@ -43,25 +43,29 @@ pub const OFFHAND_SLOT: usize = 45;
 /// Returns true if the item is a helmet.
 #[must_use]
 pub const fn is_helmet(item: u32) -> bool {
-    item == 16
+    item == 16 || item == ITEM_LEATHER_HELMET || item == ITEM_GOLDEN_HELMET
 }
 
 /// Returns true if the item is a chestplate.
 #[must_use]
 pub const fn is_chestplate(item: u32) -> bool {
-    item == 17
+    item == 17 || item == ITEM_LEATHER_CHESTPLATE || item == ITEM_GOLDEN_CHESTPLATE
 }
 
 /// Returns true if the item is leggings.
 #[must_use]
 pub const fn is_leggings(item: u32) -> bool {
-    item == 18
+    item == 18 || item == ITEM_LEATHER_LEGGINGS || item == ITEM_GOLDEN_LEGGINGS
 }
 
 /// Returns true if the item is boots.
 #[must_use]
 pub const fn is_boots(item: u32) -> bool {
-    item == 31 || item == 35
+    item == 19
+        || item == 31
+        || item == 35
+        || item == ITEM_LEATHER_BOOTS
+        || item == ITEM_GOLDEN_BOOTS
 }
 
 /// Returns true if the item is any equippable armor item.
@@ -94,12 +98,63 @@ pub const ITEM_ARROW: u32 = 62;
 pub const ITEM_CHEST: u32 = 63;
 /// Furnace block container item identifier (64).
 pub const ITEM_FURNACE: u32 = 64;
+/// Crafting table block container item identifier (14).
+pub const ITEM_CRAFTING_TABLE: u32 = 14;
 /// Cooked porkchop food item identifier (65).
 pub const ITEM_COOKED_PORKCHOP: u32 = 65;
 /// Cooked beef food item identifier (66).
 pub const ITEM_COOKED_BEEF: u32 = 66;
 /// Charcoal combustible fuel item identifier (67).
 pub const ITEM_CHARCOAL: u32 = 67;
+
+/// Wooden pickaxe item identifier (68).
+pub const ITEM_WOODEN_PICKAXE: u32 = 68;
+/// Stone pickaxe item identifier (69).
+pub const ITEM_STONE_PICKAXE: u32 = 69;
+/// Iron pickaxe item identifier (70).
+pub const ITEM_IRON_PICKAXE: u32 = 70;
+/// Wooden axe item identifier (71).
+pub const ITEM_WOODEN_AXE: u32 = 71;
+/// Stone axe item identifier (72).
+pub const ITEM_STONE_AXE: u32 = 72;
+/// Iron axe item identifier (73).
+pub const ITEM_IRON_AXE: u32 = 73;
+/// Wooden shovel item identifier (74).
+pub const ITEM_WOODEN_SHOVEL: u32 = 74;
+/// Stone shovel item identifier (75).
+pub const ITEM_STONE_SHOVEL: u32 = 75;
+/// Iron shovel item identifier (76).
+pub const ITEM_IRON_SHOVEL: u32 = 76;
+/// Wooden sword item identifier (77).
+pub const ITEM_WOODEN_SWORD: u32 = 77;
+/// Stone sword item identifier (78).
+pub const ITEM_STONE_SWORD: u32 = 78;
+/// Iron sword item identifier (79).
+pub const ITEM_IRON_SWORD: u32 = 79;
+/// Wooden hoe item identifier (80).
+pub const ITEM_WOODEN_HOE: u32 = 80;
+/// Stone hoe item identifier (81).
+pub const ITEM_STONE_HOE: u32 = 81;
+/// Iron hoe item identifier (82).
+pub const ITEM_IRON_HOE: u32 = 82;
+
+/// Leather helmet item identifier (83).
+pub const ITEM_LEATHER_HELMET: u32 = 83;
+/// Leather chestplate item identifier (84).
+pub const ITEM_LEATHER_CHESTPLATE: u32 = 84;
+/// Leather leggings item identifier (85).
+pub const ITEM_LEATHER_LEGGINGS: u32 = 85;
+/// Leather boots item identifier (86).
+pub const ITEM_LEATHER_BOOTS: u32 = 86;
+
+/// Golden helmet item identifier (87).
+pub const ITEM_GOLDEN_HELMET: u32 = 87;
+/// Golden chestplate item identifier (88).
+pub const ITEM_GOLDEN_CHESTPLATE: u32 = 88;
+/// Golden leggings item identifier (89).
+pub const ITEM_GOLDEN_LEGGINGS: u32 = 89;
+/// Golden boots item identifier (90).
+pub const ITEM_GOLDEN_BOOTS: u32 = 90;
 
 /// Returns true if the item is a bow.
 #[must_use]
@@ -213,6 +268,29 @@ pub fn item_name(item: u32) -> &'static str {
         65 => "Cooked Porkchop",
         66 => "Cooked Beef",
         67 => "Charcoal",
+        68 => "Wooden Pickaxe",
+        69 => "Stone Pickaxe",
+        70 => "Iron Pickaxe",
+        71 => "Wooden Axe",
+        72 => "Stone Axe",
+        73 => "Iron Axe",
+        74 => "Wooden Shovel",
+        75 => "Stone Shovel",
+        76 => "Iron Shovel",
+        77 => "Wooden Sword",
+        78 => "Stone Sword",
+        79 => "Iron Sword",
+        80 => "Wooden Hoe",
+        81 => "Stone Hoe",
+        82 => "Iron Hoe",
+        83 => "Leather Cap",
+        84 => "Leather Tunic",
+        85 => "Leather Pants",
+        86 => "Leather Boots",
+        87 => "Golden Helmet",
+        88 => "Golden Chestplate",
+        89 => "Golden Leggings",
+        90 => "Golden Boots",
         _ => "Unknown Item",
     }
 }
@@ -747,6 +825,7 @@ pub const fn block_to_drop_item(block_id: u32) -> Option<ItemStack> {
         74..=76 => Some(ItemStack::new(5, 1)),     // Logs -> Wood Log
         81 => Some(ItemStack::new(ITEM_CHEST, 1)), // Chest
         82 | 83 => Some(ItemStack::new(ITEM_FURNACE, 1)), // Furnace / Lit Furnace
+        84 => Some(ItemStack::new(ITEM_CRAFTING_TABLE, 1)), // Crafting Table
         other => Some(ItemStack::new(other, 1)),   // Default self-drop
     }
 }

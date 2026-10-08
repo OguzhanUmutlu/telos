@@ -52,9 +52,10 @@ use telos_ui::menu::{
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
-    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, HudState,
-    UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos, compute_gui_scale, furnace_slot_at_pos,
-    render_chat_hud, render_chest_container, render_furnace_container, render_hud,
+    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_CRAFTING_TABLE_SLOT_COUNT,
+    DUAL_FURNACE_SLOT_COUNT, HudState, UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos,
+    compute_gui_scale, crafting_table_slot_at_pos, furnace_slot_at_pos, render_chat_hud,
+    render_chest_container, render_crafting_table_container, render_furnace_container, render_hud,
     render_inventory_screen, slot_at_pos, snap_to_physical,
 };
 use telos_ui::{InputKey, KeyAction};
@@ -1428,6 +1429,7 @@ struct App {
     inventory_sim: telos_sim::Inventory,
     fuel_registry: telos_sim::FuelRegistry,
     smelting_registry: telos_sim::SmeltingRegistry,
+    recipe_registry: telos_sim::RecipeRegistry,
     inventory_open: bool,
     container_state: Option<ClientContainerState>,
     container_hovered_slot: Option<usize>,
@@ -1892,6 +1894,7 @@ impl App {
             inventory_sim: telos_sim::Inventory::default(),
             fuel_registry: telos_sim::FuelRegistry::standard(),
             smelting_registry: telos_sim::SmeltingRegistry::standard(),
+            recipe_registry: telos_sim::RecipeRegistry::standard(),
             inventory_open: false,
             container_state: None,
             container_hovered_slot: None,
@@ -2222,7 +2225,26 @@ impl App {
                 .send(Lane::Control, Payload::Msg(click_msg));
             self.inventory_sim.selected_slot = hotbar_idx;
             if let Some(ref mut cont) = self.container_state {
-                if cont.container_kind == 1 {
+                if cont.container_kind == 2 {
+                    let mut ct_inv = telos_sim::CraftingTableInventory::new();
+                    ct_inv.result =
+                        telos_sim::ItemStack::new(cont.slots[0].item, cont.slots[0].count);
+                    for (i, slot) in cont.slots[1..10].iter().enumerate() {
+                        ct_inv.grid[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                    }
+                    let _ = telos_sim::crafting_table_container_click(
+                        &mut ct_inv,
+                        &mut self.inventory_sim,
+                        hovered,
+                        telos_sim::ClickButton::Left,
+                        telos_sim::ClickMode::SwapHotbar,
+                        &self.recipe_registry,
+                    );
+                    cont.slots[0] = UiSlotItem::new(ct_inv.result.item, ct_inv.result.count);
+                    for (i, slot) in ct_inv.grid.iter().enumerate() {
+                        cont.slots[1 + i] = UiSlotItem::new(slot.item, slot.count);
+                    }
+                } else if cont.container_kind == 1 {
                     let mut furnace_inv = telos_sim::FurnaceInventory::default();
                     for (i, slot) in cont.slots.iter().take(3).enumerate() {
                         furnace_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
@@ -2270,6 +2292,14 @@ impl App {
                 .send(Lane::Control, Payload::Msg(close_msg));
             self.container_hovered_slot = None;
             self.inventory_sim.return_carried();
+            if cont.container_kind == 2 {
+                for slot in &cont.slots[1..10] {
+                    if !slot.is_empty() {
+                        let mut stack = telos_sim::ItemStack::new(slot.item, slot.count);
+                        self.inventory_sim.insert_into_storage_or_hotbar(&mut stack);
+                    }
+                }
+            }
             if self.current_screen == AppScreen::InGame
                 && !self.is_paused
                 && !self.chat_state.is_open
@@ -5856,7 +5886,35 @@ impl App {
                                         telos_sim::item_name(id)
                                     }
                                 };
-                                if cont.container_kind == 1 {
+                                if cont.container_kind == 2 {
+                                    let mut ui_slots =
+                                        [UiSlotItem::EMPTY; DUAL_CRAFTING_TABLE_SLOT_COUNT];
+                                    ui_slots[..10].copy_from_slice(&cont.slots[..10]);
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[9..36].iter().enumerate()
+                                    {
+                                        ui_slots[10 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[0..9].iter().enumerate()
+                                    {
+                                        ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    render_crafting_table_container(
+                                        &ui_slots,
+                                        ui_carried,
+                                        self.container_hovered_slot,
+                                        swapchain_extent.width,
+                                        swapchain_extent.height,
+                                        gui_scale,
+                                        font,
+                                        &self.ui_layers,
+                                        &cont.title,
+                                        item_lookup,
+                                        self.mouse_cursor_pos,
+                                        &mut ui_quads,
+                                    );
+                                } else if cont.container_kind == 1 {
                                     let mut ui_slots = [UiSlotItem::EMPTY; DUAL_FURNACE_SLOT_COUNT];
                                     ui_slots[..3].copy_from_slice(&cont.slots[..3]);
                                     for (i, slot) in
@@ -6297,7 +6355,30 @@ impl App {
                                 telos_sim::item_name(id)
                             }
                         };
-                        if cont.container_kind == 1 {
+                        if cont.container_kind == 2 {
+                            let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CRAFTING_TABLE_SLOT_COUNT];
+                            ui_slots[..10].copy_from_slice(&cont.slots[..10]);
+                            for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
+                                ui_slots[10 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                                ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            render_crafting_table_container(
+                                &ui_slots,
+                                ui_carried,
+                                self.container_hovered_slot,
+                                width,
+                                height,
+                                gui_scale,
+                                font,
+                                &self.ui_layers,
+                                &cont.title,
+                                item_lookup,
+                                self.mouse_cursor_pos,
+                                &mut ui_quads,
+                            );
+                        } else if cont.container_kind == 1 {
                             let mut ui_slots = [UiSlotItem::EMPTY; DUAL_FURNACE_SLOT_COUNT];
                             ui_slots[..3].copy_from_slice(&cont.slots[..3]);
                             for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
@@ -8452,7 +8533,14 @@ impl ApplicationHandler for App {
                         if self.is_paused {
                             self.pause_menu.handle_mouse_move(mx, my);
                         } else if let Some(ref cont) = self.container_state {
-                            self.container_hovered_slot = if cont.container_kind == 1 {
+                            self.container_hovered_slot = if cont.container_kind == 2 {
+                                crafting_table_slot_at_pos(
+                                    self.mouse_cursor_pos,
+                                    win_size.width,
+                                    win_size.height,
+                                    gui_scale,
+                                )
+                            } else if cont.container_kind == 1 {
                                 furnace_slot_at_pos(
                                     self.mouse_cursor_pos,
                                     win_size.width,
@@ -8832,7 +8920,27 @@ impl ApplicationHandler for App {
                             telos_sim::ClickMode::Pickup
                         };
 
-                        if cont.container_kind == 1 {
+                        if cont.container_kind == 2 {
+                            let mut ct_inv = telos_sim::CraftingTableInventory::new();
+                            ct_inv.result =
+                                telos_sim::ItemStack::new(cont.slots[0].item, cont.slots[0].count);
+                            for (i, slot) in cont.slots[1..10].iter().enumerate() {
+                                ct_inv.grid[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                            }
+                            let _ = telos_sim::crafting_table_container_click(
+                                &mut ct_inv,
+                                &mut self.inventory_sim,
+                                hovered,
+                                btn_sim,
+                                mode_sim,
+                                &self.recipe_registry,
+                            );
+                            cont.slots[0] =
+                                UiSlotItem::new(ct_inv.result.item, ct_inv.result.count);
+                            for (i, slot) in ct_inv.grid.iter().enumerate() {
+                                cont.slots[1 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                        } else if cont.container_kind == 1 {
                             let mut furnace_inv = telos_sim::FurnaceInventory::default();
                             for (i, slot) in cont.slots.iter().take(3).enumerate() {
                                 furnace_inv.slots[i] =
@@ -10409,7 +10517,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     let mut stack = ResourcePackStack::new();
     mount_asset_roots(&mut stack);
 
-    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 8) as usize];
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 9) as usize];
 
     // Helper to copy a sub-image into a 256x256 layer at specified offset
     let copy_to_layer_at = |dest: &mut [u8],
@@ -10703,7 +10811,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
 
     // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for registered items)
-    let item_textures: [(u32, &str, [u8; 4]); 31] = [
+    let item_textures: [(u32, &str, [u8; 4]); 54] = [
         (1, "textures/block/stone.png", [128, 128, 128, 255]),
         (2, "textures/block/dirt.png", [134, 96, 67, 255]),
         (3, "textures/block/grass_block_side.png", [90, 160, 60, 255]),
@@ -10743,6 +10851,37 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         (65, "textures/item/cooked_porkchop.png", [190, 110, 80, 255]),
         (66, "textures/item/cooked_beef.png", [130, 70, 50, 255]),
         (67, "textures/item/charcoal.png", [45, 45, 45, 255]),
+        (68, "textures/item/wooden_pickaxe.png", [160, 130, 80, 255]),
+        (69, "textures/item/stone_pickaxe.png", [130, 130, 130, 255]),
+        (70, "textures/item/iron_pickaxe.png", [220, 220, 220, 255]),
+        (71, "textures/item/wooden_axe.png", [160, 130, 80, 255]),
+        (72, "textures/item/stone_axe.png", [130, 130, 130, 255]),
+        (73, "textures/item/iron_axe.png", [220, 220, 220, 255]),
+        (74, "textures/item/wooden_shovel.png", [160, 130, 80, 255]),
+        (75, "textures/item/stone_shovel.png", [130, 130, 130, 255]),
+        (76, "textures/item/iron_shovel.png", [220, 220, 220, 255]),
+        (77, "textures/item/wooden_sword.png", [160, 130, 80, 255]),
+        (78, "textures/item/stone_sword.png", [130, 130, 130, 255]),
+        (79, "textures/item/iron_sword.png", [220, 220, 220, 255]),
+        (80, "textures/item/wooden_hoe.png", [160, 130, 80, 255]),
+        (81, "textures/item/stone_hoe.png", [130, 130, 130, 255]),
+        (82, "textures/item/iron_hoe.png", [220, 220, 220, 255]),
+        (83, "textures/item/leather_helmet.png", [150, 90, 50, 255]),
+        (
+            84,
+            "textures/item/leather_chestplate.png",
+            [150, 90, 50, 255],
+        ),
+        (85, "textures/item/leather_leggings.png", [150, 90, 50, 255]),
+        (86, "textures/item/leather_boots.png", [150, 90, 50, 255]),
+        (87, "textures/item/golden_helmet.png", [240, 210, 60, 255]),
+        (
+            88,
+            "textures/item/golden_chestplate.png",
+            [240, 210, 60, 255],
+        ),
+        (89, "textures/item/golden_leggings.png", [240, 210, 60, 255]),
+        (90, "textures/item/golden_boots.png", [240, 210, 60, 255]),
     ];
 
     let copy_icon =
@@ -10868,7 +11007,30 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     };
     copy_to_layer_at(&mut pixel_data, 7, 176, 16, &arrow_img);
 
-    let regions: Vec<TextureMipRegion> = (0..8)
+    // Layer 8: Crafting Table Container Background (176x166 window on 256x256 canvas)
+    let crafting_table_bg_img = if let Some(img) = stack
+        .find_texture("textures/gui/container/crafting_table.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 256, 256)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(176, 166);
+        for y in 0..166 {
+            for x in 0..176 {
+                let idx = ((y * 176 + x) * 4) as usize;
+                let is_border = x == 0 || x == 175 || y == 0 || y == 165;
+                let color = if is_border { 40 } else { 198 };
+                img.data[idx] = color;
+                img.data[idx + 1] = color;
+                img.data[idx + 2] = color;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 8, 0, 0, &crafting_table_bg_img);
+
+    let regions: Vec<TextureMipRegion> = (0..9)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
             layer,
@@ -10884,10 +11046,10 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
 fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let texture_array = gpu_context.create_texture_array(UI_RES, 8, 1, &pixel_data, &regions)?;
+    let texture_array = gpu_context.create_texture_array(UI_RES, 9, 1, &pixel_data, &regions)?;
 
     info!(
-        "UI texture array loaded (8 layers, 256x256, font baked, survival icons, inventory background, item icons, furnace GUI)"
+        "UI texture array loaded (9 layers, 256x256, font baked, survival icons, inventory background, item icons, furnace GUI, crafting table GUI)"
     );
 
     Ok((texture_array, font))
@@ -10898,7 +11060,7 @@ fn load_and_upload_ui_textures_gl(
 ) -> Result<(telos_gpu::opengl::GlTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 8, 1)?;
+    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 9, 1)?;
 
     for r in &regions {
         let start = r.buffer_offset as usize;

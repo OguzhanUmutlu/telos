@@ -43,7 +43,12 @@ pub use command::{
     CommandContext, CommandDispatcher, CommandNode, CommandOutput, CommandSuggestions,
     register_builtins,
 };
-pub use crafting::{Recipe2x2, find_recipe_2x2};
+pub use crafting::{
+    CONTAINER_CRAFTING_GRID_SLOTS, CONTAINER_CRAFTING_HOTBAR_SLOTS, CONTAINER_CRAFTING_RESULT_SLOT,
+    CONTAINER_CRAFTING_STORAGE_SLOTS, CRAFTING_TABLE_CONTAINER_SLOTS, CraftingRecipe,
+    CraftingTableInventory, DUAL_CRAFTING_TABLE_SLOT_COUNT, Recipe2x2, RecipeRegistry,
+    ShapedRecipe, ShapelessRecipe, crafting_table_container_click, find_recipe_2x2,
+};
 pub use effect::{EffectInstance, StatusEffectKind, StatusEffects, status_effect_system};
 pub use enchantment::{
     CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
@@ -72,10 +77,15 @@ pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,
     CHEST_CONTAINER_SLOTS, CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ChestInventory, ClickButton,
     ClickMode, DUAL_CONTAINER_SLOTS, HOTBAR_SLOTS, ITEM_ARROW, ITEM_BOW, ITEM_CHARCOAL, ITEM_CHEST,
-    ITEM_COOKED_BEEF, ITEM_COOKED_PORKCHOP, ITEM_FURNACE, Inventory, InventoryError, ItemStack,
-    MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS, block_to_drop_item,
-    container_click, inventory_click, is_armor, is_arrow, is_boots, is_bow, is_chest,
-    is_chestplate, is_furnace, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
+    ITEM_COOKED_BEEF, ITEM_COOKED_PORKCHOP, ITEM_CRAFTING_TABLE, ITEM_FURNACE, ITEM_GOLDEN_BOOTS,
+    ITEM_GOLDEN_CHESTPLATE, ITEM_GOLDEN_HELMET, ITEM_GOLDEN_LEGGINGS, ITEM_IRON_AXE, ITEM_IRON_HOE,
+    ITEM_IRON_PICKAXE, ITEM_IRON_SHOVEL, ITEM_IRON_SWORD, ITEM_LEATHER_BOOTS,
+    ITEM_LEATHER_CHESTPLATE, ITEM_LEATHER_HELMET, ITEM_LEATHER_LEGGINGS, ITEM_STONE_AXE,
+    ITEM_STONE_HOE, ITEM_STONE_PICKAXE, ITEM_STONE_SHOVEL, ITEM_STONE_SWORD, ITEM_WOODEN_AXE,
+    ITEM_WOODEN_HOE, ITEM_WOODEN_PICKAXE, ITEM_WOODEN_SHOVEL, ITEM_WOODEN_SWORD, Inventory,
+    InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
+    block_to_drop_item, container_click, inventory_click, is_armor, is_arrow, is_boots, is_bow,
+    is_chest, is_chestplate, is_furnace, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
     matching_armor_slot,
 };
 pub use logic::{

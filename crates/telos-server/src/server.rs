@@ -145,6 +145,8 @@ pub struct Server {
     pub smelting_recipes: telos_sim::SmeltingRegistry,
     /// Registry of combustible fuels and burn durations.
     pub fuel_registry: telos_sim::FuelRegistry,
+    /// Registry of deterministic crafting recipes.
+    pub recipe_registry: telos_sim::RecipeRegistry,
     /// Next unique modal form identifier.
     pub next_form_id: u32,
     /// Outstanding pending modal forms dispatched to clients.
@@ -326,6 +328,7 @@ impl Server {
             lan_emitter,
             smelting_recipes: telos_sim::SmeltingRegistry::standard(),
             fuel_registry: telos_sim::FuelRegistry::standard(),
+            recipe_registry: telos_sim::RecipeRegistry::standard(),
             next_form_id: 1,
             pending_forms: HashMap::new(),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
@@ -539,6 +542,101 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Closes an open container session for the specified session, returning any crafting grid
+    /// items or carried items to the player's inventory and dropping any overflow into the world.
+    ///
+    /// Returns `Some((world_name, block_pos, container_kind))` if a container was open.
+    pub fn close_session_container(&mut self, session_id: u64) -> Option<(String, BlockPos, u8)> {
+        let session = self.sessions.get_mut(&session_id)?;
+        let active_cont = session.active_container.take()?;
+        let world_name = session.world_name.clone();
+        let block_pos = active_cont.block_pos;
+        let container_kind = active_cont.container_kind;
+        let entity = session.ecs_entity;
+        let pos = session.position;
+
+        let mut dropped = Vec::new();
+        if container_kind == 2 {
+            // Crafting table: refund 3x3 grid items to player inventory, drop overflow
+            let mut grid = std::mem::take(&mut session.active_crafting_table.grid);
+            session.active_crafting_table.result = ItemStack::EMPTY;
+
+            if let Some(entity) = entity
+                && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+            {
+                if !inv.carried.is_empty() {
+                    inv.return_carried();
+                }
+                for stack in &mut grid {
+                    if !stack.is_empty() {
+                        inv.insert_into_storage_or_hotbar(stack);
+                        if !stack.is_empty() {
+                            dropped.push(*stack);
+                        }
+                        *stack = ItemStack::EMPTY;
+                    }
+                }
+                let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                for slot in &inv.slots {
+                    slot_vec.push(SlotData {
+                        item: slot.item,
+                        count: slot.count,
+                    });
+                }
+                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                    carried: SlotData {
+                        item: inv.carried.item,
+                        count: inv.carried.count,
+                    },
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(bulk_msg));
+            } else {
+                for stack in grid {
+                    if !stack.is_empty() {
+                        dropped.push(stack);
+                    }
+                }
+            }
+        } else if let Some(entity) = entity
+            && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+            && !inv.carried.is_empty()
+        {
+            inv.return_carried();
+            let mut slot_vec = Vec::with_capacity(inv.slots.len());
+            for slot in &inv.slots {
+                slot_vec.push(SlotData {
+                    item: slot.item,
+                    count: slot.count,
+                });
+            }
+            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                carried: SlotData {
+                    item: inv.carried.item,
+                    count: inv.carried.count,
+                },
+            });
+            let _ = session
+                .connection
+                .send(Lane::Control, Payload::Msg(bulk_msg));
+        }
+
+        for stack in dropped {
+            self.spawn_item_entity(
+                &world_name,
+                pos,
+                Vec3::new(0.0, 0.1, 0.0),
+                stack,
+                PLAYER_DROP_PICKUP_DELAY,
+            );
+        }
+
+        Some((world_name, block_pos, container_kind))
     }
 
     /// Spawns an arrow entity into the world, broadcasts `S2cSpawnArrow`, and returns its `net_id`.
@@ -2459,32 +2557,32 @@ impl Server {
         }
 
         for id in disconnected {
-            if let Some(session) = self.sessions.remove(&id) {
-                if let Some(active_cont) = session.active_container {
-                    let chest_pos = active_cont.block_pos;
-                    let world_name = session.world_name.clone();
-                    let remaining_viewers = self.sessions.values().any(|s| {
-                        s.phase == ConnectionPhase::Play
-                            && s.world_name == world_name
-                            && s.active_container.as_ref().map(|c| c.block_pos) == Some(chest_pos)
+            if let Some((world_name, chest_pos, container_kind)) = self.close_session_container(id)
+                && container_kind == 0
+            {
+                let remaining_viewers = self.sessions.values().any(|s| {
+                    s.phase == ConnectionPhase::Play
+                        && s.world_name == world_name
+                        && s.active_container.as_ref().map(|c| c.block_pos) == Some(chest_pos)
+                });
+                if !remaining_viewers {
+                    let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                        x: chest_pos.x(),
+                        y: chest_pos.y(),
+                        z: chest_pos.z(),
+                        action: 1,
+                        param: 0,
                     });
-                    if !remaining_viewers {
-                        let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
-                            x: chest_pos.x(),
-                            y: chest_pos.y(),
-                            z: chest_pos.z(),
-                            action: 1,
-                            param: 0,
-                        });
-                        for s in self.sessions.values_mut() {
-                            if s.phase == ConnectionPhase::Play && s.world_name == world_name {
-                                let _ = s
-                                    .connection
-                                    .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
-                            }
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
                         }
                     }
                 }
+            }
+            if let Some(session) = self.sessions.remove(&id) {
                 self.event_queue.push(GameEvent::PlayerLeft {
                     entity_net_id: session.entity_id,
                     username: session.username.clone(),
@@ -3403,132 +3501,192 @@ impl Server {
 
             let slot_idx = click.slot as usize;
             if let Some(active_cont) = active_container {
-                let world = self.worlds.get_or_default_mut(&session_world_name);
-                if let Some(be) = world.get_block_entity_mut(active_cont.block_pos) {
-                    if active_cont.container_kind == 1 {
-                        let mut furnace_inv = telos_sim::FurnaceInventory::from_block_entity(be);
-                        if telos_sim::furnace_container_click(
-                            &mut furnace_inv,
+                if active_cont.container_kind == 2 {
+                    if let Some(s) = self.sessions.get_mut(&session_id)
+                        && telos_sim::crafting_table_container_click(
+                            &mut s.active_crafting_table,
                             &mut inv,
                             slot_idx,
                             button,
                             mode,
-                            &self.fuel_registry,
-                            &self.smelting_recipes,
+                            &self.recipe_registry,
                         )
                         .is_ok()
-                        {
-                            *be = furnace_inv.to_block_entity();
-
-                            let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                            for slot in &inv.slots {
-                                slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
-                                });
-                            }
-                            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                carried: SlotData {
-                                    item: inv.carried.item,
-                                    count: inv.carried.count,
-                                },
+                    {
+                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                        for slot in &inv.slots {
+                            slot_vec.push(SlotData {
+                                item: slot.item,
+                                count: slot.count,
                             });
-                            if let Some(s) = self.sessions.get_mut(&session_id) {
-                                let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
-                            }
+                        }
+                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            carried: SlotData {
+                                item: inv.carried.item,
+                                count: inv.carried.count,
+                            },
+                        });
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
 
-                            // Broadcast updated container slots to all sessions viewing this container
-                            let mut container_slot_vec =
-                                Vec::with_capacity(furnace_inv.slots.len());
-                            for slot in &furnace_inv.slots {
-                                container_slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
-                                });
-                            }
-                            let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
-                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
-                                window_id: active_cont.window_id,
-                                container_kind: 1,
-                                title: BoundedString::new(title_str)
-                                    .unwrap_or_else(|_| BoundedString::new("Furnace").unwrap()),
-                                slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
-                                x: active_cont.block_pos.x(),
-                                y: active_cont.block_pos.y(),
-                                z: active_cont.block_pos.z(),
+                        let mut container_slot_vec = Vec::with_capacity(10);
+                        container_slot_vec.push(SlotData {
+                            item: s.active_crafting_table.result.item,
+                            count: s.active_crafting_table.result.count,
+                        });
+                        for slot in &s.active_crafting_table.grid {
+                            container_slot_vec.push(SlotData {
+                                item: slot.item,
+                                count: slot.count,
                             });
-                            for s in self.sessions.values_mut() {
-                                if s.phase == ConnectionPhase::Play
-                                    && s.world_name == session_world_name
-                                    && s.active_container.as_ref().map(|c| c.block_pos)
-                                        == Some(active_cont.block_pos)
-                                {
-                                    let _ = s
-                                        .connection
-                                        .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                        }
+                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                            window_id: active_cont.window_id,
+                            container_kind: 2,
+                            title: BoundedString::new("Crafting")
+                                .unwrap_or_else(|_| BoundedString::new("Crafting").unwrap()),
+                            slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
+                            x: active_cont.block_pos.x(),
+                            y: active_cont.block_pos.y(),
+                            z: active_cont.block_pos.z(),
+                        });
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+                    }
+                } else {
+                    let world = self.worlds.get_or_default_mut(&session_world_name);
+                    if let Some(be) = world.get_block_entity_mut(active_cont.block_pos) {
+                        if active_cont.container_kind == 1 {
+                            let mut furnace_inv =
+                                telos_sim::FurnaceInventory::from_block_entity(be);
+                            if telos_sim::furnace_container_click(
+                                &mut furnace_inv,
+                                &mut inv,
+                                slot_idx,
+                                button,
+                                mode,
+                                &self.fuel_registry,
+                                &self.smelting_recipes,
+                            )
+                            .is_ok()
+                            {
+                                *be = furnace_inv.to_block_entity();
+
+                                let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                                for slot in &inv.slots {
+                                    slot_vec.push(SlotData {
+                                        item: slot.item,
+                                        count: slot.count,
+                                    });
+                                }
+                                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                    carried: SlotData {
+                                        item: inv.carried.item,
+                                        count: inv.carried.count,
+                                    },
+                                });
+                                if let Some(s) = self.sessions.get_mut(&session_id) {
+                                    let _ =
+                                        s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                                }
+
+                                // Broadcast updated container slots to all sessions viewing this container
+                                let mut container_slot_vec =
+                                    Vec::with_capacity(furnace_inv.slots.len());
+                                for slot in &furnace_inv.slots {
+                                    container_slot_vec.push(SlotData {
+                                        item: slot.item,
+                                        count: slot.count,
+                                    });
+                                }
+                                let title_str =
+                                    furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
+                                let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                    window_id: active_cont.window_id,
+                                    container_kind: 1,
+                                    title: BoundedString::new(title_str)
+                                        .unwrap_or_else(|_| BoundedString::new("Furnace").unwrap()),
+                                    slots: BoundedVec::new(container_slot_vec)
+                                        .expect("slots <= 64"),
+                                    x: active_cont.block_pos.x(),
+                                    y: active_cont.block_pos.y(),
+                                    z: active_cont.block_pos.z(),
+                                });
+                                for s in self.sessions.values_mut() {
+                                    if s.phase == ConnectionPhase::Play
+                                        && s.world_name == session_world_name
+                                        && s.active_container.as_ref().map(|c| c.block_pos)
+                                            == Some(active_cont.block_pos)
+                                    {
+                                        let _ = s
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                                    }
                                 }
                             }
-                        }
-                    } else {
-                        let mut chest_inv = telos_sim::ChestInventory::from_block_entity(be);
-                        if telos_sim::container_click(
-                            &mut chest_inv,
-                            &mut inv,
-                            slot_idx,
-                            button,
-                            mode,
-                        )
-                        .is_ok()
-                        {
-                            *be = chest_inv.to_block_entity();
+                        } else {
+                            let mut chest_inv = telos_sim::ChestInventory::from_block_entity(be);
+                            if telos_sim::container_click(
+                                &mut chest_inv,
+                                &mut inv,
+                                slot_idx,
+                                button,
+                                mode,
+                            )
+                            .is_ok()
+                            {
+                                *be = chest_inv.to_block_entity();
 
-                            let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                            for slot in &inv.slots {
-                                slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
+                                let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                                for slot in &inv.slots {
+                                    slot_vec.push(SlotData {
+                                        item: slot.item,
+                                        count: slot.count,
+                                    });
+                                }
+                                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                    carried: SlotData {
+                                        item: inv.carried.item,
+                                        count: inv.carried.count,
+                                    },
                                 });
-                            }
-                            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                carried: SlotData {
-                                    item: inv.carried.item,
-                                    count: inv.carried.count,
-                                },
-                            });
-                            if let Some(s) = self.sessions.get_mut(&session_id) {
-                                let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
-                            }
+                                if let Some(s) = self.sessions.get_mut(&session_id) {
+                                    let _ =
+                                        s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                                }
 
-                            // Broadcast updated container slots to all sessions viewing this container
-                            let mut container_slot_vec = Vec::with_capacity(chest_inv.slots.len());
-                            for slot in &chest_inv.slots {
-                                container_slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
+                                // Broadcast updated container slots to all sessions viewing this container
+                                let mut container_slot_vec =
+                                    Vec::with_capacity(chest_inv.slots.len());
+                                for slot in &chest_inv.slots {
+                                    container_slot_vec.push(SlotData {
+                                        item: slot.item,
+                                        count: slot.count,
+                                    });
+                                }
+                                let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
+                                let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                    window_id: active_cont.window_id,
+                                    container_kind: 0,
+                                    title: BoundedString::new(title_str)
+                                        .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
+                                    slots: BoundedVec::new(container_slot_vec)
+                                        .expect("slots <= 64"),
+                                    x: active_cont.block_pos.x(),
+                                    y: active_cont.block_pos.y(),
+                                    z: active_cont.block_pos.z(),
                                 });
-                            }
-                            let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
-                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
-                                window_id: active_cont.window_id,
-                                container_kind: 0,
-                                title: BoundedString::new(title_str)
-                                    .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
-                                slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
-                                x: active_cont.block_pos.x(),
-                                y: active_cont.block_pos.y(),
-                                z: active_cont.block_pos.z(),
-                            });
-                            for s in self.sessions.values_mut() {
-                                if s.phase == ConnectionPhase::Play
-                                    && s.world_name == session_world_name
-                                    && s.active_container.as_ref().map(|c| c.block_pos)
-                                        == Some(active_cont.block_pos)
-                                {
-                                    let _ = s
-                                        .connection
-                                        .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                                for s in self.sessions.values_mut() {
+                                    if s.phase == ConnectionPhase::Play
+                                        && s.world_name == session_world_name
+                                        && s.active_container.as_ref().map(|c| c.block_pos)
+                                            == Some(active_cont.block_pos)
+                                    {
+                                        let _ = s
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                                    }
                                 }
                             }
                         }
@@ -3557,43 +3715,16 @@ impl Server {
 
         // 3b. Process container close requests
         for (session_id, close) in container_closes {
-            let mut close_event_to_broadcast = None;
-            if let Some(session) = self.sessions.get_mut(&session_id)
-                && let Some(active_cont) = session.active_container
-                && active_cont.window_id == close.window_id
+            let matches_window = self
+                .sessions
+                .get(&session_id)
+                .and_then(|s| s.active_container)
+                .is_some_and(|c| c.window_id == close.window_id);
+            if matches_window
+                && let Some((world_name, chest_pos, container_kind)) =
+                    self.close_session_container(session_id)
+                && container_kind == 0
             {
-                let chest_pos = active_cont.block_pos;
-                let world_name = session.world_name.clone();
-                session.active_container = None;
-
-                // Return any carried stack to inventory
-                if let Some(entity) = session.ecs_entity
-                    && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
-                    && !inv.carried.is_empty()
-                {
-                    inv.return_carried();
-                    let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                    for slot in &inv.slots {
-                        slot_vec.push(SlotData {
-                            item: slot.item,
-                            count: slot.count,
-                        });
-                    }
-                    let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                        slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                        carried: SlotData {
-                            item: inv.carried.item,
-                            count: inv.carried.count,
-                        },
-                    });
-                    let _ = session
-                        .connection
-                        .send(Lane::Control, Payload::Msg(bulk_msg));
-                }
-
-                close_event_to_broadcast = Some((world_name, chest_pos));
-            }
-            if let Some((world_name, chest_pos)) = close_event_to_broadcast {
                 let remaining_viewers = self.sessions.values().any(|s| {
                     s.phase == ConnectionPhase::Play
                         && s.world_name == world_name
@@ -3620,6 +3751,7 @@ impl Server {
 
         // 4. Process block actions (authoritative validation & simulation)
         let mut dropped_items_to_spawn = Vec::new();
+        let mut containers_to_close = Vec::new();
         for (session_id, action) in block_actions {
             let (
                 session_pos,
@@ -3870,13 +4002,39 @@ impl Server {
                                 let _ = s.connection.send(Lane::Control, Payload::Msg(p3));
                             }
                         }
+                    } else if world.registry().is_crafting_table(old_state) {
+                        let mut slot_vec = Vec::with_capacity(10);
+                        for _ in 0..10 {
+                            slot_vec.push(SlotData { item: 0, count: 0 });
+                        }
+                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                            window_id: 1,
+                            container_kind: 2,
+                            title: BoundedString::new("Crafting")
+                                .unwrap_or_else(|_| BoundedString::new("Crafting").unwrap()),
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            x: target_pos.x(),
+                            y: target_pos.y(),
+                            z: target_pos.z(),
+                        });
+                        if let Some(s) = self.sessions.get_mut(&session_id) {
+                            s.active_crafting_table = telos_sim::CraftingTableInventory::new();
+                            s.active_container = Some(ActiveContainerSession {
+                                window_id: 1,
+                                block_pos: target_pos,
+                                container_kind: 2,
+                            });
+                            let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+                        }
                     }
                 } else {
+                    let is_chest_or_furnace = world.registry().is_chest(old_state)
+                        || world.registry().is_furnace(old_state);
+                    let is_crafting_table = world.registry().is_crafting_table(old_state);
+                    let is_container_block = is_chest_or_furnace || is_crafting_table;
+
                     let container_contents_to_drop =
-                        if matches!(action.action, BlockActionKind::Break)
-                            && (world.registry().is_chest(old_state)
-                                || world.registry().is_furnace(old_state))
-                        {
+                        if matches!(action.action, BlockActionKind::Break) && is_chest_or_furnace {
                             world.get_block_entity(target_pos).cloned()
                         } else {
                             None
@@ -3908,22 +4066,21 @@ impl Server {
                                             ));
                                         }
                                     }
-                                    let close_msg = S2cMessage::CloseContainer(S2cCloseContainer {
-                                        window_id: 1,
-                                    });
-                                    for s in self.sessions.values_mut() {
-                                        if s.phase == ConnectionPhase::Play
-                                            && s.world_name == session_world_name
-                                            && s.active_container.as_ref().map(|c| c.block_pos)
-                                                == Some(target_pos)
-                                        {
-                                            s.active_container = None;
-                                            let _ = s.connection.send(
-                                                Lane::Control,
-                                                Payload::Msg(close_msg.clone()),
-                                            );
-                                        }
-                                    }
+                                }
+
+                                if is_container_block {
+                                    let viewers: Vec<u64> = self
+                                        .sessions
+                                        .iter()
+                                        .filter(|(_, s)| {
+                                            s.phase == ConnectionPhase::Play
+                                                && s.world_name == session_world_name
+                                                && s.active_container.as_ref().map(|c| c.block_pos)
+                                                    == Some(target_pos)
+                                        })
+                                        .map(|(&id, _)| id)
+                                        .collect();
+                                    containers_to_close.extend(viewers);
                                 }
 
                                 if session_game_mode == GameMode::Survival
@@ -4049,6 +4206,14 @@ impl Server {
             self.spawn_item_entity(&w_name, pos, vel, stack, 0);
         }
 
+        for viewer_id in containers_to_close {
+            if let Some(s) = self.sessions.get_mut(&viewer_id) {
+                let close_msg = S2cMessage::CloseContainer(S2cCloseContainer { window_id: 1 });
+                let _ = s.connection.send(Lane::Control, Payload::Msg(close_msg));
+            }
+            self.close_session_container(viewer_id);
+        }
+
         // 4c. Process player movement inputs and authoritative simulation
         for session in self.sessions.values_mut() {
             if session.phase != ConnectionPhase::Play {
@@ -4141,7 +4306,7 @@ impl Server {
 
         // 4d. Auto-close container sessions if player moved beyond reach (> 5.0m)
         let mut distance_closed_containers = Vec::new();
-        for session in self.sessions.values_mut() {
+        for session in self.sessions.values() {
             if session.phase != ConnectionPhase::Play {
                 continue;
             }
@@ -4153,64 +4318,38 @@ impl Server {
                 );
                 let dist_sq = (session.position - block_center).length_squared();
                 if dist_sq > 5.0 * 5.0 {
-                    session.active_container = None;
-                    let close_msg = S2cMessage::CloseContainer(S2cCloseContainer {
-                        window_id: active_cont.window_id,
-                    });
-                    let _ = session
-                        .connection
-                        .send(Lane::Control, Payload::Msg(close_msg));
-                    distance_closed_containers.push((
-                        session.world_name.clone(),
-                        active_cont.block_pos,
-                        session.ecs_entity,
-                        session.session_id,
-                    ));
+                    distance_closed_containers.push((session.session_id, active_cont.window_id));
                 }
             }
         }
-        for (world_name, block_pos, ecs_entity, session_id) in distance_closed_containers {
-            if let Some(entity) = ecs_entity
-                && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
-                && !inv.carried.is_empty()
-            {
-                inv.return_carried();
-                let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                for slot in &inv.slots {
-                    slot_vec.push(SlotData {
-                        item: slot.item,
-                        count: slot.count,
-                    });
-                }
-                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                    carried: SlotData {
-                        item: inv.carried.item,
-                        count: inv.carried.count,
-                    },
-                });
-                if let Some(s) = self.sessions.get_mut(&session_id) {
-                    let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
-                }
+        for (session_id, window_id) in distance_closed_containers {
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                let close_msg = S2cMessage::CloseContainer(S2cCloseContainer { window_id });
+                let _ = s.connection.send(Lane::Control, Payload::Msg(close_msg));
             }
-            let remaining = self.sessions.values().any(|s| {
-                s.phase == ConnectionPhase::Play
-                    && s.world_name == world_name
-                    && s.active_container.as_ref().map(|c| c.block_pos) == Some(block_pos)
-            });
-            if !remaining {
-                let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
-                    x: block_pos.x(),
-                    y: block_pos.y(),
-                    z: block_pos.z(),
-                    action: 1,
-                    param: 0,
+            if let Some((world_name, block_pos, container_kind)) =
+                self.close_session_container(session_id)
+                && container_kind == 0
+            {
+                let remaining = self.sessions.values().any(|s| {
+                    s.phase == ConnectionPhase::Play
+                        && s.world_name == world_name
+                        && s.active_container.as_ref().map(|c| c.block_pos) == Some(block_pos)
                 });
-                for s in self.sessions.values_mut() {
-                    if s.phase == ConnectionPhase::Play && s.world_name == world_name {
-                        let _ = s
-                            .connection
-                            .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                if !remaining {
+                    let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                        x: block_pos.x(),
+                        y: block_pos.y(),
+                        z: block_pos.z(),
+                        action: 1,
+                        param: 0,
+                    });
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                        }
                     }
                 }
             }

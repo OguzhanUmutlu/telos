@@ -625,6 +625,9 @@ impl BlockRegistry {
             ),
         );
 
+        let crafting_table_id = Identifier::new("telos", "crafting_table").unwrap();
+        reg.register(crafting_table_id, StateFlags::OPAQUE_CUBE);
+
         reg.freeze();
         reg
     }
@@ -730,6 +733,14 @@ impl BlockRegistry {
     pub fn is_lit_furnace(&self, id: BlockStateId) -> bool {
         self.identifier(id)
             .is_some_and(|ident| ident.path() == "lit_furnace")
+    }
+
+    /// Returns `true` if the given block state represents a crafting table.
+    #[inline]
+    #[must_use]
+    pub fn is_crafting_table(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "crafting_table")
     }
 
     /// Returns `true` if the block state at `id` can be freely replaced by flowing fluids.

@@ -103,6 +103,8 @@ pub struct PlayerSession {
     pub capabilities: telos_sim::PlayerCapabilities,
     /// Currently open container session (if any).
     pub active_container: Option<ActiveContainerSession>,
+    /// Active 3x3 crafting table grid state (if crafting table container is open).
+    pub active_crafting_table: telos_sim::CraftingTableInventory,
 }
 
 /// Tracks an open container window for a player session.
@@ -112,7 +114,7 @@ pub struct ActiveContainerSession {
     pub window_id: u8,
     /// World coordinates of the container block.
     pub block_pos: BlockPos,
-    /// Container kind (0: Chest, 1: Furnace).
+    /// Container kind (0: Chest, 1: Furnace, 2: Crafting Table).
     pub container_kind: u8,
 }
 
@@ -197,6 +199,7 @@ impl PlayerSession {
             selected_slot: 0,
             world_name: "overworld".to_string(),
             active_container: None,
+            active_crafting_table: telos_sim::CraftingTableInventory::new(),
         }
     }
 
