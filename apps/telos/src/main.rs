@@ -53,10 +53,11 @@ use telos_ui::menu::{
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
-    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_CRAFTING_TABLE_SLOT_COUNT,
-    DUAL_FURNACE_SLOT_COUNT, GuiStyleSheet, HudState, ToastState, UiLayers, UiQuad, UiSlotItem,
-    chest_slot_at_pos_styled, compute_gui_scale, crafting_table_slot_at_pos_styled,
-    furnace_slot_at_pos_styled, inventory_slot_at_pos_styled, render_chat_hud,
+    BitmapFont, ChatHudState, DUAL_ANVIL_SLOT_COUNT, DUAL_CONTAINER_SLOT_COUNT,
+    DUAL_CRAFTING_TABLE_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, GuiStyleSheet, HudState, ToastState,
+    UiLayers, UiQuad, UiSlotItem, anvil_slot_at_pos_styled, chest_slot_at_pos_styled,
+    compute_gui_scale, crafting_table_slot_at_pos_styled, furnace_slot_at_pos_styled,
+    inventory_slot_at_pos_styled, render_anvil_container_styled, render_chat_hud,
     render_chest_container_styled, render_crafting_table_container_styled,
     render_furnace_container_styled, render_hud_styled, render_inventory_screen_styled,
     snap_to_physical,
@@ -2268,6 +2269,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_container_swap_hotbar(&mut self, hotbar_idx: usize) {
         if let Some(hovered) = self.container_hovered_slot {
             let predicted_carried = self.inventory_sim.carried;
@@ -2319,6 +2321,48 @@ impl App {
                     for (i, slot) in furnace_inv.slots.iter().enumerate() {
                         cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
                     }
+                } else if cont.container_kind == 3 {
+                    let mut anvil_inv = telos_sim::AnvilInventory::new();
+                    anvil_inv.left = telos_sim::ItemStack::new_enchanted(
+                        cont.slots[0].item,
+                        cont.slots[0].count,
+                        telos_sim::CompactEnchantments(cont.slots[0].enchantments),
+                    );
+                    anvil_inv.right = telos_sim::ItemStack::new_enchanted(
+                        cont.slots[1].item,
+                        cont.slots[1].count,
+                        telos_sim::CompactEnchantments(cont.slots[1].enchantments),
+                    );
+                    anvil_inv.result = telos_sim::ItemStack::new_enchanted(
+                        cont.slots[2].item,
+                        cont.slots[2].count,
+                        telos_sim::CompactEnchantments(cont.slots[2].enchantments),
+                    );
+                    anvil_inv.level_cost = cont.properties[0].max(0) as u32;
+                    let _ = telos_sim::anvil_container_click(
+                        &mut anvil_inv,
+                        &mut self.inventory_sim,
+                        self.hud_state.xp_level,
+                        hovered,
+                        telos_sim::ClickButton::Left,
+                        telos_sim::ClickMode::SwapHotbar,
+                    );
+                    cont.slots[0] = UiSlotItem::new_enchanted(
+                        anvil_inv.left.item,
+                        anvil_inv.left.count,
+                        anvil_inv.left.enchantments.0,
+                    );
+                    cont.slots[1] = UiSlotItem::new_enchanted(
+                        anvil_inv.right.item,
+                        anvil_inv.right.count,
+                        anvil_inv.right.enchantments.0,
+                    );
+                    cont.slots[2] = UiSlotItem::new_enchanted(
+                        anvil_inv.result.item,
+                        anvil_inv.result.count,
+                        anvil_inv.result.enchantments.0,
+                    );
+                    cont.properties[0] = anvil_inv.level_cost as i16;
                 } else {
                     let mut chest_inv = telos_sim::ChestInventory::default();
                     for (i, slot) in cont.slots.iter().enumerate() {
@@ -2354,6 +2398,17 @@ impl App {
                 for slot in &cont.slots[1..10] {
                     if !slot.is_empty() {
                         let mut stack = telos_sim::ItemStack::new(slot.item, slot.count);
+                        self.inventory_sim.insert_into_storage_or_hotbar(&mut stack);
+                    }
+                }
+            } else if cont.container_kind == 3 {
+                for slot in &cont.slots[0..2] {
+                    if !slot.is_empty() {
+                        let mut stack = telos_sim::ItemStack::new_enchanted(
+                            slot.item,
+                            slot.count,
+                            telos_sim::CompactEnchantments(slot.enchantments),
+                        );
                         self.inventory_sim.insert_into_storage_or_hotbar(&mut stack);
                     }
                 }
@@ -2851,12 +2906,18 @@ impl App {
                             .sum::<u16>();
                         for (i, slot) in bulk.slots.iter().enumerate() {
                             if i < self.inventory_sim.slots.len() {
-                                self.inventory_sim.slots[i] =
-                                    telos_sim::ItemStack::new(slot.item, slot.count);
+                                self.inventory_sim.slots[i] = telos_sim::ItemStack::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    telos_sim::CompactEnchantments(slot.enchantments),
+                                );
                             }
                         }
-                        self.inventory_sim.carried =
-                            telos_sim::ItemStack::new(bulk.carried.item, bulk.carried.count);
+                        self.inventory_sim.carried = telos_sim::ItemStack::new_enchanted(
+                            bulk.carried.item,
+                            bulk.carried.count,
+                            telos_sim::CompactEnchantments(bulk.carried.enchantments),
+                        );
                         let now_items = self
                             .inventory_sim
                             .slots
@@ -2876,8 +2937,11 @@ impl App {
                         if idx < self.inventory_sim.slots.len() {
                             let old_count = self.inventory_sim.slots[idx].count;
                             let old_item = self.inventory_sim.slots[idx].item;
-                            self.inventory_sim.slots[idx] =
-                                telos_sim::ItemStack::new(slot_msg.item, slot_msg.count);
+                            self.inventory_sim.slots[idx] = telos_sim::ItemStack::new_enchanted(
+                                slot_msg.item,
+                                slot_msg.count,
+                                telos_sim::CompactEnchantments(slot_msg.enchantments),
+                            );
                             if (slot_msg.count > old_count
                                 || (old_count == 0
                                     && slot_msg.count > 0
@@ -2985,7 +3049,8 @@ impl App {
                     S2cMessage::OpenContainer(open) => {
                         let mut slots = [UiSlotItem::EMPTY; 27];
                         for (i, slot) in open.slots.iter().enumerate().take(27) {
-                            slots[i] = UiSlotItem::new(slot.item, slot.count);
+                            slots[i] =
+                                UiSlotItem::new_enchanted(slot.item, slot.count, slot.enchantments);
                         }
                         if let Some(existing) = &mut self.container_state {
                             if existing.window_id == open.window_id {
@@ -6106,9 +6171,10 @@ impl App {
                             );
 
                             if let Some(ref cont) = self.container_state {
-                                let ui_carried = UiSlotItem::new(
+                                let ui_carried = UiSlotItem::new_enchanted(
                                     self.inventory_sim.carried.item,
                                     self.inventory_sim.carried.count,
+                                    self.inventory_sim.carried.enchantments.0,
                                 );
                                 let item_lookup = |id: u32| {
                                     if let Some(def) = self.registries.item_registry().get_by_id(id)
@@ -6120,19 +6186,65 @@ impl App {
                                         telos_sim::item_name(id)
                                     }
                                 };
-                                if cont.container_kind == 2 {
+                                if cont.container_kind == 3 {
+                                    let mut ui_slots = [UiSlotItem::EMPTY; DUAL_ANVIL_SLOT_COUNT];
+                                    ui_slots[..3].copy_from_slice(&cont.slots[..3]);
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[9..36].iter().enumerate()
+                                    {
+                                        ui_slots[3 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
+                                    }
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[0..9].iter().enumerate()
+                                    {
+                                        ui_slots[30 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
+                                    }
+                                    render_anvil_container_styled(
+                                        &ui_slots,
+                                        ui_carried,
+                                        self.container_hovered_slot,
+                                        cont.properties[0].max(0) as u32,
+                                        self.hud_state.xp_level,
+                                        swapchain_extent.width,
+                                        swapchain_extent.height,
+                                        gui_scale,
+                                        font,
+                                        &self.ui_layers,
+                                        &cont.title,
+                                        item_lookup,
+                                        self.mouse_cursor_pos,
+                                        &self.gui_style.anvil,
+                                        &mut ui_quads,
+                                    );
+                                } else if cont.container_kind == 2 {
                                     let mut ui_slots =
                                         [UiSlotItem::EMPTY; DUAL_CRAFTING_TABLE_SLOT_COUNT];
                                     ui_slots[..10].copy_from_slice(&cont.slots[..10]);
                                     for (i, slot) in
                                         self.inventory_sim.slots[9..36].iter().enumerate()
                                     {
-                                        ui_slots[10 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[10 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     for (i, slot) in
                                         self.inventory_sim.slots[0..9].iter().enumerate()
                                     {
-                                        ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[37 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     render_crafting_table_container_styled(
                                         &ui_slots,
@@ -6155,12 +6267,20 @@ impl App {
                                     for (i, slot) in
                                         self.inventory_sim.slots[9..36].iter().enumerate()
                                     {
-                                        ui_slots[3 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[3 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     for (i, slot) in
                                         self.inventory_sim.slots[0..9].iter().enumerate()
                                     {
-                                        ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[30 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     render_furnace_container_styled(
                                         &ui_slots,
@@ -6188,12 +6308,20 @@ impl App {
                                     for (i, slot) in
                                         self.inventory_sim.slots[9..36].iter().enumerate()
                                     {
-                                        ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[27 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     for (i, slot) in
                                         self.inventory_sim.slots[0..9].iter().enumerate()
                                     {
-                                        ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                                        ui_slots[54 + i] = UiSlotItem::new_enchanted(
+                                            slot.item,
+                                            slot.count,
+                                            slot.enchantments.0,
+                                        );
                                     }
                                     render_chest_container_styled(
                                         &ui_slots,
@@ -6221,11 +6349,16 @@ impl App {
                                     .enumerate()
                                     .take(telos_ui::INVENTORY_SLOT_COUNT)
                                 {
-                                    ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                                    ui_slots[i] = UiSlotItem::new_enchanted(
+                                        slot.item,
+                                        slot.count,
+                                        slot.enchantments.0,
+                                    );
                                 }
-                                let ui_carried = UiSlotItem::new(
+                                let ui_carried = UiSlotItem::new_enchanted(
                                     self.inventory_sim.carried.item,
                                     self.inventory_sim.carried.count,
+                                    self.inventory_sim.carried.enchantments.0,
                                 );
                                 let item_lookup = |id: u32| {
                                     if let Some(def) = self.registries.item_registry().get_by_id(id)
@@ -6596,9 +6729,10 @@ impl App {
                     );
 
                     if let Some(ref cont) = self.container_state {
-                        let ui_carried = UiSlotItem::new(
+                        let ui_carried = UiSlotItem::new_enchanted(
                             self.inventory_sim.carried.item,
                             self.inventory_sim.carried.count,
+                            self.inventory_sim.carried.enchantments.0,
                         );
                         let item_lookup = |id: u32| {
                             if let Some(def) = self.registries.item_registry().get_by_id(id) {
@@ -6609,14 +6743,56 @@ impl App {
                                 telos_sim::item_name(id)
                             }
                         };
-                        if cont.container_kind == 2 {
+                        if cont.container_kind == 3 {
+                            let mut ui_slots = [UiSlotItem::EMPTY; DUAL_ANVIL_SLOT_COUNT];
+                            ui_slots[..3].copy_from_slice(&cont.slots[..3]);
+                            for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
+                                ui_slots[3 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
+                            }
+                            for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                                ui_slots[30 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
+                            }
+                            render_anvil_container_styled(
+                                &ui_slots,
+                                ui_carried,
+                                self.container_hovered_slot,
+                                cont.properties[0].max(0) as u32,
+                                self.hud_state.xp_level,
+                                width,
+                                height,
+                                gui_scale,
+                                font,
+                                &self.ui_layers,
+                                &cont.title,
+                                item_lookup,
+                                self.mouse_cursor_pos,
+                                &self.gui_style.anvil,
+                                &mut ui_quads,
+                            );
+                        } else if cont.container_kind == 2 {
                             let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CRAFTING_TABLE_SLOT_COUNT];
                             ui_slots[..10].copy_from_slice(&cont.slots[..10]);
                             for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
-                                ui_slots[10 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[10 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
-                                ui_slots[37 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[37 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             render_crafting_table_container_styled(
                                 &ui_slots,
@@ -6637,10 +6813,18 @@ impl App {
                             let mut ui_slots = [UiSlotItem::EMPTY; DUAL_FURNACE_SLOT_COUNT];
                             ui_slots[..3].copy_from_slice(&cont.slots[..3]);
                             for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
-                                ui_slots[3 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[3 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
-                                ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[30 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             render_furnace_container_styled(
                                 &ui_slots,
@@ -6665,10 +6849,18 @@ impl App {
                             let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
                             ui_slots[..27].copy_from_slice(&cont.slots);
                             for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
-                                ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[27 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
-                                ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                                ui_slots[54 + i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                             render_chest_container_styled(
                                 &ui_slots,
@@ -6695,11 +6887,16 @@ impl App {
                             .enumerate()
                             .take(telos_ui::INVENTORY_SLOT_COUNT)
                         {
-                            ui_slots[i] = UiSlotItem::new(slot.item, slot.count);
+                            ui_slots[i] = UiSlotItem::new_enchanted(
+                                slot.item,
+                                slot.count,
+                                slot.enchantments.0,
+                            );
                         }
-                        let ui_carried = UiSlotItem::new(
+                        let ui_carried = UiSlotItem::new_enchanted(
                             self.inventory_sim.carried.item,
                             self.inventory_sim.carried.count,
+                            self.inventory_sim.carried.enchantments.0,
                         );
                         let item_lookup = |id: u32| {
                             if let Some(def) = self.registries.item_registry().get_by_id(id) {
@@ -8811,7 +9008,15 @@ impl ApplicationHandler for App {
                             self.advancements_screen
                                 .handle_mouse_move(mx, my, width_gui, height_gui);
                         } else if let Some(ref cont) = self.container_state {
-                            self.container_hovered_slot = if cont.container_kind == 2 {
+                            self.container_hovered_slot = if cont.container_kind == 3 {
+                                anvil_slot_at_pos_styled(
+                                    self.mouse_cursor_pos,
+                                    win_size.width,
+                                    win_size.height,
+                                    gui_scale,
+                                    &self.gui_style.anvil,
+                                )
+                            } else if cont.container_kind == 2 {
                                 crafting_table_slot_at_pos_styled(
                                     self.mouse_cursor_pos,
                                     win_size.width,
@@ -9223,7 +9428,49 @@ impl ApplicationHandler for App {
                             telos_sim::ClickMode::Pickup
                         };
 
-                        if cont.container_kind == 2 {
+                        if cont.container_kind == 3 {
+                            let mut anvil_inv = telos_sim::AnvilInventory::new();
+                            anvil_inv.left = telos_sim::ItemStack::new_enchanted(
+                                cont.slots[0].item,
+                                cont.slots[0].count,
+                                telos_sim::CompactEnchantments(cont.slots[0].enchantments),
+                            );
+                            anvil_inv.right = telos_sim::ItemStack::new_enchanted(
+                                cont.slots[1].item,
+                                cont.slots[1].count,
+                                telos_sim::CompactEnchantments(cont.slots[1].enchantments),
+                            );
+                            anvil_inv.result = telos_sim::ItemStack::new_enchanted(
+                                cont.slots[2].item,
+                                cont.slots[2].count,
+                                telos_sim::CompactEnchantments(cont.slots[2].enchantments),
+                            );
+                            anvil_inv.level_cost = cont.properties[0].max(0) as u32;
+                            let _ = telos_sim::anvil_container_click(
+                                &mut anvil_inv,
+                                &mut self.inventory_sim,
+                                self.hud_state.xp_level,
+                                hovered,
+                                btn_sim,
+                                mode_sim,
+                            );
+                            cont.slots[0] = UiSlotItem::new_enchanted(
+                                anvil_inv.left.item,
+                                anvil_inv.left.count,
+                                anvil_inv.left.enchantments.0,
+                            );
+                            cont.slots[1] = UiSlotItem::new_enchanted(
+                                anvil_inv.right.item,
+                                anvil_inv.right.count,
+                                anvil_inv.right.enchantments.0,
+                            );
+                            cont.slots[2] = UiSlotItem::new_enchanted(
+                                anvil_inv.result.item,
+                                anvil_inv.result.count,
+                                anvil_inv.result.enchantments.0,
+                            );
+                            cont.properties[0] = anvil_inv.level_cost as i16;
+                        } else if cont.container_kind == 2 {
                             let mut ct_inv = telos_sim::CraftingTableInventory::new();
                             ct_inv.result =
                                 telos_sim::ItemStack::new(cont.slots[0].item, cont.slots[0].count);
@@ -9264,8 +9511,11 @@ impl ApplicationHandler for App {
                         } else {
                             let mut chest_inv = telos_sim::ChestInventory::default();
                             for (i, slot) in cont.slots.iter().enumerate() {
-                                chest_inv.slots[i] =
-                                    telos_sim::ItemStack::new(slot.item, slot.count);
+                                chest_inv.slots[i] = telos_sim::ItemStack::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    telos_sim::CompactEnchantments(slot.enchantments),
+                                );
                             }
                             let _ = telos_sim::container_click(
                                 &mut chest_inv,
@@ -9275,7 +9525,11 @@ impl ApplicationHandler for App {
                                 mode_sim,
                             );
                             for (i, slot) in chest_inv.slots.iter().enumerate() {
-                                cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                                cont.slots[i] = UiSlotItem::new_enchanted(
+                                    slot.item,
+                                    slot.count,
+                                    slot.enchantments.0,
+                                );
                             }
                         }
                         self.selected_block_state =

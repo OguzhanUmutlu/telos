@@ -23,6 +23,36 @@ pub enum EnchantmentKind {
     Unbreaking = 8,
     /// Repairs item durability using collected experience (max I).
     Mending = 9,
+    /// Extra damage against undead mobs (+2.5 * level, max V).
+    Smite = 10,
+    /// Extra damage against spider/arthropod mobs (+2.5 * level, max V).
+    BaneOfArthropods = 11,
+    /// Sets target on fire for 4 * level seconds (max II).
+    FireAspect = 12,
+    /// Increases mob loot drops (max III).
+    Looting = 13,
+    /// Causes mined blocks to drop themselves rather than usual drops (max I).
+    SilkTouch = 14,
+    /// Increases block drop quantities for ores and crops (max III).
+    Fortune = 15,
+    /// Increases arrow damage (+25% * (level + 1), max V).
+    Power = 16,
+    /// Increases arrow knockback impulse (+0.6 * level blocks, max II).
+    Punch = 17,
+    /// Ignites arrows so they ignite target on hit (max I).
+    Flame = 18,
+    /// Shooting arrows does not consume regular arrows from inventory (max I).
+    Infinity = 19,
+    /// Reduces projectile damage from arrows (EPF = level * 2, max IV).
+    ProjectileProtection = 20,
+    /// Extends underwater breathing time and reduces drowning damage (max III).
+    Respiration = 21,
+    /// Normal underwater mining speed without penalty (max I).
+    AquaAffinity = 22,
+    /// Chance to reflect damage to melee attackers (max III).
+    Thorns = 23,
+    /// Increases underwater swimming movement speed (max III).
+    DepthStrider = 24,
 }
 
 impl EnchantmentKind {
@@ -45,6 +75,21 @@ impl EnchantmentKind {
             7 => Some(Self::Efficiency),
             8 => Some(Self::Unbreaking),
             9 => Some(Self::Mending),
+            10 => Some(Self::Smite),
+            11 => Some(Self::BaneOfArthropods),
+            12 => Some(Self::FireAspect),
+            13 => Some(Self::Looting),
+            14 => Some(Self::SilkTouch),
+            15 => Some(Self::Fortune),
+            16 => Some(Self::Power),
+            17 => Some(Self::Punch),
+            18 => Some(Self::Flame),
+            19 => Some(Self::Infinity),
+            20 => Some(Self::ProjectileProtection),
+            21 => Some(Self::Respiration),
+            22 => Some(Self::AquaAffinity),
+            23 => Some(Self::Thorns),
+            24 => Some(Self::DepthStrider),
             _ => None,
         }
     }
@@ -62,6 +107,21 @@ impl EnchantmentKind {
             Self::Efficiency => "Efficiency",
             Self::Unbreaking => "Unbreaking",
             Self::Mending => "Mending",
+            Self::Smite => "Smite",
+            Self::BaneOfArthropods => "Bane of Arthropods",
+            Self::FireAspect => "Fire Aspect",
+            Self::Looting => "Looting",
+            Self::SilkTouch => "Silk Touch",
+            Self::Fortune => "Fortune",
+            Self::Power => "Power",
+            Self::Punch => "Punch",
+            Self::Flame => "Flame",
+            Self::Infinity => "Infinity",
+            Self::ProjectileProtection => "Projectile Protection",
+            Self::Respiration => "Respiration",
+            Self::AquaAffinity => "Aqua Affinity",
+            Self::Thorns => "Thorns",
+            Self::DepthStrider => "Depth Strider",
         }
     }
 
@@ -72,11 +132,23 @@ impl EnchantmentKind {
             Self::Protection
             | Self::FireProtection
             | Self::FeatherFalling
-            | Self::BlastProtection => 4,
-            Self::Sharpness | Self::Efficiency => 5,
-            Self::Unbreaking => 3,
-            Self::Knockback => 2,
-            Self::Mending => 1,
+            | Self::BlastProtection
+            | Self::ProjectileProtection => 4,
+            Self::Sharpness
+            | Self::Efficiency
+            | Self::Smite
+            | Self::BaneOfArthropods
+            | Self::Power => 5,
+            Self::Unbreaking
+            | Self::Looting
+            | Self::Fortune
+            | Self::Respiration
+            | Self::Thorns
+            | Self::DepthStrider => 3,
+            Self::Knockback | Self::FireAspect | Self::Punch => 2,
+            Self::Mending | Self::SilkTouch | Self::Flame | Self::Infinity | Self::AquaAffinity => {
+                1
+            }
         }
     }
 
@@ -84,12 +156,23 @@ impl EnchantmentKind {
     #[must_use]
     pub const fn target(self) -> EnchantmentTarget {
         match self {
-            Self::Protection | Self::FireProtection | Self::BlastProtection => {
-                EnchantmentTarget::Armor
+            Self::Protection
+            | Self::FireProtection
+            | Self::BlastProtection
+            | Self::ProjectileProtection
+            | Self::Respiration
+            | Self::Thorns => EnchantmentTarget::Armor,
+            Self::FeatherFalling | Self::DepthStrider => EnchantmentTarget::Boots,
+            Self::Sharpness
+            | Self::Smite
+            | Self::BaneOfArthropods
+            | Self::Knockback
+            | Self::FireAspect
+            | Self::Looting => EnchantmentTarget::Weapon,
+            Self::Efficiency | Self::SilkTouch | Self::Fortune | Self::AquaAffinity => {
+                EnchantmentTarget::Tool
             }
-            Self::FeatherFalling => EnchantmentTarget::Boots,
-            Self::Sharpness | Self::Knockback => EnchantmentTarget::Weapon,
-            Self::Efficiency => EnchantmentTarget::Tool,
+            Self::Power | Self::Punch | Self::Flame | Self::Infinity => EnchantmentTarget::Bow,
             Self::Unbreaking | Self::Mending => EnchantmentTarget::Breakable,
         }
     }
@@ -100,16 +183,50 @@ impl EnchantmentKind {
         if (self as u8) == (other as u8) {
             return true;
         }
-        // Protection, FireProtection, BlastProtection are mutually exclusive
+        // Protection, FireProtection, BlastProtection, ProjectileProtection are mutually exclusive
         let is_prot_a = matches!(
             self,
-            Self::Protection | Self::FireProtection | Self::BlastProtection
+            Self::Protection
+                | Self::FireProtection
+                | Self::BlastProtection
+                | Self::ProjectileProtection
         );
         let is_prot_b = matches!(
             other,
-            Self::Protection | Self::FireProtection | Self::BlastProtection
+            Self::Protection
+                | Self::FireProtection
+                | Self::BlastProtection
+                | Self::ProjectileProtection
         );
-        !(is_prot_a && is_prot_b)
+        if is_prot_a && is_prot_b {
+            return false;
+        }
+
+        // Sharpness, Smite, BaneOfArthropods are mutually exclusive
+        let is_dmg_a = matches!(self, Self::Sharpness | Self::Smite | Self::BaneOfArthropods);
+        let is_dmg_b = matches!(
+            other,
+            Self::Sharpness | Self::Smite | Self::BaneOfArthropods
+        );
+        if is_dmg_a && is_dmg_b {
+            return false;
+        }
+
+        // SilkTouch and Fortune are mutually exclusive
+        let is_drop_a = matches!(self, Self::SilkTouch | Self::Fortune);
+        let is_drop_b = matches!(other, Self::SilkTouch | Self::Fortune);
+        if is_drop_a && is_drop_b {
+            return false;
+        }
+
+        // Infinity and Mending are mutually exclusive
+        let is_inf_mend_a = matches!(self, Self::Infinity | Self::Mending);
+        let is_inf_mend_b = matches!(other, Self::Infinity | Self::Mending);
+        if is_inf_mend_a && is_inf_mend_b {
+            return false;
+        }
+
+        true
     }
 
     /// Calculates Enchantment Protection Factor (EPF) for this enchantment against a damage type.
@@ -128,9 +245,144 @@ impl EnchantmentKind {
             Self::FireProtection if damage_type == DamageType::Fire => lvl.saturating_mul(2),
             Self::FeatherFalling if damage_type == DamageType::Fall => lvl.saturating_mul(3),
             Self::BlastProtection if damage_type == DamageType::Generic => lvl.saturating_mul(2),
+            Self::ProjectileProtection
+                if matches!(damage_type, DamageType::Attack | DamageType::Generic) =>
+            {
+                lvl.saturating_mul(2)
+            }
             _ => 0,
         }
     }
+    /// Returns the anvil level cost multiplier based on enchantment rarity.
+    #[must_use]
+    pub const fn rarity_multiplier(self) -> u32 {
+        match self {
+            Self::Protection | Self::Sharpness | Self::Efficiency | Self::Unbreaking => 1,
+            Self::FireProtection
+            | Self::FeatherFalling
+            | Self::Smite
+            | Self::BaneOfArthropods
+            | Self::Knockback
+            | Self::FireAspect
+            | Self::Punch => 2,
+            Self::BlastProtection
+            | Self::ProjectileProtection
+            | Self::Respiration
+            | Self::AquaAffinity
+            | Self::Thorns
+            | Self::DepthStrider
+            | Self::Looting
+            | Self::Fortune
+            | Self::Power
+            | Self::Flame => 4,
+            Self::SilkTouch | Self::Infinity | Self::Mending => 8,
+        }
+    }
+
+    /// Converts a level (1..=5) to standard Roman numerals ("I", "II", "III", "IV", "V").
+    #[must_use]
+    pub const fn level_to_roman(level: u8) -> &'static str {
+        match level {
+            1 => "I",
+            2 => "II",
+            3 => "III",
+            4 => "IV",
+            5 => "V",
+            _ => "",
+        }
+    }
+}
+
+/// Calculates modified melee damage based on weapon enchantments.
+#[must_use]
+pub fn calculate_melee_damage(
+    base_damage: f32,
+    enchants: CompactEnchantments,
+    is_undead: bool,
+    is_arthropod: bool,
+) -> f32 {
+    let mut bonus = 0.0f32;
+    let sharpness = enchants.get_level(EnchantmentKind::Sharpness);
+    if sharpness > 0 {
+        bonus += 0.5 + f32::from(sharpness) * 0.5;
+    }
+    let smite = enchants.get_level(EnchantmentKind::Smite);
+    if smite > 0 && is_undead {
+        bonus += f32::from(smite) * 2.5;
+    }
+    let bane = enchants.get_level(EnchantmentKind::BaneOfArthropods);
+    if bane > 0 && is_arthropod {
+        bonus += f32::from(bane) * 2.5;
+    }
+    base_damage + bonus
+}
+
+/// Returns fire duration in seconds inflicted by a melee attack using Fire Aspect.
+#[must_use]
+pub fn calculate_fire_aspect_seconds(enchants: CompactEnchantments) -> f32 {
+    let level = enchants.get_level(EnchantmentKind::FireAspect);
+    f32::from(level) * 4.0
+}
+
+/// Returns horizontal knockback multiplier bonus from Knockback enchantment.
+#[must_use]
+pub fn calculate_knockback_bonus(enchants: CompactEnchantments) -> f32 {
+    let level = enchants.get_level(EnchantmentKind::Knockback);
+    f32::from(level) * 0.5
+}
+
+/// Calculates tool mining speed multiplier with Efficiency enchantment.
+#[must_use]
+pub fn calculate_mining_speed(base_speed: f32, enchants: CompactEnchantments) -> f32 {
+    let level = enchants.get_level(EnchantmentKind::Efficiency);
+    if level > 0 {
+        let bonus = (u32::from(level) * u32::from(level) + 1) as f32;
+        base_speed + bonus
+    } else {
+        base_speed
+    }
+}
+
+/// Checks if Unbreaking prevents durability reduction given a uniform random sample in `[0.0, 1.0)`.
+#[must_use]
+pub fn should_prevent_durability_loss(enchants: CompactEnchantments, rng_sample: f32) -> bool {
+    let level = enchants.get_level(EnchantmentKind::Unbreaking);
+    if level == 0 {
+        return false;
+    }
+    // Chance to ignore durability loss: level / (level + 1)
+    let ignore_chance = f32::from(level) / (f32::from(level) + 1.0);
+    rng_sample < ignore_chance
+}
+
+/// Calculates bow arrow impact damage scaled with Power enchantment.
+#[must_use]
+pub fn calculate_arrow_damage(base_damage: f32, enchants: CompactEnchantments) -> f32 {
+    let level = enchants.get_level(EnchantmentKind::Power);
+    if level > 0 {
+        base_damage * (1.0 + 0.25 * (f32::from(level) + 1.0))
+    } else {
+        base_damage
+    }
+}
+
+/// Calculates arrow extra knockback velocity added by Punch enchantment.
+#[must_use]
+pub fn calculate_arrow_knockback(enchants: CompactEnchantments) -> f32 {
+    let level = enchants.get_level(EnchantmentKind::Punch);
+    f32::from(level) * 0.6
+}
+
+/// Returns true if arrows shot with this bow should be ignited by Flame enchantment.
+#[must_use]
+pub fn is_arrow_flaming(enchants: CompactEnchantments) -> bool {
+    enchants.get_level(EnchantmentKind::Flame) > 0
+}
+
+/// Returns true if arrows are not consumed from player inventory when shooting (Infinity).
+#[must_use]
+pub fn has_infinite_arrows(enchants: CompactEnchantments) -> bool {
+    enchants.get_level(EnchantmentKind::Infinity) > 0
 }
 
 /// Target item classification for enchantments.
@@ -144,6 +396,8 @@ pub enum EnchantmentTarget {
     Weapon,
     /// Digging/mining tools (pickaxe, axe, shovel).
     Tool,
+    /// Bow weapons.
+    Bow,
     /// Any item with durability.
     Breakable,
 }
@@ -342,5 +596,49 @@ mod tests {
         // Fall damage: 16 (Protection) + 12 (Feather Falling) = 28 -> capped at 20!
         let epf_fall = calculate_total_epf(&[helmet, chest, legs, boots], DamageType::Fall);
         assert_eq!(epf_fall, 20);
+    }
+
+    #[test]
+    fn test_damage_modifiers() {
+        let mut enchants = CompactEnchantments::new();
+        enchants.set_enchantment(EnchantmentKind::Sharpness, 5);
+        let dmg = calculate_melee_damage(7.0, enchants, false, false);
+        // Base 7.0 + (0.5 + 5 * 0.5 = 3.0) = 10.0
+        assert!((dmg - 10.0).abs() < 1e-4);
+
+        let mut smite_ench = CompactEnchantments::new();
+        smite_ench.set_enchantment(EnchantmentKind::Smite, 4);
+        let dmg_undead = calculate_melee_damage(5.0, smite_ench, true, false);
+        // Base 5.0 + 4 * 2.5 = 15.0
+        assert!((dmg_undead - 15.0).abs() < 1e-4);
+        let dmg_living = calculate_melee_damage(5.0, smite_ench, false, false);
+        assert!((dmg_living - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_tool_and_bow_modifiers() {
+        let mut enchants = CompactEnchantments::new();
+        enchants.set_enchantment(EnchantmentKind::Efficiency, 4);
+        // Base 8.0 + (4*4 + 1 = 17.0) = 25.0
+        assert!((calculate_mining_speed(8.0, enchants) - 25.0).abs() < 1e-4);
+
+        let mut bow_ench = CompactEnchantments::new();
+        bow_ench.set_enchantment(EnchantmentKind::Power, 5);
+        bow_ench.set_enchantment(EnchantmentKind::Flame, 1);
+        bow_ench.set_enchantment(EnchantmentKind::Infinity, 1);
+        // Base 6.0 * (1.0 + 0.25 * (5 + 1) = 2.5) = 15.0
+        assert!((calculate_arrow_damage(6.0, bow_ench) - 15.0).abs() < 1e-4);
+        assert!(is_arrow_flaming(bow_ench));
+        assert!(has_infinite_arrows(bow_ench));
+    }
+
+    #[test]
+    fn test_unbreaking_durability_prevention() {
+        let mut enchants = CompactEnchantments::new();
+        enchants.set_enchantment(EnchantmentKind::Unbreaking, 3);
+        // Chance is 3 / 4 = 0.75
+        assert!(should_prevent_durability_loss(enchants, 0.5));
+        assert!(should_prevent_durability_loss(enchants, 0.74));
+        assert!(!should_prevent_durability_loss(enchants, 0.76));
     }
 }

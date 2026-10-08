@@ -96,6 +96,18 @@ impl Experience {
         self.total_xp = self.total_xp.saturating_add(points);
         self.level() > old_level
     }
+
+    /// Deducts experience levels from the player, preserving progress towards the next level.
+    pub fn deduct_levels(&mut self, levels: u32) {
+        let current_lvl = self.level();
+        let target_lvl = current_lvl.saturating_sub(levels);
+        let current_pts_at_level = total_points_for_level(current_lvl);
+        let excess = self.total_xp.saturating_sub(current_pts_at_level);
+        let target_pts_at_level = total_points_for_level(target_lvl);
+        let target_points_needed = points_for_next_level(target_lvl);
+        let preserved_excess = excess.min(target_points_needed.saturating_sub(1));
+        self.total_xp = target_pts_at_level.saturating_add(preserved_excess);
+    }
 }
 
 #[cfg(test)]

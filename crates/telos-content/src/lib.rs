@@ -19,8 +19,9 @@ pub use pack::{DiscoveredPack, discover_packs, resolve_load_order};
 pub use registry::{FrozenRegistries, ItemRegistry, RegistryBuilder, RegistryLifecycle};
 pub use save_map::{RegistryRemap, SaveIdEntry, SaveIdStatus, WorldRegistryMap};
 pub use schema::{
-    ArmorSlotDef, BlockDef, BlockItemPolicy, BlockShapeDef, FuelDef, ItemDef, ItemTypeDef,
-    OpacityDef, PropertyDef, RecipeDef, RecipeResultDef, RenderLayerDef, ShapedRecipeDef,
-    ShapelessRecipeDef, SmeltingRecipeDef, TagDef, TagValueEntry,
+    ArmorSlotDef, BlockDef, BlockItemPolicy, BlockShapeDef, EnchantmentDef, EnchantmentDefError,
+    EnchantmentRarityDef, EnchantmentTargetDef, FuelDef, ItemDef, ItemTypeDef, OpacityDef,
+    PropertyDef, RecipeDef, RecipeResultDef, RenderLayerDef, ShapedRecipeDef, ShapelessRecipeDef,
+    SmeltingRecipeDef, TagDef, TagValueEntry,
 };
 pub use sound::{BlockSoundGroup, SoundCategory, SoundEvent};

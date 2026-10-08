@@ -662,6 +662,22 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             },
         ),
         (
+            "anvil",
+            "Anvil",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 5.0,
+                blast_resistance: 1200.0,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:anvil".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(91),
+                ..Default::default()
+            },
+        ),
+        (
             "tall_grass",
             "Tall Grass",
             BlockDef {
@@ -1586,6 +1602,22 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
             ItemDef {
                 name: "Charcoal".into(),
                 max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "book",
+            ItemDef {
+                name: "Book".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "enchanted_book",
+            ItemDef {
+                name: "Enchanted Book".into(),
+                max_stack_size: 1,
                 item_type: ItemTypeDef::Generic,
             },
         ),

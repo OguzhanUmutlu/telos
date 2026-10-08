@@ -733,6 +733,9 @@ impl BlockRegistry {
             crate::shape::BlockShape::cross(),
         );
 
+        let anvil_id = Identifier::new("telos", "anvil").unwrap();
+        reg.register(anvil_id, StateFlags::OPAQUE_CUBE);
+
         reg.freeze();
         reg
     }
@@ -868,6 +871,14 @@ impl BlockRegistry {
     pub fn is_crafting_table(&self, id: BlockStateId) -> bool {
         self.identifier(id)
             .is_some_and(|ident| ident.path() == "crafting_table")
+    }
+
+    /// Returns `true` if the given block state represents an anvil.
+    #[inline]
+    #[must_use]
+    pub fn is_anvil(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "anvil")
     }
 
     /// Returns `true` if the block state at `id` can be freely replaced by flowing fluids.

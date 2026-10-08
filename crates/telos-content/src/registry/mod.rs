@@ -13,6 +13,7 @@ use crate::core_pack::{core_blocks, core_items};
 use crate::error::{ContentError, Result};
 use crate::pack::DiscoveredPack;
 use crate::schema::block::{BlockDef, BlockItemPolicy};
+use crate::schema::enchantment::EnchantmentDef;
 use crate::schema::item::ItemDef;
 use crate::schema::recipe::{FuelDef, RecipeDef};
 use crate::schema::tag::TagDef;
@@ -49,6 +50,7 @@ pub struct RegistryBuilder {
     item_registry: ItemRegistry,
     recipe_defs: Vec<(Identifier, RecipeDef)>,
     fuel_defs: Vec<(Identifier, FuelDef)>,
+    enchantment_defs: Vec<(Identifier, EnchantmentDef)>,
     unresolved_tags: Vec<(Identifier, TagDef)>,
 }
 
@@ -62,6 +64,7 @@ impl Default for RegistryBuilder {
             item_registry: ItemRegistry::new(),
             recipe_defs: Vec::new(),
             fuel_defs: Vec::new(),
+            enchantment_defs: Vec::new(),
             unresolved_tags: Vec::new(),
         };
 
@@ -195,6 +198,19 @@ impl RegistryBuilder {
                 let files = collect_sorted_files(&fuels_dir)?;
                 for path in files {
                     self.load_fuel_file(&ns, &path)?;
+                }
+            }
+
+            // 6. Load enchantments: data/<ns>/enchantments/*.ron or *.json (or data/<ns>/enchantment/)
+            let enchantments_dir = if ns_dir.join("enchantments").is_dir() {
+                ns_dir.join("enchantments")
+            } else {
+                ns_dir.join("enchantment")
+            };
+            if enchantments_dir.is_dir() {
+                let files = collect_sorted_files(&enchantments_dir)?;
+                for path in files {
+                    self.load_enchantment_file(&ns, &path)?;
                 }
             }
         }
@@ -398,7 +414,45 @@ impl RegistryBuilder {
         Ok(())
     }
 
+    fn load_enchantment_file(&mut self, ns: &str, path: &Path) -> Result<()> {
+        let stem =
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| ContentError::DataParse {
+                    path: path.to_path_buf(),
+                    reason: "Invalid file name".into(),
+                })?;
+
+        let ident = Identifier::new(ns, stem)
+            .map_err(|e| ContentError::InvalidIdentifier(format!("{e}")))?;
+
+        let content = std::fs::read_to_string(path).map_err(|e| ContentError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+        let mut ench_def: EnchantmentDef = if path.extension().is_some_and(|ext| ext == "json") {
+            serde_json::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("JSON error: {e}"),
+            })?
+        } else {
+            ron::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("RON error: {e}"),
+            })?
+        };
+
+        if ench_def.name.is_empty() {
+            ench_def.name = format_title_case(stem);
+        }
+
+        self.enchantment_defs.push((ident, ench_def));
+        Ok(())
+    }
+
     /// Freezes registries, validates all references, and produces `FrozenRegistries`.
+    #[allow(clippy::too_many_lines)]
     pub fn freeze(mut self) -> Result<FrozenRegistries> {
         self.lifecycle = RegistryLifecycle::Tags;
 
@@ -500,6 +554,13 @@ impl RegistryBuilder {
             hasher.update(&fuel.burn_ticks.to_le_bytes());
         }
 
+        // 5. Hash enchantments
+        for (ident, def) in &self.enchantment_defs {
+            hasher.update(ident.to_string().as_bytes());
+            hasher.update(&[def.max_level]);
+            hasher.update(&def.weight.to_le_bytes());
+        }
+
         let content_hash = *hasher.finalize().as_bytes();
 
         info!(
@@ -507,6 +568,7 @@ impl RegistryBuilder {
             total_items = self.item_registry.total_items(),
             total_recipes = self.recipe_defs.len(),
             total_fuels = self.fuel_defs.len(),
+            total_enchantments = self.enchantment_defs.len(),
             content_hash = %hasher.finalize().to_hex(),
             "Frozen content registries initialized"
         );
@@ -519,6 +581,7 @@ impl RegistryBuilder {
             item_registry: self.item_registry,
             recipe_defs: self.recipe_defs,
             fuel_defs: self.fuel_defs,
+            enchantment_defs: self.enchantment_defs,
             tags: resolved_tags,
             content_hash,
         })
@@ -535,6 +598,7 @@ pub struct FrozenRegistries {
     item_registry: ItemRegistry,
     recipe_defs: Vec<(Identifier, RecipeDef)>,
     fuel_defs: Vec<(Identifier, FuelDef)>,
+    enchantment_defs: Vec<(Identifier, EnchantmentDef)>,
     tags: HashMap<Identifier, HashSet<Identifier>>,
     content_hash: [u8; 32],
 }
@@ -646,6 +710,21 @@ impl FrozenRegistries {
     #[must_use]
     pub fn custom_fuels(&self) -> &[(Identifier, FuelDef)] {
         &self.fuel_defs
+    }
+
+    /// Returns custom enchantment definitions defined by loaded data packs.
+    #[must_use]
+    pub fn custom_enchantments(&self) -> &[(Identifier, EnchantmentDef)] {
+        &self.enchantment_defs
+    }
+
+    /// Looks up an enchantment definition by its namespaced identifier.
+    #[must_use]
+    pub fn get_enchantment_def(&self, ident: &Identifier) -> Option<&EnchantmentDef> {
+        self.enchantment_defs
+            .iter()
+            .find(|(id, _)| id == ident)
+            .map(|(_, def)| def)
     }
 
     /// Creates a `FrozenRegistries` instance containing only the built-in core engine pack (`telos`).

@@ -40,22 +40,33 @@ pub const CRAFTING_RESULT_SLOT: usize = 44;
 /// Offhand slot index (45).
 pub const OFFHAND_SLOT: usize = 45;
 
+/// Iron helmet item identifier (16).
+pub const ITEM_IRON_HELMET: u32 = 16;
+/// Iron chestplate item identifier (17).
+pub const ITEM_IRON_CHESTPLATE: u32 = 17;
+/// Iron leggings item identifier (18).
+pub const ITEM_IRON_LEGGINGS: u32 = 18;
+/// Iron boots item identifier (35).
+pub const ITEM_IRON_BOOTS: u32 = 35;
+
 /// Returns true if the item is a helmet.
 #[must_use]
 pub const fn is_helmet(item: u32) -> bool {
-    item == 16 || item == ITEM_LEATHER_HELMET || item == ITEM_GOLDEN_HELMET
+    item == ITEM_IRON_HELMET || item == ITEM_LEATHER_HELMET || item == ITEM_GOLDEN_HELMET
 }
 
 /// Returns true if the item is a chestplate.
 #[must_use]
 pub const fn is_chestplate(item: u32) -> bool {
-    item == 17 || item == ITEM_LEATHER_CHESTPLATE || item == ITEM_GOLDEN_CHESTPLATE
+    item == ITEM_IRON_CHESTPLATE
+        || item == ITEM_LEATHER_CHESTPLATE
+        || item == ITEM_GOLDEN_CHESTPLATE
 }
 
 /// Returns true if the item is leggings.
 #[must_use]
 pub const fn is_leggings(item: u32) -> bool {
-    item == 18 || item == ITEM_LEATHER_LEGGINGS || item == ITEM_GOLDEN_LEGGINGS
+    item == ITEM_IRON_LEGGINGS || item == ITEM_LEATHER_LEGGINGS || item == ITEM_GOLDEN_LEGGINGS
 }
 
 /// Returns true if the item is boots.
@@ -63,7 +74,7 @@ pub const fn is_leggings(item: u32) -> bool {
 pub const fn is_boots(item: u32) -> bool {
     item == 19
         || item == 31
-        || item == 35
+        || item == ITEM_IRON_BOOTS
         || item == ITEM_LEATHER_BOOTS
         || item == ITEM_GOLDEN_BOOTS
 }
@@ -159,6 +170,73 @@ pub const ITEM_GOLDEN_CHESTPLATE: u32 = 88;
 pub const ITEM_GOLDEN_LEGGINGS: u32 = 89;
 /// Golden boots item identifier (90).
 pub const ITEM_GOLDEN_BOOTS: u32 = 90;
+
+/// Anvil block item identifier (91).
+pub const ITEM_ANVIL: u32 = 91;
+/// Book item identifier (92).
+pub const ITEM_BOOK: u32 = 92;
+/// Enchanted Book item identifier (93).
+pub const ITEM_ENCHANTED_BOOK: u32 = 93;
+
+/// Returns true if the item is a sword.
+#[must_use]
+pub const fn is_sword(item: u32) -> bool {
+    matches!(item, ITEM_WOODEN_SWORD | ITEM_STONE_SWORD | ITEM_IRON_SWORD)
+}
+
+/// Returns true if the item is a pickaxe.
+#[must_use]
+pub const fn is_pickaxe(item: u32) -> bool {
+    matches!(
+        item,
+        ITEM_WOODEN_PICKAXE | ITEM_STONE_PICKAXE | ITEM_IRON_PICKAXE
+    )
+}
+
+/// Returns true if the item is an axe.
+#[must_use]
+pub const fn is_axe(item: u32) -> bool {
+    matches!(item, ITEM_WOODEN_AXE | ITEM_STONE_AXE | ITEM_IRON_AXE)
+}
+
+/// Returns true if the item is a shovel.
+#[must_use]
+pub const fn is_shovel(item: u32) -> bool {
+    matches!(
+        item,
+        ITEM_WOODEN_SHOVEL | ITEM_STONE_SHOVEL | ITEM_IRON_SHOVEL
+    )
+}
+
+/// Returns true if the item is a hoe.
+#[must_use]
+pub const fn is_hoe(item: u32) -> bool {
+    matches!(item, ITEM_WOODEN_HOE | ITEM_STONE_HOE | ITEM_IRON_HOE)
+}
+
+/// Returns true if the item is any mining or digging tool.
+#[must_use]
+pub const fn is_tool(item: u32) -> bool {
+    is_pickaxe(item) || is_axe(item) || is_shovel(item) || is_hoe(item)
+}
+
+/// Returns true if the item is a plain book.
+#[must_use]
+pub const fn is_book(item: u32) -> bool {
+    item == ITEM_BOOK
+}
+
+/// Returns true if the item is an enchanted book.
+#[must_use]
+pub const fn is_enchanted_book(item: u32) -> bool {
+    item == ITEM_ENCHANTED_BOOK
+}
+
+/// Returns true if the item is an anvil block.
+#[must_use]
+pub const fn is_anvil(item: u32) -> bool {
+    item == ITEM_ANVIL
+}
 
 /// Returns true if the item is a bow.
 #[must_use]
@@ -301,6 +379,9 @@ pub fn item_name(item: u32) -> &'static str {
         88 => "Golden Chestplate",
         89 => "Golden Leggings",
         90 => "Golden Boots",
+        91 => "Anvil",
+        92 => "Book",
+        93 => "Enchanted Book",
         _ => "Unknown Item",
     }
 }

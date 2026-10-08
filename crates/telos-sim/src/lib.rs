@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 pub mod advancement;
+/// Anvil combining, repairing, and enchanting mechanics.
+pub mod anvil;
 pub mod attributes;
 pub mod bundles;
 pub mod capabilities;
@@ -34,6 +36,11 @@ pub use advancement::{
     Advancement, AdvancementCategory, AdvancementCriterion, AdvancementFrame, AdvancementRegistry,
     CriterionTrigger, PlayerAdvancements,
 };
+pub use anvil::{
+    ANVIL_CONTAINER_SLOTS, ANVIL_SLOT_LEFT, ANVIL_SLOT_RESULT, ANVIL_SLOT_RIGHT,
+    AnvilCombineResult, AnvilInventory, DUAL_ANVIL_SLOT_COUNT, anvil_container_click,
+    can_apply_enchantment, combine_anvil_items,
+};
 pub use attributes::{
     Attribute, AttributeKind, AttributeModifier, Attributes, CombatTracker, DamageEvent,
     DamageType, Health, ModifierOperation, apply_damage, apply_mitigated_damage,
@@ -60,7 +67,10 @@ pub use effect::{
     status_effect_system,
 };
 pub use enchantment::{
-    CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_total_epf,
+    CompactEnchantments, EnchantmentKind, EnchantmentTarget, calculate_arrow_damage,
+    calculate_arrow_knockback, calculate_fire_aspect_seconds, calculate_knockback_bonus,
+    calculate_melee_damage, calculate_mining_speed, calculate_total_epf, has_infinite_arrows,
+    is_arrow_flaming, should_prevent_durability_loss,
 };
 pub use entity::{
     ARROW_AIR_DRAG, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_GRAVITY,
@@ -85,17 +95,20 @@ pub use hunger::{Hunger, HungerTickResult, SimParams, tick_hunger};
 pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,
     CHEST_CONTAINER_SLOTS, CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ChestInventory, ClickButton,
-    ClickMode, DUAL_CONTAINER_SLOTS, HOTBAR_SLOTS, ITEM_ARROW, ITEM_BOW, ITEM_CHARCOAL, ITEM_CHEST,
-    ITEM_COOKED_BEEF, ITEM_COOKED_PORKCHOP, ITEM_CRAFTING_TABLE, ITEM_FURNACE, ITEM_GLASS_BOTTLE,
-    ITEM_GOLDEN_BOOTS, ITEM_GOLDEN_CHESTPLATE, ITEM_GOLDEN_HELMET, ITEM_GOLDEN_LEGGINGS,
-    ITEM_IRON_AXE, ITEM_IRON_HOE, ITEM_IRON_PICKAXE, ITEM_IRON_SHOVEL, ITEM_IRON_SWORD,
-    ITEM_LEATHER_BOOTS, ITEM_LEATHER_CHESTPLATE, ITEM_LEATHER_HELMET, ITEM_LEATHER_LEGGINGS,
-    ITEM_POTION, ITEM_STONE_AXE, ITEM_STONE_HOE, ITEM_STONE_PICKAXE, ITEM_STONE_SHOVEL,
-    ITEM_STONE_SWORD, ITEM_WOODEN_AXE, ITEM_WOODEN_HOE, ITEM_WOODEN_PICKAXE, ITEM_WOODEN_SHOVEL,
-    ITEM_WOODEN_SWORD, Inventory, InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT,
-    PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS, block_to_drop_item, container_click, inventory_click,
-    inventory_click_with_registry, is_armor, is_arrow, is_boots, is_bow, is_chest, is_chestplate,
-    is_furnace, is_helmet, is_leggings, is_potion, is_slot_valid_for_item, item_name,
+    ClickMode, DUAL_CONTAINER_SLOTS, HOTBAR_SLOTS, ITEM_ANVIL, ITEM_ARROW, ITEM_BOOK, ITEM_BOW,
+    ITEM_CHARCOAL, ITEM_CHEST, ITEM_COOKED_BEEF, ITEM_COOKED_PORKCHOP, ITEM_CRAFTING_TABLE,
+    ITEM_ENCHANTED_BOOK, ITEM_FURNACE, ITEM_GLASS_BOTTLE, ITEM_GOLDEN_BOOTS,
+    ITEM_GOLDEN_CHESTPLATE, ITEM_GOLDEN_HELMET, ITEM_GOLDEN_LEGGINGS, ITEM_IRON_AXE,
+    ITEM_IRON_BOOTS, ITEM_IRON_CHESTPLATE, ITEM_IRON_HELMET, ITEM_IRON_HOE, ITEM_IRON_LEGGINGS,
+    ITEM_IRON_PICKAXE, ITEM_IRON_SHOVEL, ITEM_IRON_SWORD, ITEM_LEATHER_BOOTS,
+    ITEM_LEATHER_CHESTPLATE, ITEM_LEATHER_HELMET, ITEM_LEATHER_LEGGINGS, ITEM_POTION,
+    ITEM_STONE_AXE, ITEM_STONE_HOE, ITEM_STONE_PICKAXE, ITEM_STONE_SHOVEL, ITEM_STONE_SWORD,
+    ITEM_WOODEN_AXE, ITEM_WOODEN_HOE, ITEM_WOODEN_PICKAXE, ITEM_WOODEN_SHOVEL, ITEM_WOODEN_SWORD,
+    Inventory, InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS,
+    STORAGE_SLOTS, block_to_drop_item, container_click, inventory_click,
+    inventory_click_with_registry, is_anvil, is_armor, is_arrow, is_axe, is_book, is_boots, is_bow,
+    is_chest, is_chestplate, is_enchanted_book, is_furnace, is_helmet, is_hoe, is_leggings,
+    is_pickaxe, is_potion, is_shovel, is_slot_valid_for_item, is_sword, is_tool, item_name,
     matching_armor_slot,
 };
 pub use logic::{

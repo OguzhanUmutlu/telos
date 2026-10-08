@@ -66,6 +66,10 @@ pub struct UiLayers {
     pub toast_bg: u32,
     /// Toast banner notification UV bounds `[u0, v0, u1, v1]`.
     pub toast_bg_uv: [f32; 4],
+    /// Anvil container background texture layer.
+    pub anvil_bg: u32,
+    /// Anvil container background UV bounds `[u0, v0, u1, v1]`.
+    pub anvil_bg_uv: [f32; 4],
 }
 
 impl Default for UiLayers {
@@ -100,6 +104,8 @@ impl Default for UiLayers {
             advancement_window_uv: [0.0, 0.0, 252.0 / 256.0, 140.0 / 256.0],
             toast_bg: 10,
             toast_bg_uv: [0.0, 0.0, 160.0 / 256.0, 32.0 / 256.0],
+            anvil_bg: 11,
+            anvil_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
         }
     }
 }

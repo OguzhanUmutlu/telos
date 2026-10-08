@@ -2,12 +2,13 @@
 
 use crate::font::BitmapFont;
 use crate::hud::UiLayers;
-use crate::inventory::{CONTAINER_HEIGHT, CONTAINER_WIDTH, UiSlotItem, item_icon_uv};
+use crate::inventory::{
+    CONTAINER_HEIGHT, CONTAINER_WIDTH, UiSlotItem, item_icon_uv, render_item_tooltip,
+};
 use crate::quad::UiQuad;
 use crate::scale::to_physical_pixels;
 use crate::style::{ContainerLayoutDef, slot_at_pos_styled};
 
-/// Total number of item slots in a dual chest container window (63).
 /// Total number of item slots in a dual chest container window (63).
 /// - 0..27: Chest container storage (3 rows of 9)
 /// - 27..54: Player main storage (3 rows of 9)
@@ -35,6 +36,15 @@ pub const DUAL_CRAFTING_TABLE_SLOT_COUNT: usize = 46;
 
 /// Number of item slots in the crafting table portion of the container.
 pub const CRAFTING_TABLE_CONTAINER_SLOTS: usize = 10;
+
+/// Total number of item slots in a dual anvil container window (39).
+/// - 0..3: Anvil slots (0: Left input, 1: Right sacrifice/book, 2: Output result)
+/// - 3..30: Player main storage (3 rows of 9)
+/// - 30..39: Player hotbar (1 row of 9)
+pub const DUAL_ANVIL_SLOT_COUNT: usize = 39;
+
+/// Number of item slots in the anvil portion of the container (3).
+pub const ANVIL_CONTAINER_SLOTS: usize = 3;
 
 /// Returns the container-relative `[x, y]` coordinates of the 16x16 interior of a slot in GUI pixels.
 ///
@@ -207,6 +217,62 @@ pub fn crafting_table_slot_at_pos(
         screen_h,
         gui_scale,
         &ContainerLayoutDef::default_crafting_table(),
+    )
+}
+
+/// Returns the container-relative `[x, y]` coordinates of the interior of an anvil slot in GUI pixels.
+///
+/// Returns None if `slot >= DUAL_ANVIL_SLOT_COUNT`.
+#[must_use]
+#[allow(clippy::cast_possible_wrap)]
+pub fn anvil_slot_pos(slot: usize) -> Option<[i32; 2]> {
+    match slot {
+        0 => Some([27, 47]),  // Left input
+        1 => Some([76, 47]),  // Right input
+        2 => Some([134, 47]), // Output result
+        3..=29 => {
+            let idx = (slot - 3) as i32;
+            let col = idx % 9;
+            let row = idx / 9;
+            Some([8 + col * 18, 84 + row * 18])
+        }
+        30..=38 => {
+            let col = (slot - 30) as i32;
+            Some([8 + col * 18, 142])
+        }
+        _ => None,
+    }
+}
+
+/// Hit-tests a screen mouse position against the dual anvil container slots using a custom layout.
+#[must_use]
+pub fn anvil_slot_at_pos_styled(
+    mouse_pos: [f32; 2],
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    layout: &ContainerLayoutDef,
+) -> Option<usize> {
+    slot_at_pos_styled(layout, mouse_pos, screen_w, screen_h, gui_scale)
+}
+
+/// Hit-tests a screen mouse position against the 39 dual anvil container slots.
+///
+/// Returns `Some(slot_index)` if the mouse is inside any slot's bounds.
+#[must_use]
+#[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)]
+pub fn anvil_slot_at_pos(
+    mouse_pos: [f32; 2],
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+) -> Option<usize> {
+    anvil_slot_at_pos_styled(
+        mouse_pos,
+        screen_w,
+        screen_h,
+        gui_scale,
+        &ContainerLayoutDef::default_anvil(),
     )
 }
 
@@ -460,61 +526,8 @@ pub fn render_chest_container_styled<'a>(
     {
         let item = slots[hovered_idx];
         let name = item_names(item.item);
-        let (text_w, text_h) = font.measure_text(name);
-
-        let pad = to_physical_pixels(3, gui_scale);
-        let box_w = (text_w * scale_f) as i32 + pad * 2;
-        let box_h = (text_h * scale_f) as i32 + pad * 2;
-
-        let tip_x =
-            ((mouse_pos[0] as i32 + to_physical_pixels(10, gui_scale)).min(sw - box_w - 4)).max(4);
-        let tip_y =
-            ((mouse_pos[1] as i32 - to_physical_pixels(12, gui_scale)).min(sh - box_h - 4)).max(4);
-
-        // Dark box background (#100010 at 94% opacity)
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, box_h as u16],
-            UiQuad::rgba(16, 0, 16, 240),
-        ));
-
-        // Purple borders (#5000ff)
-        let border_w = gui_scale.max(1) as u16;
-        let border_col = UiQuad::rgba(80, 0, 255, 255);
-        // Top border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Bottom border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y + box_h - i32::from(border_w)],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Left border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-        // Right border
-        out.push(UiQuad::solid(
-            [tip_x + box_w - i32::from(border_w), tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-
-        // Tooltip text in pure white
-        font.layout_text(
-            name,
-            (tip_x + pad) as f32 / scale_f,
-            (tip_y + pad) as f32 / scale_f,
-            UiQuad::rgba(255, 255, 255, 255),
-            true,
-            gui_scale,
-            out,
+        render_item_tooltip(
+            item, name, mouse_pos, screen_w, screen_h, gui_scale, font, out,
         );
     }
 }
@@ -814,61 +827,8 @@ pub fn render_furnace_container_styled<'a>(
     {
         let item = slots[hovered_idx];
         let name = item_names(item.item);
-        let (text_w, text_h) = font.measure_text(name);
-
-        let pad = to_physical_pixels(3, gui_scale);
-        let box_w = (text_w * scale_f) as i32 + pad * 2;
-        let box_h = (text_h * scale_f) as i32 + pad * 2;
-
-        let tip_x =
-            ((mouse_pos[0] as i32 + to_physical_pixels(10, gui_scale)).min(sw - box_w - 4)).max(4);
-        let tip_y =
-            ((mouse_pos[1] as i32 - to_physical_pixels(12, gui_scale)).min(sh - box_h - 4)).max(4);
-
-        // Dark box background (#100010 at 94% opacity)
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, box_h as u16],
-            UiQuad::rgba(16, 0, 16, 240),
-        ));
-
-        // Purple borders (#5000ff)
-        let border_w = gui_scale.max(1) as u16;
-        let border_col = UiQuad::rgba(80, 0, 255, 255);
-        // Top border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Bottom border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y + box_h - i32::from(border_w)],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Left border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-        // Right border
-        out.push(UiQuad::solid(
-            [tip_x + box_w - i32::from(border_w), tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-
-        // Tooltip text in pure white
-        font.layout_text(
-            name,
-            (tip_x + pad) as f32 / scale_f,
-            (tip_y + pad) as f32 / scale_f,
-            UiQuad::rgba(255, 255, 255, 255),
-            true,
-            gui_scale,
-            out,
+        render_item_tooltip(
+            item, name, mouse_pos, screen_w, screen_h, gui_scale, font, out,
         );
     }
 }
@@ -1138,63 +1098,8 @@ pub fn render_crafting_table_container_styled<'a>(
     {
         let item = slots[hovered_idx];
         let name = item_name(item.item);
-        let (text_w, text_h) = font.measure_text(name);
-
-        let pad = to_physical_pixels(3, gui_scale);
-        let box_w = (text_w * scale_f) as i32 + pad * 2;
-        let box_h = (text_h * scale_f) as i32 + pad * 2;
-
-        let tip_x = ((mouse_pos[0] as i32 + to_physical_pixels(10, gui_scale))
-            .min(screen_w as i32 - box_w - 4))
-        .max(4);
-        let tip_y = ((mouse_pos[1] as i32 - to_physical_pixels(12, gui_scale))
-            .min(screen_h as i32 - box_h - 4))
-        .max(4);
-
-        // Dark box background (#100010 at 94% opacity)
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, box_h as u16],
-            UiQuad::rgba(16, 0, 16, 240),
-        ));
-
-        // Purple borders (#5000ff)
-        let border_w = gui_scale.max(1) as u16;
-        let border_col = UiQuad::rgba(80, 0, 255, 255);
-        // Top border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Bottom border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y + box_h - i32::from(border_w)],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Left border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-        // Right border
-        out.push(UiQuad::solid(
-            [tip_x + box_w - i32::from(border_w), tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-
-        // Tooltip text in pure white
-        font.layout_text(
-            name,
-            (tip_x + pad) as f32 / scale_f,
-            (tip_y + pad) as f32 / scale_f,
-            UiQuad::rgba(255, 255, 255, 255),
-            true,
-            gui_scale,
-            out,
+        render_item_tooltip(
+            item, name, mouse_pos, screen_w, screen_h, gui_scale, font, out,
         );
     }
 }
@@ -1235,6 +1140,274 @@ pub fn render_crafting_table_container<'a>(
         item_name,
         mouse_pos,
         &ContainerLayoutDef::default_crafting_table(),
+        out,
+    );
+}
+
+/// Emits UI quads for the 39-slot dual anvil container screen with a custom layout:
+/// - Dimmed fullscreen background
+/// - Centered container background (using 9-slice if configured, or `anvil_bg` texture)
+/// - Container title (default "Repair & Name") and "Inventory" labels
+/// - Enchantment level cost indicator (if cost > 0, displayed in green or red depending on `player_level`)
+/// - Interactive slots with custom sizes/positions, item icons, count labels
+/// - Slot hover highlight
+/// - Carried cursor item stack
+/// - Hover tooltip with formatted item name and border
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+pub fn render_anvil_container_styled<'a>(
+    slots: &[UiSlotItem],
+    carried: UiSlotItem,
+    hovered_slot: Option<usize>,
+    cost: u32,
+    player_level: u32,
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    font: &BitmapFont,
+    layers: &UiLayers,
+    title: &str,
+    item_name: impl Fn(u32) -> &'a str,
+    mouse_pos: [f32; 2],
+    layout: &ContainerLayoutDef,
+    out: &mut Vec<UiQuad>,
+) {
+    let container_w = to_physical_pixels(layout.width as i32, gui_scale);
+    let container_h = to_physical_pixels(layout.height as i32, gui_scale);
+    let origin_x = (screen_w as i32 - container_w) / 2;
+    let origin_y = (screen_h as i32 - container_h) / 2;
+
+    // 1. Fullscreen dark backdrop overlay
+    out.push(UiQuad::solid(
+        [0, 0],
+        [screen_w as u16, screen_h as u16],
+        UiQuad::rgba(0, 0, 0, 120),
+    ));
+
+    // 2. Container background panel using anvil_bg layer
+    if let Some(ns) = layout.nine_slice {
+        let borders = [
+            (u32::from(ns.left) * gui_scale).min(255) as u8,
+            (u32::from(ns.top) * gui_scale).min(255) as u8,
+            (u32::from(ns.right) * gui_scale).min(255) as u8,
+            (u32::from(ns.bottom) * gui_scale).min(255) as u8,
+        ];
+        let src_size = [
+            (layout.width * gui_scale).min(65535) as u16,
+            (layout.height * gui_scale).min(65535) as u16,
+        ];
+        out.push(UiQuad::nine_slice(
+            [origin_x, origin_y],
+            [container_w as u16, container_h as u16],
+            [layers.anvil_bg_uv[0], layers.anvil_bg_uv[1]],
+            [layers.anvil_bg_uv[2], layers.anvil_bg_uv[3]],
+            layers.anvil_bg,
+            borders,
+            src_size,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+    } else {
+        out.push(UiQuad::sprite(
+            [origin_x, origin_y],
+            [container_w as u16, container_h as u16],
+            [layers.anvil_bg_uv[0], layers.anvil_bg_uv[1]],
+            [layers.anvil_bg_uv[2], layers.anvil_bg_uv[3]],
+            layers.anvil_bg,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+    }
+
+    // 3. Titles: "Repair & Name" at title_pos and "Inventory" at inventory_title_pos
+    let title_color = UiQuad::rgba(64, 64, 64, 255);
+    let scale_f = gui_scale as f32;
+    font.layout_text(
+        title,
+        (origin_x as f32 / scale_f) + layout.title_pos[0] as f32,
+        (origin_y as f32 / scale_f) + layout.title_pos[1] as f32,
+        title_color,
+        false,
+        gui_scale,
+        out,
+    );
+    let inv_title_pos = layout.inventory_title_pos.unwrap_or([8, 74]);
+    font.layout_text(
+        "Inventory",
+        (origin_x as f32 / scale_f) + inv_title_pos[0] as f32,
+        (origin_y as f32 / scale_f) + inv_title_pos[1] as f32,
+        title_color,
+        false,
+        gui_scale,
+        out,
+    );
+
+    // 4. Level cost display if cost > 0
+    if cost > 0 {
+        let cost_text = format!("Enchantment Cost: {cost}");
+        let cost_color = if player_level >= cost {
+            UiQuad::rgba(128, 255, 32, 255)
+        } else {
+            UiQuad::rgba(255, 96, 96, 255)
+        };
+        font.layout_text(
+            &cost_text,
+            (origin_x as f32 / scale_f) + 60.0,
+            (origin_y as f32 / scale_f) + 69.0,
+            cost_color,
+            true,
+            gui_scale,
+            out,
+        );
+    }
+
+    let default_slot_sz = to_physical_pixels(16, gui_scale) as u16;
+
+    // 5. Slots quads
+    for slot_def in &layout.slots {
+        let i = slot_def.index;
+        if i >= slots.len() {
+            continue;
+        }
+        let item = slots[i];
+        let slot_x = origin_x + to_physical_pixels(slot_def.x, gui_scale);
+        let slot_y = origin_y + to_physical_pixels(slot_def.y, gui_scale);
+        let slot_w = to_physical_pixels(i32::from(slot_def.size[0]), gui_scale) as u16;
+        let slot_h = to_physical_pixels(i32::from(slot_def.size[1]), gui_scale) as u16;
+
+        // Hover highlight overlay
+        if hovered_slot == Some(i) {
+            out.push(UiQuad::solid(
+                [slot_x, slot_y],
+                [slot_w, slot_h],
+                UiQuad::rgba(255, 255, 255, 128),
+            ));
+        }
+
+        // Slot item icon
+        if !item.is_empty() {
+            let uv = item_icon_uv(item.item);
+            out.push(UiQuad::sprite(
+                [slot_x, slot_y],
+                [slot_w, slot_h],
+                [uv[0], uv[1]],
+                [uv[2], uv[3]],
+                layers.item_icons,
+                UiQuad::rgba(255, 255, 255, 255),
+            ));
+
+            // Stack count badge if > 1
+            if item.count > 1 {
+                let count_str = format!("{}", item.count);
+                let (text_w, _) = font.measure_text(&count_str);
+                let text_x = (slot_x as f32 / scale_f) + 17.0 - text_w;
+                let text_y = (slot_y as f32 / scale_f) + 9.0;
+
+                font.layout_text(
+                    &count_str,
+                    text_x,
+                    text_y,
+                    UiQuad::rgba(255, 255, 255, 255),
+                    true,
+                    gui_scale,
+                    out,
+                );
+            }
+        }
+    }
+
+    // 6. Carried stack rendered at mouse cursor position
+    if !carried.is_empty() {
+        let half_sz = i32::from(default_slot_sz / 2);
+        let carried_x = mouse_pos[0] as i32 - half_sz;
+        let carried_y = mouse_pos[1] as i32 - half_sz;
+        let uv = item_icon_uv(carried.item);
+
+        out.push(UiQuad::sprite(
+            [carried_x, carried_y],
+            [default_slot_sz, default_slot_sz],
+            [uv[0], uv[1]],
+            [uv[2], uv[3]],
+            layers.item_icons,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+
+        if carried.count > 1 {
+            let count_str = format!("{}", carried.count);
+            let (text_w, _) = font.measure_text(&count_str);
+            let text_x = (carried_x as f32 / scale_f) + 17.0 - text_w;
+            let text_y = (carried_y as f32 / scale_f) + 9.0;
+
+            font.layout_text(
+                &count_str,
+                text_x,
+                text_y,
+                UiQuad::rgba(255, 255, 255, 255),
+                true,
+                gui_scale,
+                out,
+            );
+        }
+    }
+
+    // 7. Tooltip for hovered slot (drawn on top of all items)
+    if let Some(hovered_idx) = hovered_slot
+        && carried.is_empty()
+        && hovered_idx < slots.len()
+        && !slots[hovered_idx].is_empty()
+    {
+        let item = slots[hovered_idx];
+        let name = item_name(item.item);
+        render_item_tooltip(
+            item, name, mouse_pos, screen_w, screen_h, gui_scale, font, out,
+        );
+    }
+}
+
+/// Emits UI quads for the 39-slot dual anvil container screen.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+pub fn render_anvil_container<'a>(
+    slots: &[UiSlotItem],
+    carried: UiSlotItem,
+    hovered_slot: Option<usize>,
+    cost: u32,
+    player_level: u32,
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    font: &BitmapFont,
+    layers: &UiLayers,
+    title: &str,
+    item_name: impl Fn(u32) -> &'a str,
+    mouse_pos: [f32; 2],
+    out: &mut Vec<UiQuad>,
+) {
+    render_anvil_container_styled(
+        slots,
+        carried,
+        hovered_slot,
+        cost,
+        player_level,
+        screen_w,
+        screen_h,
+        gui_scale,
+        font,
+        layers,
+        title,
+        item_name,
+        mouse_pos,
+        &ContainerLayoutDef::default_anvil(),
         out,
     );
 }
@@ -1378,6 +1551,53 @@ mod tests {
 
         // Outside container
         let hit_outside = crafting_table_slot_at_pos([10.0, 10.0], 800, 600, 1);
+        assert_eq!(hit_outside, None);
+    }
+
+    #[test]
+    fn test_anvil_slot_coordinates_bounds() {
+        assert_eq!(anvil_slot_pos(0), Some([27, 47]));
+        assert_eq!(anvil_slot_pos(1), Some([76, 47]));
+        assert_eq!(anvil_slot_pos(2), Some([134, 47]));
+
+        // Storage
+        assert_eq!(anvil_slot_pos(3), Some([8, 84]));
+        assert_eq!(anvil_slot_pos(29), Some([8 + 8 * 18, 84 + 2 * 18]));
+
+        // Hotbar
+        assert_eq!(anvil_slot_pos(30), Some([8, 142]));
+        assert_eq!(anvil_slot_pos(38), Some([8 + 8 * 18, 142]));
+
+        // Out of bounds
+        assert_eq!(anvil_slot_pos(39), None);
+        assert_eq!(anvil_slot_pos(100), None);
+    }
+
+    #[test]
+    fn test_anvil_slot_hit_test() {
+        let container_w = 176;
+        let container_h = 166;
+        let ox = (800 - container_w) / 2;
+        let oy = (600 - container_h) / 2;
+
+        // Inside left input slot (slot 0): (ox + 27 + 2, oy + 47 + 2)
+        let hit_in0 = anvil_slot_at_pos([ox as f32 + 29.0, oy as f32 + 49.0], 800, 600, 1);
+        assert_eq!(hit_in0, Some(0));
+
+        // Inside right input slot (slot 1): (ox + 76 + 2, oy + 47 + 2)
+        let hit_in1 = anvil_slot_at_pos([ox as f32 + 78.0, oy as f32 + 49.0], 800, 600, 1);
+        assert_eq!(hit_in1, Some(1));
+
+        // Inside result output slot (slot 2): (ox + 134 + 2, oy + 47 + 2)
+        let hit_res = anvil_slot_at_pos([ox as f32 + 136.0, oy as f32 + 49.0], 800, 600, 1);
+        assert_eq!(hit_res, Some(2));
+
+        // Inside player hotbar slot 0 (slot 30): (ox + 8 + 2, oy + 142 + 2)
+        let hit_hotbar = anvil_slot_at_pos([ox as f32 + 10.0, oy as f32 + 144.0], 800, 600, 1);
+        assert_eq!(hit_hotbar, Some(30));
+
+        // Outside container
+        let hit_outside = anvil_slot_at_pos([10.0, 10.0], 800, 600, 1);
         assert_eq!(hit_outside, None);
     }
 }

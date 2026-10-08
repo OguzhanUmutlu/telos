@@ -21,21 +21,23 @@ pub mod tree;
 
 pub use chat::{ChatEntry, ChatHudState, render_chat_hud};
 pub use container::{
-    CHEST_CONTAINER_SLOTS, CRAFTING_TABLE_CONTAINER_SLOTS, DUAL_CONTAINER_SLOT_COUNT,
-    DUAL_CRAFTING_TABLE_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, FURNACE_CONTAINER_SLOTS,
-    chest_slot_at_pos, chest_slot_at_pos_styled, chest_slot_pos, crafting_table_slot_at_pos,
-    crafting_table_slot_at_pos_styled, crafting_table_slot_pos, furnace_slot_at_pos,
-    furnace_slot_at_pos_styled, furnace_slot_pos, render_chest_container,
-    render_chest_container_styled, render_crafting_table_container,
-    render_crafting_table_container_styled, render_furnace_container,
-    render_furnace_container_styled,
+    ANVIL_CONTAINER_SLOTS, CHEST_CONTAINER_SLOTS, CRAFTING_TABLE_CONTAINER_SLOTS,
+    DUAL_ANVIL_SLOT_COUNT, DUAL_CONTAINER_SLOT_COUNT, DUAL_CRAFTING_TABLE_SLOT_COUNT,
+    DUAL_FURNACE_SLOT_COUNT, FURNACE_CONTAINER_SLOTS, anvil_slot_at_pos, anvil_slot_at_pos_styled,
+    anvil_slot_pos, chest_slot_at_pos, chest_slot_at_pos_styled, chest_slot_pos,
+    crafting_table_slot_at_pos, crafting_table_slot_at_pos_styled, crafting_table_slot_pos,
+    furnace_slot_at_pos, furnace_slot_at_pos_styled, furnace_slot_pos, render_anvil_container,
+    render_anvil_container_styled, render_chest_container, render_chest_container_styled,
+    render_crafting_table_container, render_crafting_table_container_styled,
+    render_furnace_container, render_furnace_container_styled,
 };
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;
 pub use hud::{HudEffectDisplay, HudState, ToastState, UiLayers, render_hud, render_hud_styled};
 pub use inventory::{
-    CONTAINER_HEIGHT, CONTAINER_WIDTH, INVENTORY_SLOT_COUNT, UiSlotItem, item_icon_uv,
-    render_inventory_screen, render_inventory_screen_styled, slot_at_pos,
+    CONTAINER_HEIGHT, CONTAINER_WIDTH, INVENTORY_SLOT_COUNT, UiSlotItem,
+    enchantment_name_and_level, item_icon_uv, render_inventory_screen,
+    render_inventory_screen_styled, render_item_tooltip, slot_at_pos,
     slot_at_pos_styled as inventory_slot_at_pos_styled, slot_pos,
 };
 pub use keybinds::{InputKey, KeyAction, KeyCategory, KeybindSettings};

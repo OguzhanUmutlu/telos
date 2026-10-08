@@ -21,19 +21,35 @@ pub struct UiSlotItem {
     pub item: u32,
     /// Number of items in this stack.
     pub count: u16,
+    /// Bitpacked compact enchantments.
+    pub enchantments: u64,
 }
 
 impl UiSlotItem {
     /// Empty item stack constant.
-    pub const EMPTY: Self = Self { item: 0, count: 0 };
+    pub const EMPTY: Self = Self {
+        item: 0,
+        count: 0,
+        enchantments: 0,
+    };
 
-    /// Creates a new slot item.
+    /// Creates a new unenchanted slot item.
     #[must_use]
     pub const fn new(item: u32, count: u16) -> Self {
+        Self::new_enchanted(item, count, 0)
+    }
+
+    /// Creates a new slot item with compact bitpacked enchantments.
+    #[must_use]
+    pub const fn new_enchanted(item: u32, count: u16, enchantments: u64) -> Self {
         if item == 0 || count == 0 {
             Self::EMPTY
         } else {
-            Self { item, count }
+            Self {
+                item,
+                count,
+                enchantments,
+            }
         }
     }
 
@@ -42,6 +58,47 @@ impl UiSlotItem {
     pub const fn is_empty(&self) -> bool {
         self.item == 0 || self.count == 0
     }
+}
+
+/// Returns the human-readable enchantment name and Roman numeral level for a numeric ID.
+#[must_use]
+pub fn enchantment_name_and_level(id: u8, level: u8) -> Option<(&'static str, &'static str)> {
+    let name = match id {
+        1 => "Protection",
+        2 => "Fire Protection",
+        3 => "Feather Falling",
+        4 => "Blast Protection",
+        5 => "Projectile Protection",
+        6 => "Respiration",
+        7 => "Aqua Affinity",
+        8 => "Thorns",
+        9 => "Depth Strider",
+        10 => "Sharpness",
+        11 => "Smite",
+        12 => "Bane of Arthropods",
+        13 => "Knockback",
+        14 => "Fire Aspect",
+        15 => "Looting",
+        16 => "Efficiency",
+        17 => "Silk Touch",
+        18 => "Unbreaking",
+        19 => "Fortune",
+        20 => "Power",
+        21 => "Punch",
+        22 => "Flame",
+        23 => "Infinity",
+        24 => "Mending",
+        _ => return None,
+    };
+    let roman = match level {
+        1 => "I",
+        2 => "II",
+        3 => "III",
+        4 => "IV",
+        5 => "V",
+        _ => "",
+    };
+    Some((name, roman))
 }
 
 /// Returns the container-relative `[x, y]` coordinates of the 16x16 interior of a slot in GUI pixels.
@@ -353,58 +410,131 @@ pub fn render_inventory_screen_styled<'a>(
     {
         let item = slots[hovered_idx];
         let name = item_names(item.item);
-        let (text_w, text_h) = font.measure_text(name);
+        render_item_tooltip(
+            item, name, mouse_pos, screen_w, screen_h, gui_scale, font, out,
+        );
+    }
+}
 
-        let pad = to_physical_pixels(3, gui_scale);
-        let box_w = (text_w * scale_f) as i32 + pad * 2;
-        let box_h = (text_h * scale_f) as i32 + pad * 2;
+/// Renders a multiline item tooltip with name and enchantments.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+pub fn render_item_tooltip(
+    item: UiSlotItem,
+    name: &str,
+    mouse_pos: [f32; 2],
+    screen_w: u32,
+    screen_h: u32,
+    gui_scale: u32,
+    font: &BitmapFont,
+    out: &mut Vec<UiQuad>,
+) {
+    let scale_f = gui_scale as f32;
+    let sw = screen_w as i32;
+    let sh = screen_h as i32;
 
-        let tip_x =
-            ((mouse_pos[0] as i32 + to_physical_pixels(10, gui_scale)).min(sw - box_w - 4)).max(4);
-        let tip_y =
-            ((mouse_pos[1] as i32 - to_physical_pixels(12, gui_scale)).min(sh - box_h - 4)).max(4);
+    // Unpack enchantments
+    let mut lines = Vec::new();
+    if item.enchantments != 0 {
+        for shift in (0..64).step_by(16) {
+            let slot = ((item.enchantments >> shift) & 0xFFFF) as u16;
+            let id = (slot & 0xFF) as u8;
+            let level = (slot >> 8) as u8;
+            if id != 0
+                && let Some((ench_name, roman)) = enchantment_name_and_level(id, level)
+            {
+                if roman.is_empty() {
+                    lines.push(ench_name.to_string());
+                } else {
+                    lines.push(format!("{ench_name} {roman}"));
+                }
+            }
+        }
+    }
 
-        // Dark box background (#100010 at 94% opacity)
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, box_h as u16],
-            UiQuad::rgba(16, 0, 16, 240),
-        ));
+    let (name_w, name_h) = font.measure_text(name);
+    let mut max_w = name_w;
+    let line_spacing = 10.0f32;
+    let mut total_h = name_h;
 
-        // Purple borders (#5000ff)
-        let border_w = gui_scale.max(1) as u16;
-        let border_col = UiQuad::rgba(80, 0, 255, 255);
-        // Top border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Bottom border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y + box_h - i32::from(border_w)],
-            [box_w as u16, border_w],
-            border_col,
-        ));
-        // Left border
-        out.push(UiQuad::solid(
-            [tip_x, tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
-        // Right border
-        out.push(UiQuad::solid(
-            [tip_x + box_w - i32::from(border_w), tip_y],
-            [border_w, box_h as u16],
-            border_col,
-        ));
+    for line in &lines {
+        let (lw, _) = font.measure_text(line);
+        if lw > max_w {
+            max_w = lw;
+        }
+        total_h += line_spacing;
+    }
 
-        // Tooltip text in pure white
+    let pad = to_physical_pixels(3, gui_scale);
+    let box_w = (max_w * scale_f) as i32 + pad * 2;
+    let box_h = (total_h * scale_f) as i32 + pad * 2;
+
+    let tip_x =
+        ((mouse_pos[0] as i32 + to_physical_pixels(10, gui_scale)).min(sw - box_w - 4)).max(4);
+    let tip_y =
+        ((mouse_pos[1] as i32 - to_physical_pixels(12, gui_scale)).min(sh - box_h - 4)).max(4);
+
+    // Dark box background (#100010 at 94% opacity)
+    out.push(UiQuad::solid(
+        [tip_x, tip_y],
+        [box_w as u16, box_h as u16],
+        UiQuad::rgba(16, 0, 16, 240),
+    ));
+
+    // Purple borders (#5000ff)
+    let border_w = gui_scale.max(1) as u16;
+    let border_col = UiQuad::rgba(80, 0, 255, 255);
+    // Top border
+    out.push(UiQuad::solid(
+        [tip_x, tip_y],
+        [box_w as u16, border_w],
+        border_col,
+    ));
+    // Bottom border
+    out.push(UiQuad::solid(
+        [tip_x, tip_y + box_h - i32::from(border_w)],
+        [box_w as u16, border_w],
+        border_col,
+    ));
+    // Left border
+    out.push(UiQuad::solid(
+        [tip_x, tip_y],
+        [border_w, box_h as u16],
+        border_col,
+    ));
+    // Right border
+    out.push(UiQuad::solid(
+        [tip_x + box_w - i32::from(border_w), tip_y],
+        [border_w, box_h as u16],
+        border_col,
+    ));
+
+    // Name in pure white
+    let mut cur_y = (tip_y + pad) as f32 / scale_f;
+    let text_x = (tip_x + pad) as f32 / scale_f;
+    font.layout_text(
+        name,
+        text_x,
+        cur_y,
+        UiQuad::rgba(255, 255, 255, 255),
+        true,
+        gui_scale,
+        out,
+    );
+
+    // Enchantments in gray (#AAAAAA)
+    for line in &lines {
+        cur_y += line_spacing;
         font.layout_text(
-            name,
-            (tip_x + pad) as f32 / scale_f,
-            (tip_y + pad) as f32 / scale_f,
-            UiQuad::rgba(255, 255, 255, 255),
+            line,
+            text_x,
+            cur_y,
+            UiQuad::rgba(170, 170, 170, 255),
             true,
             gui_scale,
             out,

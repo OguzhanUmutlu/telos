@@ -1269,13 +1269,36 @@ pub struct SlotData {
     pub item: u32,
     /// Number of items (0 = Empty, max 64).
     pub count: u16,
+    /// Bitpacked compact enchantments (0 = unenchanted).
+    pub enchantments: u64,
 }
 
 impl SlotData {
+    /// Creates a new slot data without enchantments.
+    #[must_use]
+    pub const fn new(item: u32, count: u16) -> Self {
+        Self {
+            item,
+            count,
+            enchantments: 0,
+        }
+    }
+
+    /// Creates a new slot data with compact enchantments.
+    #[must_use]
+    pub const fn new_enchanted(item: u32, count: u16, enchantments: u64) -> Self {
+        Self {
+            item,
+            count,
+            enchantments,
+        }
+    }
+
     /// Encodes into wire buffer.
     pub fn encode(&self, buf: &mut Vec<u8>) {
         encode_varint(self.item, buf);
         encode_varint(u32::from(self.count), buf);
+        encode_varlong(self.enchantments, buf);
     }
 
     /// Decodes from wire buffer.
@@ -1289,8 +1312,17 @@ impl SlotData {
             });
         }
         let count = count_raw as u16;
-        let item = if count == 0 { 0 } else { item };
-        Ok(Self { item, count })
+        let enchantments = decode_varlong(cursor)?;
+        let (item, enchantments) = if count == 0 {
+            (0, 0)
+        } else {
+            (item, enchantments)
+        };
+        Ok(Self {
+            item,
+            count,
+            enchantments,
+        })
     }
 }
 
@@ -1303,6 +1335,8 @@ pub struct S2cInventorySlot {
     pub item: u32,
     /// Stack count.
     pub count: u16,
+    /// Bitpacked compact enchantments.
+    pub enchantments: u64,
 }
 
 impl S2cInventorySlot {
@@ -1311,6 +1345,7 @@ impl S2cInventorySlot {
         encode_varint(u32::from(self.slot), buf);
         encode_varint(self.item, buf);
         encode_varint(u32::from(self.count), buf);
+        encode_varlong(self.enchantments, buf);
     }
 
     /// Decodes from wire buffer.
@@ -1331,8 +1366,18 @@ impl S2cInventorySlot {
             });
         }
         let count = count_raw as u16;
-        let item = if count == 0 { 0 } else { item };
-        Ok(Self { slot, item, count })
+        let enchantments = decode_varlong(cursor)?;
+        let (item, enchantments) = if count == 0 {
+            (0, 0)
+        } else {
+            (item, enchantments)
+        };
+        Ok(Self {
+            slot,
+            item,
+            count,
+            enchantments,
+        })
     }
 }
 
@@ -2745,6 +2790,15 @@ impl C2sCloseContainer {
     }
 }
 
+/// Container kind identifier for chest storage (0).
+pub const CONTAINER_KIND_CHEST: u8 = 0;
+/// Container kind identifier for furnace (1).
+pub const CONTAINER_KIND_FURNACE: u8 = 1;
+/// Container kind identifier for crafting table (2).
+pub const CONTAINER_KIND_CRAFTING_TABLE: u8 = 2;
+/// Container kind identifier for anvil (3).
+pub const CONTAINER_KIND_ANVIL: u8 = 3;
+
 /// Server commands client to open a container window with initial item contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S2cOpenContainer {
@@ -3431,6 +3485,7 @@ mod tests {
             slot: 4,
             item: 2,
             count: 32,
+            enchantments: 0x0102_0304,
         };
         let mut buf = Vec::new();
         msg.encode(&mut buf);

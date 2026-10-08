@@ -339,6 +339,48 @@ impl ContainerLayoutDef {
         }
     }
 
+    /// Default Minecraft standard dual anvil container layout (176x166, 39 slots).
+    #[must_use]
+    #[allow(clippy::cast_possible_wrap)]
+    pub fn default_anvil() -> Self {
+        let mut slots = Vec::with_capacity(39);
+
+        // Slot 0: Left input slot
+        slots.push(SlotLayoutDef::new(0, 27, 47));
+
+        // Slot 1: Right input slot (sacrifice/book)
+        slots.push(SlotLayoutDef::new(1, 76, 47));
+
+        // Slot 2: Output result slot
+        slots.push(SlotLayoutDef::new(2, 134, 47));
+
+        // Slots 3..=29: Player main storage (3 rows of 9)
+        for slot in 3..=29 {
+            let idx = (slot - 3) as i32;
+            let col = idx % 9;
+            let row = idx / 9;
+            slots.push(SlotLayoutDef::new(slot, 8 + col * 18, 84 + row * 18));
+        }
+
+        // Slots 30..=38: Player hotbar (1 row of 9)
+        for slot in 30..=38 {
+            let col = (slot - 30) as i32;
+            slots.push(SlotLayoutDef::new(slot, 8 + col * 18, 142));
+        }
+
+        Self {
+            width: 176,
+            height: 166,
+            title_pos: [60, 6],
+            inventory_title_pos: Some([8, 74]),
+            background_texture: Some("textures/gui/container/anvil.png".to_string()),
+            nine_slice: None,
+            slots,
+            flame_pos: None,
+            arrow_pos: Some([99, 45]),
+        }
+    }
+
     /// Parses a `ContainerLayoutDef` from a JSON string.
     ///
     /// # Errors
@@ -415,6 +457,9 @@ pub struct GuiStyleSheet {
     /// Crafting table container layout.
     #[serde(default = "ContainerLayoutDef::default_crafting_table")]
     pub crafting_table: ContainerLayoutDef,
+    /// Anvil container layout.
+    #[serde(default = "ContainerLayoutDef::default_anvil")]
+    pub anvil: ContainerLayoutDef,
     /// Additional custom mod or pack container layouts indexed by identifier.
     #[serde(default)]
     pub custom_containers: HashMap<String, ContainerLayoutDef>,
@@ -433,6 +478,7 @@ impl Default for GuiStyleSheet {
             chest: ContainerLayoutDef::default_chest(),
             furnace: ContainerLayoutDef::default_furnace(),
             crafting_table: ContainerLayoutDef::default_crafting_table(),
+            anvil: ContainerLayoutDef::default_anvil(),
             custom_containers: HashMap::new(),
             hud: HudThemeDef::default(),
             nine_slices: HashMap::new(),

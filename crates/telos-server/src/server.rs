@@ -61,6 +61,15 @@ use crate::multi_world::{MultiWorldManager, WorldError};
 use crate::session::{ActiveContainerSession, PlayerSession};
 use crate::world::ServerWorld;
 
+#[inline]
+const fn stack_to_slot(stack: ItemStack) -> SlotData {
+    SlotData {
+        item: stack.item,
+        count: stack.count,
+        enchantments: stack.enchantments.0,
+    }
+}
+
 fn register_world_command(dispatcher: &mut CommandDispatcher) {
     let world_node = CommandNode::literal("world")
         .with_tooltip("Manage worlds and transfer players")
@@ -628,6 +637,7 @@ impl Server {
     /// items or carried items to the player's inventory and dropping any overflow into the world.
     ///
     /// Returns `Some((world_name, block_pos, container_kind))` if a container was open.
+    #[allow(clippy::too_many_lines)]
     pub fn close_session_container(&mut self, session_id: u64) -> Option<(String, BlockPos, u8)> {
         let session = self.sessions.get_mut(&session_id)?;
         let active_cont = session.active_container.take()?;
@@ -660,23 +670,59 @@ impl Server {
                 }
                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                 for slot in &inv.slots {
-                    slot_vec.push(SlotData {
-                        item: slot.item,
-                        count: slot.count,
-                    });
+                    slot_vec.push(stack_to_slot(*slot));
                 }
                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                     slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                    carried: SlotData {
-                        item: inv.carried.item,
-                        count: inv.carried.count,
-                    },
+                    carried: stack_to_slot(inv.carried),
                 });
                 let _ = session
                     .connection
                     .send(Lane::Control, Payload::Msg(bulk_msg));
             } else {
                 for stack in grid {
+                    if !stack.is_empty() {
+                        dropped.push(stack);
+                    }
+                }
+            }
+        } else if container_kind == 3 {
+            // Anvil: refund left and right input items to player inventory, drop overflow
+            let mut items = [
+                std::mem::take(&mut session.active_anvil.left),
+                std::mem::take(&mut session.active_anvil.right),
+            ];
+            session.active_anvil.result = ItemStack::EMPTY;
+            session.active_anvil.level_cost = 0;
+
+            if let Some(entity) = entity
+                && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+            {
+                if !inv.carried.is_empty() {
+                    inv.return_carried();
+                }
+                for stack in &mut items {
+                    if !stack.is_empty() {
+                        inv.insert_into_storage_or_hotbar(stack);
+                        if !stack.is_empty() {
+                            dropped.push(*stack);
+                        }
+                        *stack = ItemStack::EMPTY;
+                    }
+                }
+                let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                for slot in &inv.slots {
+                    slot_vec.push(stack_to_slot(*slot));
+                }
+                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                    carried: stack_to_slot(inv.carried),
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(bulk_msg));
+            } else {
+                for stack in items {
                     if !stack.is_empty() {
                         dropped.push(stack);
                     }
@@ -689,17 +735,11 @@ impl Server {
             inv.return_carried();
             let mut slot_vec = Vec::with_capacity(inv.slots.len());
             for slot in &inv.slots {
-                slot_vec.push(SlotData {
-                    item: slot.item,
-                    count: slot.count,
-                });
+                slot_vec.push(stack_to_slot(*slot));
             }
             let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                 slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                carried: SlotData {
-                    item: inv.carried.item,
-                    count: inv.carried.count,
-                },
+                carried: stack_to_slot(inv.carried),
             });
             let _ = session
                 .connection
@@ -1091,17 +1131,11 @@ impl Server {
                         if let Some(inv) = self.ecs_world.get::<Inventory>(player_ent) {
                             let mut slot_vec = Vec::with_capacity(inv.slots.len());
                             for slot in &inv.slots {
-                                slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
-                                });
+                                slot_vec.push(stack_to_slot(*slot));
                             }
                             let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                                 slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                carried: SlotData {
-                                    item: inv.carried.item,
-                                    count: inv.carried.count,
-                                },
+                                carried: stack_to_slot(inv.carried),
                             });
                             if let Some(session) = self.sessions.get_mut(&sid) {
                                 let _ = session
@@ -1494,6 +1528,7 @@ impl Server {
                                             slot: slot_idx as u16,
                                             item: slot.item,
                                             count: slot.count,
+                                            enchantments: slot.enchantments.0,
                                         })),
                                     );
                                 }
@@ -1855,10 +1890,7 @@ impl Server {
             if tick_res.contents_changed {
                 let mut slot_vec = Vec::with_capacity(furnace_inv.slots.len());
                 for slot in &furnace_inv.slots {
-                    slot_vec.push(SlotData {
-                        item: slot.item,
-                        count: slot.count,
-                    });
+                    slot_vec.push(stack_to_slot(*slot));
                 }
                 let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
                 let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
@@ -2643,17 +2675,11 @@ impl Server {
 
                                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                                 for slot in &inv.slots {
-                                    slot_vec.push(SlotData {
-                                        item: slot.item,
-                                        count: slot.count,
-                                    });
+                                    slot_vec.push(stack_to_slot(*slot));
                                 }
                                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                                     slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                    carried: SlotData {
-                                        item: inv.carried.item,
-                                        count: inv.carried.count,
-                                    },
+                                    carried: stack_to_slot(inv.carried),
                                 });
                                 let _ = session
                                     .connection
@@ -3130,9 +3156,17 @@ impl Server {
                             let slot = &mut inv.slots[slot_idx];
                             let drop_count = if entire_stack { slot.count } else { 1 };
                             let item_id = slot.item;
+                            let enchantments = slot.enchantments;
                             slot.count -= drop_count;
                             slot.normalize();
-                            Some((item_id, drop_count, slot.item, slot.count))
+                            Some((
+                                item_id,
+                                drop_count,
+                                enchantments,
+                                slot.item,
+                                slot.count,
+                                slot.enchantments,
+                            ))
                         } else {
                             None
                         }
@@ -3140,8 +3174,14 @@ impl Server {
                         None
                     };
 
-                    if let Some((drop_item, drop_count, remaining_item, remaining_count)) =
-                        drop_info
+                    if let Some((
+                        drop_item,
+                        drop_count,
+                        drop_ench,
+                        remaining_item,
+                        remaining_count,
+                        remaining_ench,
+                    )) = drop_info
                     {
                         let yaw_rad = session_yaw.to_radians();
                         let pitch_rad = pitch.to_radians();
@@ -3160,7 +3200,7 @@ impl Server {
                             &world_name,
                             drop_pos,
                             vel,
-                            ItemStack::new(drop_item, drop_count),
+                            ItemStack::new_enchanted(drop_item, drop_count, drop_ench),
                             PLAYER_DROP_PICKUP_DELAY,
                         );
 
@@ -3168,6 +3208,7 @@ impl Server {
                             slot: u16::from(selected_slot),
                             item: remaining_item,
                             count: remaining_count,
+                            enchantments: remaining_ench.0,
                         });
                         if let Some(session) = self.sessions.get_mut(&session_id) {
                             let _ = session
@@ -3218,15 +3259,15 @@ impl Server {
 
                     // Consume arrow in survival mode
                     if let Some(slot_idx) = arrow_slot_to_consume {
-                        let (rem_item, rem_count) = if let Some(entity) = entity
+                        let (rem_item, rem_count, rem_ench) = if let Some(entity) = entity
                             && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
                         {
                             let slot = &mut inv.slots[slot_idx];
                             slot.count = slot.count.saturating_sub(1);
                             slot.normalize();
-                            (slot.item, slot.count)
+                            (slot.item, slot.count, slot.enchantments)
                         } else {
-                            (0, 0)
+                            (0, 0, telos_sim::CompactEnchantments::EMPTY)
                         };
 
                         #[allow(clippy::cast_possible_truncation)]
@@ -3234,6 +3275,7 @@ impl Server {
                             slot: slot_idx as u16,
                             item: rem_item,
                             count: rem_count,
+                            enchantments: rem_ench.0,
                         });
                         if let Some(session) = self.sessions.get_mut(&session_id) {
                             let _ = session
@@ -3911,6 +3953,12 @@ impl Server {
             let Some(entity) = entity else {
                 continue;
             };
+            let player_level = self
+                .ecs_world
+                .get::<Experience>(entity)
+                .map_or(0, Experience::level);
+            let mut spent_levels = None;
+
             let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity) else {
                 continue;
             };
@@ -3942,30 +3990,18 @@ impl Server {
                     {
                         let mut slot_vec = Vec::with_capacity(inv.slots.len());
                         for slot in &inv.slots {
-                            slot_vec.push(SlotData {
-                                item: slot.item,
-                                count: slot.count,
-                            });
+                            slot_vec.push(stack_to_slot(*slot));
                         }
                         let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                             slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                            carried: SlotData {
-                                item: inv.carried.item,
-                                count: inv.carried.count,
-                            },
+                            carried: stack_to_slot(inv.carried),
                         });
                         let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
 
                         let mut container_slot_vec = Vec::with_capacity(10);
-                        container_slot_vec.push(SlotData {
-                            item: s.active_crafting_table.result.item,
-                            count: s.active_crafting_table.result.count,
-                        });
+                        container_slot_vec.push(stack_to_slot(s.active_crafting_table.result));
                         for slot in &s.active_crafting_table.grid {
-                            container_slot_vec.push(SlotData {
-                                item: slot.item,
-                                count: slot.count,
-                            });
+                            container_slot_vec.push(stack_to_slot(*slot));
                         }
                         let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
                             window_id: active_cont.window_id,
@@ -3978,6 +4014,53 @@ impl Server {
                             z: active_cont.block_pos.z(),
                         });
                         let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+                    }
+                } else if active_cont.container_kind == 3 {
+                    if let Some(s) = self.sessions.get_mut(&session_id)
+                        && let Ok(levels_spent) = telos_sim::anvil_container_click(
+                            &mut s.active_anvil,
+                            &mut inv,
+                            player_level,
+                            slot_idx,
+                            button,
+                            mode,
+                        )
+                    {
+                        spent_levels = levels_spent;
+
+                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                        for slot in &inv.slots {
+                            slot_vec.push(stack_to_slot(*slot));
+                        }
+                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            carried: stack_to_slot(inv.carried),
+                        });
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+
+                        let mut container_slot_vec = Vec::with_capacity(3);
+                        for slot in s.active_anvil.slots() {
+                            container_slot_vec.push(stack_to_slot(slot));
+                        }
+                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                            window_id: active_cont.window_id,
+                            container_kind: 3,
+                            title: BoundedString::new("Repair & Name")
+                                .unwrap_or_else(|_| BoundedString::new("Repair & Name").unwrap()),
+                            slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
+                            x: active_cont.block_pos.x(),
+                            y: active_cont.block_pos.y(),
+                            z: active_cont.block_pos.z(),
+                        });
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+
+                        #[allow(clippy::cast_possible_wrap)]
+                        let prop_msg = S2cMessage::ContainerProperty(S2cContainerProperty {
+                            window_id: active_cont.window_id,
+                            property_id: 0,
+                            value: s.active_anvil.level_cost as i16,
+                        });
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(prop_msg));
                     }
                 } else {
                     let world = self.worlds.get_or_default_mut(&session_world_name);
@@ -4000,17 +4083,11 @@ impl Server {
 
                                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                                 for slot in &inv.slots {
-                                    slot_vec.push(SlotData {
-                                        item: slot.item,
-                                        count: slot.count,
-                                    });
+                                    slot_vec.push(stack_to_slot(*slot));
                                 }
                                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                                     slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                    carried: SlotData {
-                                        item: inv.carried.item,
-                                        count: inv.carried.count,
-                                    },
+                                    carried: stack_to_slot(inv.carried),
                                 });
                                 if let Some(s) = self.sessions.get_mut(&session_id) {
                                     let _ =
@@ -4021,10 +4098,7 @@ impl Server {
                                 let mut container_slot_vec =
                                     Vec::with_capacity(furnace_inv.slots.len());
                                 for slot in &furnace_inv.slots {
-                                    container_slot_vec.push(SlotData {
-                                        item: slot.item,
-                                        count: slot.count,
-                                    });
+                                    container_slot_vec.push(stack_to_slot(*slot));
                                 }
                                 let title_str =
                                     furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
@@ -4066,17 +4140,11 @@ impl Server {
 
                                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                                 for slot in &inv.slots {
-                                    slot_vec.push(SlotData {
-                                        item: slot.item,
-                                        count: slot.count,
-                                    });
+                                    slot_vec.push(stack_to_slot(*slot));
                                 }
                                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                                     slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                                    carried: SlotData {
-                                        item: inv.carried.item,
-                                        count: inv.carried.count,
-                                    },
+                                    carried: stack_to_slot(inv.carried),
                                 });
                                 if let Some(s) = self.sessions.get_mut(&session_id) {
                                     let _ =
@@ -4087,10 +4155,7 @@ impl Server {
                                 let mut container_slot_vec =
                                     Vec::with_capacity(chest_inv.slots.len());
                                 for slot in &chest_inv.slots {
-                                    container_slot_vec.push(SlotData {
-                                        item: slot.item,
-                                        count: slot.count,
-                                    });
+                                    container_slot_vec.push(stack_to_slot(*slot));
                                 }
                                 let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
                                 let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
@@ -4130,20 +4195,45 @@ impl Server {
             {
                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                 for slot in &inv.slots {
-                    slot_vec.push(SlotData {
-                        item: slot.item,
-                        count: slot.count,
-                    });
+                    slot_vec.push(stack_to_slot(*slot));
                 }
                 let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
                     slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                    carried: SlotData {
-                        item: inv.carried.item,
-                        count: inv.carried.count,
-                    },
+                    carried: stack_to_slot(inv.carried),
                 });
                 if let Some(s) = self.sessions.get_mut(&session_id) {
                     let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                }
+            }
+
+            if let Some(spent) = spent_levels
+                && spent > 0
+            {
+                let (new_level, new_progress) =
+                    if let Some(mut exp) = self.ecs_world.get_mut::<Experience>(entity) {
+                        exp.deduct_levels(spent);
+                        (exp.level(), exp.progress())
+                    } else {
+                        (0, 0.0)
+                    };
+                let (cur_hp, max_hp) = self
+                    .ecs_world
+                    .get::<Health>(entity)
+                    .map_or((20.0, 20.0), |h| (h.cur, h.max));
+                let (food, sat) = self
+                    .ecs_world
+                    .get::<Hunger>(entity)
+                    .map_or((20, 5.0), |h| (h.food, h.saturation));
+                let stats_msg = S2cMessage::UpdateStats(S2cUpdateStats {
+                    health: cur_hp,
+                    max_health: max_hp,
+                    food,
+                    saturation: sat,
+                    xp_level: new_level,
+                    xp_progress: new_progress,
+                });
+                if let Some(s) = self.sessions.get_mut(&session_id) {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(stats_msg));
                 }
             }
 
@@ -4334,10 +4424,7 @@ impl Server {
                             let chest_inv = telos_sim::ChestInventory::from_block_entity(chest_be);
                             let mut slot_vec = Vec::with_capacity(chest_inv.slots.len());
                             for slot in &chest_inv.slots {
-                                slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
-                                });
+                                slot_vec.push(stack_to_slot(*slot));
                             }
                             let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
                             let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
@@ -4389,10 +4476,7 @@ impl Server {
                                 telos_sim::FurnaceInventory::from_block_entity(furnace_be);
                             let mut slot_vec = Vec::with_capacity(furnace_inv.slots.len());
                             for slot in &furnace_inv.slots {
-                                slot_vec.push(SlotData {
-                                    item: slot.item,
-                                    count: slot.count,
-                                });
+                                slot_vec.push(stack_to_slot(*slot));
                             }
                             let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
                             let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
@@ -4443,7 +4527,11 @@ impl Server {
                     } else if world.registry().is_crafting_table(old_state) {
                         let mut slot_vec = Vec::with_capacity(10);
                         for _ in 0..10 {
-                            slot_vec.push(SlotData { item: 0, count: 0 });
+                            slot_vec.push(SlotData {
+                                item: 0,
+                                count: 0,
+                                enchantments: 0,
+                            });
                         }
                         let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
                             window_id: 1,
@@ -4464,12 +4552,41 @@ impl Server {
                             });
                             let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
                         }
+                    } else if world.registry().is_anvil(old_state) {
+                        let mut slot_vec = Vec::with_capacity(3);
+                        for _ in 0..3 {
+                            slot_vec.push(SlotData {
+                                item: 0,
+                                count: 0,
+                                enchantments: 0,
+                            });
+                        }
+                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                            window_id: 1,
+                            container_kind: 3,
+                            title: BoundedString::new("Repair & Name")
+                                .unwrap_or_else(|_| BoundedString::new("Repair & Name").unwrap()),
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            x: target_pos.x(),
+                            y: target_pos.y(),
+                            z: target_pos.z(),
+                        });
+                        if let Some(s) = self.sessions.get_mut(&session_id) {
+                            s.active_anvil = telos_sim::AnvilInventory::new();
+                            s.active_container = Some(ActiveContainerSession {
+                                window_id: 1,
+                                block_pos: target_pos,
+                                container_kind: 3,
+                            });
+                            let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+                        }
                     }
                 } else {
                     let is_chest_or_furnace = world.registry().is_chest(old_state)
                         || world.registry().is_furnace(old_state);
                     let is_crafting_table = world.registry().is_crafting_table(old_state);
-                    let is_container_block = is_chest_or_furnace || is_crafting_table;
+                    let is_anvil = world.registry().is_anvil(old_state);
+                    let is_container_block = is_chest_or_furnace || is_crafting_table || is_anvil;
 
                     let container_contents_to_drop =
                         if matches!(action.action, BlockActionKind::Break) && is_chest_or_furnace {
@@ -4528,7 +4645,11 @@ impl Server {
                                         .identifier(old_state)
                                         .and_then(|ident| {
                                             if ident.namespace() == "telos" {
-                                                None
+                                                if ident.path() == "anvil" {
+                                                    Some(ItemStack::new(telos_sim::ITEM_ANVIL, 1))
+                                                } else {
+                                                    None
+                                                }
                                             } else {
                                                 self.registries
                                                     .item_registry()

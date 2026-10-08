@@ -751,9 +751,9 @@ fn test_command_suggestion_packets_roundtrip() {
 fn test_container_packets_roundtrip() {
     // 1. S2cOpenContainer
     let mut slots = Vec::new();
-    slots.push(SlotData { item: 1, count: 64 });
+    slots.push(SlotData::new_enchanted(1, 64, 0x1234_5678));
     for _ in 1..27 {
-        slots.push(SlotData { item: 0, count: 0 });
+        slots.push(SlotData::new(0, 0));
     }
     let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
         window_id: 1,
