@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.0-dev}"
 VERSION="${VERSION#v}" # Strip leading 'v' if present
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +53,7 @@ Section: games
 Priority: optional
 Architecture: amd64
 Maintainer: Larvance <64753457+larvance@users.noreply.github.com>
-Depends: libc6, libvulkan1, libx11-6, libxkbcommon0
+Depends: libc6, libasound2 | libasound2t64, libvulkan1, libx11-6, libxkbcommon0
 Description: High-performance voxel engine and game
  A world-class voxel engine and game in Rust and Vulkan.
  Features pixel-level LOD, tiny compressed chunks, GPU-driven rendering,
@@ -62,6 +62,8 @@ EOF
 
 dpkg-deb --build --root-owner-group "${CLIENT_DEB_DIR}" "${DIST_DIR}/telos_${VERSION}_amd64.deb"
 echo "Created: ${DIST_DIR}/telos_${VERSION}_amd64.deb"
+cp -f "${DIST_DIR}/telos_${VERSION}_amd64.deb" "${DIST_DIR}/telos_dev_amd64.deb"
+echo "Created alias: ${DIST_DIR}/telos_dev_amd64.deb"
 
 # 2. Build Server DEB
 SERVER_DEB_DIR="${ROOT_DIR}/target/deb/telos-server_${VERSION}_amd64"

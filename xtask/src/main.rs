@@ -76,6 +76,16 @@ enum Commands {
         #[arg(long, default_value = "target/dist")]
         output_dir: String,
     },
+    /// Build Debian (.deb) packages for Telos client and server
+    Deb {
+        /// Target version string (defaults to "0.1.0-dev")
+        #[arg(long, default_value = "0.1.0-dev")]
+        version: String,
+
+        /// Output directory for distribution packages
+        #[arg(long, default_value = "target/dist")]
+        output_dir: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -107,6 +117,10 @@ fn main() -> Result<()> {
             no_deb,
             &output_dir,
         )?,
+        Commands::Deb {
+            version,
+            output_dir,
+        } => run_deb(&version, &output_dir)?,
     }
 
     Ok(())
@@ -707,6 +721,99 @@ fn run_dist(
         "=================================================================================================="
     );
     println!("✓ Packaging complete in {:.2?}", start.elapsed());
+    println!("Output directory: {}", dist_dir.display());
+
+    Ok(())
+}
+
+#[allow(clippy::similar_names)]
+fn run_deb(ver: &str, output_dir: &str) -> Result<()> {
+    let start = Instant::now();
+    let root_dir = std::env::current_dir().context("Failed to get current dir")?;
+    println!("============================================================");
+    println!("         TELOS DEBIAN PACKAGE GENERATOR (.deb)              ");
+    println!("============================================================");
+    println!("Target Version:   v{ver}");
+    println!("Output Directory: {output_dir}");
+    println!("------------------------------------------------------------");
+
+    let dist_dir = root_dir.join(output_dir);
+    std::fs::create_dir_all(&dist_dir)?;
+
+    let client_bin = root_dir.join("target/release/telos");
+    let server_bin = root_dir.join("target/release/telos-server");
+
+    if !client_bin.exists() || !server_bin.exists() {
+        println!("\n>> 1. Building release binaries (telos, telos-server)...");
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "--release",
+                "--bin",
+                "telos",
+                "--bin",
+                "telos-server",
+            ])
+            .current_dir(&root_dir)
+            .status()
+            .context("Failed to execute cargo build --release")?;
+        if !status.success() {
+            bail!("cargo build --release failed: {status}");
+        }
+    }
+
+    println!("\n>> 2. Building Debian packages (.deb)...");
+    let deb_script = root_dir.join("packaging/linux/build-deb.sh");
+    if !deb_script.exists() {
+        bail!("packaging/linux/build-deb.sh not found");
+    }
+
+    let status = Command::new("bash")
+        .arg(&deb_script)
+        .arg(ver)
+        .env("DIST_DIR", &dist_dir)
+        .env("CLIENT_BIN", &client_bin)
+        .env("SERVER_BIN", &server_bin)
+        .status()
+        .context("Failed to run packaging/linux/build-deb.sh")?;
+    if !status.success() {
+        bail!("build-deb.sh exited with failure: {status}");
+    }
+
+    println!(
+        "\n=================================================================================================="
+    );
+    println!(
+        "                        DEBIAN PACKAGES GENERATED                                                 "
+    );
+    println!(
+        "=================================================================================================="
+    );
+    println!("{:<45} {:>10}  SHA256 Checksum", "Filename", "Size");
+    println!("{:-<45} {:-<10}  {:-<64}", "", "", "");
+
+    let mut deb_entries: Vec<_> = std::fs::read_dir(&dist_dir)?
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "deb"))
+        .collect();
+    deb_entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in deb_entries {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let size = path.metadata().map_or(0, |m| m.len());
+        let hash = compute_sha256(&path);
+        println!(
+            "{:<45} {:>10}  {}",
+            file_name.to_string_lossy(),
+            format_bytes(size),
+            hash
+        );
+    }
+    println!(
+        "=================================================================================================="
+    );
+    println!("✓ Debian packaging complete in {:.2?}", start.elapsed());
     println!("Output directory: {}", dist_dir.display());
 
     Ok(())
