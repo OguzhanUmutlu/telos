@@ -697,6 +697,42 @@ impl BlockRegistry {
         let crafting_table_id = Identifier::new("telos", "crafting_table").unwrap();
         reg.register(crafting_table_id, StateFlags::OPAQUE_CUBE);
 
+        // Natural vegetation and biome flora (Phase 61)
+        let tall_grass_id = Identifier::new("telos", "tall_grass").unwrap();
+        reg.register_with_shape(
+            tall_grass_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let cornflower_id = Identifier::new("telos", "cornflower").unwrap();
+        reg.register_with_shape(
+            cornflower_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let oxeye_daisy_id = Identifier::new("telos", "oxeye_daisy").unwrap();
+        reg.register_with_shape(
+            oxeye_daisy_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let brown_mushroom_id = Identifier::new("telos", "brown_mushroom").unwrap();
+        reg.register_with_shape(
+            brown_mushroom_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
+        let red_mushroom_id = Identifier::new("telos", "red_mushroom").unwrap();
+        reg.register_with_shape(
+            red_mushroom_id,
+            StateFlags::NON_EMPTY | StateFlags::CUTOUT,
+            crate::shape::BlockShape::cross(),
+        );
+
         reg.freeze();
         reg
     }
@@ -746,6 +782,28 @@ impl BlockRegistry {
             matches!(
                 ident.path(),
                 "oak_leaves" | "birch_leaves" | "spruce_leaves"
+            )
+        })
+    }
+
+    /// Returns `true` if the given block state represents natural surface flora
+    /// (grass, ferns, wild flowers, dead bushes, mushrooms).
+    #[inline]
+    #[must_use]
+    pub fn is_flora(&self, id: BlockStateId) -> bool {
+        self.identifier(id).is_some_and(|ident| {
+            matches!(
+                ident.path(),
+                "poppy"
+                    | "dandelion"
+                    | "short_grass"
+                    | "tall_grass"
+                    | "fern"
+                    | "dead_bush"
+                    | "cornflower"
+                    | "oxeye_daisy"
+                    | "brown_mushroom"
+                    | "red_mushroom"
             )
         })
     }

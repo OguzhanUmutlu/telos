@@ -871,8 +871,13 @@ fn get_gl_texture_layer(mat: u16, dir: FaceDir, custom_layers: &HashMap<u16, f32
             FaceDir::PosY | FaceDir::NegY => 29.0, // spruce_log_top
             _ => 28.0,                             // spruce_log
         },
-        77 => 30.0, // birch_leaves
-        78 => 31.0, // spruce_leaves
+        77 => 30.0,      // birch_leaves
+        78 => 31.0,      // spruce_leaves
+        85 | 69 => 32.0, // tall_grass
+        86 | 70 => 33.0, // cornflower
+        87 | 71 => 34.0, // oxeye_daisy
+        88 | 72 => 35.0, // brown_mushroom
+        89 | 73 => 36.0, // red_mushroom
         _ => f32::from(mat),
     }
 }
@@ -890,6 +895,7 @@ fn get_material_tint(mat: u16, dir: FaceDir, custom_tints: &HashMap<u16, [f32; 4
                 [1.0, 1.0, 1.0, 1.0]
             }
         }
+        85 | 69 => [0.55, 0.78, 0.35, 1.0],          // Tall grass
         8 => [0.298, 0.600, 0.129, 1.0],             // Oak Leaves
         77 => [0.502, 0.655, 0.333, 1.0],            // Birch Leaves
         78 => [0.380, 0.600, 0.380, 1.0],            // Spruce Leaves

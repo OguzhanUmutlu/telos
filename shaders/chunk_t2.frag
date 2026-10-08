@@ -54,6 +54,21 @@ uint get_texture_layer(uint mat) {
             return 13u;
         case 20u: // Dead bush (core pack)
             return 14u;
+        case 69u: // Tall grass (core pack)
+        case 85u: // Tall grass (standard)
+            return 32u;
+        case 70u: // Cornflower (core pack)
+        case 86u: // Cornflower (standard)
+            return 33u;
+        case 71u: // Oxeye daisy (core pack)
+        case 87u: // Oxeye daisy (standard)
+            return 34u;
+        case 72u: // Brown mushroom (core pack)
+        case 88u: // Brown mushroom (standard)
+            return 35u;
+        case 73u: // Red mushroom (core pack)
+        case 89u: // Red mushroom (standard)
+            return 36u;
         case 31u: // Lava
         case 32u: // Flowing lava
         case 44u: case 45u: case 46u: case 47u: case 48u: case 49u: case 50u: // Flowing lava levels 2..7 & falling

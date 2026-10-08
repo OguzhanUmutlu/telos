@@ -314,3 +314,76 @@ fn test_decoration_chunk_boundary_continuity() {
         }
     }
 }
+
+#[test]
+#[allow(clippy::large_stack_arrays)]
+fn test_vegetation_multi_species_and_jittered_scatter() {
+    use telos_voxel::state::BlockStateId;
+    use telos_worldgen::surface::ResolvedBlocks;
+    use telos_worldgen::{BiomeId, apply_surface_decorations};
+
+    let registry = BlockRegistry::standard();
+    let blocks = ResolvedBlocks::resolve(&registry);
+
+    // Test Forest chunk with grass and shaded tree leaves at y=15
+    let mut forest_dense = [BlockStateId::AIR; CHUNK_VOLUME];
+    for z in 0..32 {
+        for x in 0..32 {
+            for y in 0..=10 {
+                forest_dense[(y << 10) | (z << 5) | x] = blocks.grass;
+            }
+            // Add tree leaves canopy overhead
+            forest_dense[(15 << 10) | (z << 5) | x] = blocks.oak_leaves;
+        }
+    }
+
+    apply_surface_decorations(
+        0xFEED_FACE_CAFE_0001,
+        ChunkPos::new(0, 0, 0),
+        &[BiomeId::Forest; 64],
+        &blocks,
+        &mut forest_dense,
+    );
+
+    let mut found_mushroom = false;
+    let mut found_fern = false;
+    let mut found_tall_grass = false;
+    for z in 0..32 {
+        for x in 0..32 {
+            let state = forest_dense[(11 << 10) | (z << 5) | x];
+            if state == blocks.brown_mushroom || state == blocks.red_mushroom {
+                found_mushroom = true;
+            } else if state == blocks.fern {
+                found_fern = true;
+            } else if state == blocks.tall_grass {
+                found_tall_grass = true;
+            }
+        }
+    }
+
+    assert!(found_fern, "Forest must generate ferns");
+    assert!(
+        found_mushroom,
+        "Forest canopy shade must generate mushrooms"
+    );
+    assert!(found_tall_grass, "Forest must generate tall grass");
+}
+
+#[test]
+fn test_biome_vegetation_color_blending() {
+    use telos_worldgen::BiomeId;
+    use telos_worldgen::decoration::biome_expected_vegetation_color;
+
+    let base_grass = [106, 170, 64, 255];
+    let blended_plains = biome_expected_vegetation_color(BiomeId::Plains, base_grass);
+    assert_eq!(blended_plains[3], 255);
+
+    let blended_forest = biome_expected_vegetation_color(BiomeId::Forest, base_grass);
+    assert_eq!(blended_forest[3], 255);
+    // Forest vegetation has darker green component
+    assert!(blended_forest[1] <= base_grass[1]);
+
+    let desert_sand = [219, 207, 163, 255];
+    let blended_desert = biome_expected_vegetation_color(BiomeId::Desert, desert_sand);
+    assert_eq!(blended_desert, desert_sand);
+}

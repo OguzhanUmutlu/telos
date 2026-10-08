@@ -10555,10 +10555,13 @@ fn bake_block_textures() -> (telos_assets::BakedTextureArray, AnimatedTextures) 
                 "spruce_log" => [45, 30, 15, 255],
                 "spruce_log_top" => [105, 80, 50, 255],
                 "glass" => [200, 220, 255, 128],
-                "poppy" => [220, 40, 40, 255],
+                "poppy" | "red_mushroom" => [220, 40, 40, 255],
                 "dandelion" => [255, 230, 40, 255],
                 "torch" => [255, 200, 50, 255],
                 "short_grass" | "tall_grass" | "fern" => [100, 180, 60, 255],
+                "cornflower" => [70, 120, 240, 255],
+                "oxeye_daisy" => [240, 240, 230, 255],
+                "brown_mushroom" => [150, 110, 80, 255],
                 "dead_bush" | "lever" => [140, 110, 70, 255],
                 "redstone_torch" => [255, 60, 60, 255],
                 "redstone_torch_off" => [100, 30, 30, 255],
@@ -10639,6 +10642,14 @@ fn bake_block_textures() -> (telos_assets::BakedTextureArray, AnimatedTextures) 
     );
     builder.insert("birch_leaves", load_texture_with_fallback("birch_leaves"));
     builder.insert("spruce_leaves", load_texture_with_fallback("spruce_leaves"));
+    builder.insert("tall_grass", load_texture_with_fallback("tall_grass"));
+    builder.insert("cornflower", load_texture_with_fallback("cornflower"));
+    builder.insert("oxeye_daisy", load_texture_with_fallback("oxeye_daisy"));
+    builder.insert(
+        "brown_mushroom",
+        load_texture_with_fallback("brown_mushroom"),
+    );
+    builder.insert("red_mushroom", load_texture_with_fallback("red_mushroom"));
 
     let mut load_animated = |name: &str,
                              alt_name: Option<&str>,

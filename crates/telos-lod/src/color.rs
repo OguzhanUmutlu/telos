@@ -118,10 +118,71 @@ impl LodColorTable {
         // Spruce Leaves: #619961
         colors.insert(BlockStateId::new(78), LodColor::uniform([97, 153, 97, 255]));
 
+        // Surface Vegetation & Flora (Phase 61)
+        // Poppy: #DC2828
+        colors.insert(BlockStateId::new(12), LodColor::uniform([220, 40, 40, 255]));
+        // Dandelion: #FFE628
+        colors.insert(
+            BlockStateId::new(13),
+            LodColor::uniform([255, 230, 40, 255]),
+        );
+        // Short Grass: #6AAA40
+        colors.insert(
+            BlockStateId::new(16),
+            LodColor::uniform([106, 170, 64, 255]),
+        );
+        // Fern: #50A032
+        colors.insert(BlockStateId::new(17), LodColor::uniform([80, 160, 50, 255]));
+        // Dead Bush: #8C6E46
+        colors.insert(
+            BlockStateId::new(18),
+            LodColor::uniform([140, 110, 70, 255]),
+        );
+        // Tall Grass: #64B43C
+        colors.insert(
+            BlockStateId::new(85),
+            LodColor::uniform([100, 180, 60, 255]),
+        );
+        // Cornflower: #4678F0
+        colors.insert(
+            BlockStateId::new(86),
+            LodColor::uniform([70, 120, 240, 255]),
+        );
+        // Oxeye Daisy: #F0F0E6
+        colors.insert(
+            BlockStateId::new(87),
+            LodColor::uniform([240, 240, 230, 255]),
+        );
+        // Brown Mushroom: #966E50
+        colors.insert(
+            BlockStateId::new(88),
+            LodColor::uniform([150, 110, 80, 255]),
+        );
+        // Red Mushroom: #C82828
+        colors.insert(BlockStateId::new(89), LodColor::uniform([200, 40, 40, 255]));
+
         Self {
             colors,
             fallback: LodColor::uniform([150, 150, 150, 255]),
         }
+    }
+
+    /// Evaluates distance surface color blending vegetation cover into base terrain top color.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn blend_vegetation_surface(
+        base_top_color: [u8; 4],
+        vegetation_color: [u8; 4],
+        vegetation_density: f32,
+    ) -> [u8; 4] {
+        let t = vegetation_density.clamp(0.0, 1.0);
+        let inv = 1.0 - t;
+        [
+            (f32::from(base_top_color[0]) * inv + f32::from(vegetation_color[0]) * t) as u8,
+            (f32::from(base_top_color[1]) * inv + f32::from(vegetation_color[1]) * t) as u8,
+            (f32::from(base_top_color[2]) * inv + f32::from(vegetation_color[2]) * t) as u8,
+            255,
+        ]
     }
 
     /// Registers or updates the color for a `BlockStateId`.

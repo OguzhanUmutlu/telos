@@ -109,6 +109,18 @@ pub struct ResolvedBlocks {
     pub monster_spawner: BlockStateId,
     /// Chest container block state ID.
     pub chest: BlockStateId,
+
+    // Phase 61 Surface Vegetation & Flora
+    /// Tall grass foliage block state ID.
+    pub tall_grass: BlockStateId,
+    /// Cornflower wildflower block state ID.
+    pub cornflower: BlockStateId,
+    /// Oxeye daisy wildflower block state ID.
+    pub oxeye_daisy: BlockStateId,
+    /// Brown mushroom fungus block state ID.
+    pub brown_mushroom: BlockStateId,
+    /// Red mushroom fungus block state ID.
+    pub red_mushroom: BlockStateId,
 }
 
 impl ResolvedBlocks {
@@ -178,6 +190,12 @@ impl ResolvedBlocks {
         let monster_spawner = resolve_block("monster_spawner", 80);
         let chest = resolve_block("chest", 81);
 
+        let tall_grass = resolve_block("tall_grass", 85);
+        let cornflower = resolve_block("cornflower", 86);
+        let oxeye_daisy = resolve_block("oxeye_daisy", 87);
+        let brown_mushroom = resolve_block("brown_mushroom", 88);
+        let red_mushroom = resolve_block("red_mushroom", 89);
+
         Self {
             air,
             stone,
@@ -225,6 +243,11 @@ impl ResolvedBlocks {
             mossy_cobblestone,
             monster_spawner,
             chest,
+            tall_grass,
+            cornflower,
+            oxeye_daisy,
+            brown_mushroom,
+            red_mushroom,
         }
     }
 }

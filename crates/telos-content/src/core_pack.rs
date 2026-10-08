@@ -662,6 +662,86 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             },
         ),
         (
+            "tall_grass",
+            "Tall Grass",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(69),
+                ..Default::default()
+            },
+        ),
+        (
+            "cornflower",
+            "Cornflower",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(70),
+                ..Default::default()
+            },
+        ),
+        (
+            "oxeye_daisy",
+            "Oxeye Daisy",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(71),
+                ..Default::default()
+            },
+        ),
+        (
+            "brown_mushroom",
+            "Brown Mushroom",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(72),
+                ..Default::default()
+            },
+        ),
+        (
+            "red_mushroom",
+            "Red Mushroom",
+            BlockDef {
+                shape: BlockShapeDef::Cross,
+                render_layer: RenderLayerDef::Cutout,
+                opacity: OpacityDef::Transparent,
+                hardness: 0.0,
+                blast_resistance: 0.0,
+                tool: None,
+                sound: Some("telos:grass".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(73),
+                ..Default::default()
+            },
+        ),
+        (
             "missing",
             "Missing Block",
             BlockDef {
