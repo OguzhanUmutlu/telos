@@ -24,6 +24,7 @@ pub mod storage;
 
 pub use block_entity::{
     BlockEntityData, BlockEntityKind, BlockEntitySlot, BlockEntityTable, CHEST_CONTAINER_SLOTS,
+    FURNACE_CONTAINER_SLOTS, FURNACE_SLOT_FUEL, FURNACE_SLOT_INPUT, FURNACE_SLOT_OUTPUT,
 };
 pub use chunk::{Chunk, ChunkSnapshot};
 pub use coords::{CHUNK_SIZE, CHUNK_VOLUME, LocalIdx, split_block_pos, to_block_pos};

@@ -14,9 +14,10 @@ use telos_protocol::messages::{
     C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
     Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
     S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame,
-    S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cOpenContainer,
-    S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cHelloReply,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cOpenContainer, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem,
+    S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -783,6 +784,20 @@ fn test_container_packets_roundtrip() {
         decode_s2c(ConnectionPhase::Play, &mut cursor_event).expect("decode S2cBlockEvent");
     assert_eq!(decoded_event, block_event);
     assert!(cursor_event.is_empty());
+
+    // 5. S2cContainerProperty
+    let prop_msg = S2cMessage::ContainerProperty(S2cContainerProperty {
+        window_id: 1,
+        property_id: 2, // cook_progress
+        value: 145,
+    });
+    let mut buf_prop = Vec::new();
+    encode_s2c(&prop_msg, &mut buf_prop);
+    let mut cursor_prop = &buf_prop[..];
+    let decoded_prop =
+        decode_s2c(ConnectionPhase::Play, &mut cursor_prop).expect("decode S2cContainerProperty");
+    assert_eq!(decoded_prop, prop_msg);
+    assert!(cursor_prop.is_empty());
 }
 
 proptest! {

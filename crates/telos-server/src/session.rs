@@ -108,6 +108,8 @@ pub struct ActiveContainerSession {
     pub window_id: u8,
     /// World coordinates of the container block.
     pub block_pos: BlockPos,
+    /// Container kind (0: Chest, 1: Furnace).
+    pub container_kind: u8,
 }
 
 impl PlayerSession {

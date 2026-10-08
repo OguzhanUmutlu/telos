@@ -604,6 +604,27 @@ impl BlockRegistry {
             crate::shape::BlockShape::chest(),
         );
 
+        let furnace_id = Identifier::new("telos", "furnace").unwrap();
+        reg.register(
+            furnace_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::OPAQUE_CUBE.bits()
+                    | StateFlags::HAS_BLOCK_ENTITY.bits()
+                    | StateFlags::TICKABLE.bits(),
+            ),
+        );
+
+        let lit_furnace_id = Identifier::new("telos", "lit_furnace").unwrap();
+        reg.register(
+            lit_furnace_id,
+            StateFlags::from_bits_truncate(
+                StateFlags::OPAQUE_CUBE.bits()
+                    | StateFlags::HAS_BLOCK_ENTITY.bits()
+                    | StateFlags::EMISSIVE.bits()
+                    | StateFlags::TICKABLE.bits(),
+            ),
+        );
+
         reg.freeze();
         reg
     }
@@ -693,6 +714,22 @@ impl BlockRegistry {
     pub fn is_chest(&self, id: BlockStateId) -> bool {
         self.identifier(id)
             .is_some_and(|ident| ident.path() == "chest")
+    }
+
+    /// Returns `true` if the given block state represents a furnace (either unlit or lit).
+    #[inline]
+    #[must_use]
+    pub fn is_furnace(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "furnace" || ident.path() == "lit_furnace")
+    }
+
+    /// Returns `true` if the given block state represents an actively lit furnace.
+    #[inline]
+    #[must_use]
+    pub fn is_lit_furnace(&self, id: BlockStateId) -> bool {
+        self.identifier(id)
+            .is_some_and(|ident| ident.path() == "lit_furnace")
     }
 
     /// Returns `true` if the block state at `id` can be freely replaced by flowing fluids.
@@ -950,5 +987,39 @@ mod tests {
         assert!(reg.flags(oak_leaves).contains(StateFlags::TICKABLE));
         assert!(reg.flags(birch_leaves).contains(StateFlags::TICKABLE));
         assert!(reg.flags(spruce_leaves).contains(StateFlags::TICKABLE));
+    }
+
+    #[test]
+    fn test_furnace_registration_and_predicates() {
+        let reg = BlockRegistry::standard();
+
+        let furnace = reg
+            .get(&Identifier::new("telos", "furnace").unwrap())
+            .unwrap()
+            .default_state();
+        let lit_furnace = reg
+            .get(&Identifier::new("telos", "lit_furnace").unwrap())
+            .unwrap()
+            .default_state();
+        let chest = reg
+            .get(&Identifier::new("telos", "chest").unwrap())
+            .unwrap()
+            .default_state();
+
+        assert!(reg.is_furnace(furnace));
+        assert!(reg.is_furnace(lit_furnace));
+        assert!(!reg.is_furnace(chest));
+
+        assert!(!reg.is_lit_furnace(furnace));
+        assert!(reg.is_lit_furnace(lit_furnace));
+        assert!(!reg.is_lit_furnace(chest));
+
+        assert!(reg.flags(furnace).contains(StateFlags::HAS_BLOCK_ENTITY));
+        assert!(
+            reg.flags(lit_furnace)
+                .contains(StateFlags::HAS_BLOCK_ENTITY)
+        );
+        assert!(reg.flags(lit_furnace).contains(StateFlags::EMISSIVE));
+        assert!(!reg.flags(furnace).contains(StateFlags::EMISSIVE));
     }
 }

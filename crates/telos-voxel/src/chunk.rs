@@ -273,9 +273,13 @@ impl Chunk {
         let is_be = new_flags.contains(StateFlags::HAS_BLOCK_ENTITY);
         if was_be && !is_be {
             self.block_entities.remove(idx);
-        } else if !was_be && is_be {
-            self.block_entities
-                .insert(idx, crate::block_entity::BlockEntityData::new_chest());
+        } else if !was_be && is_be && self.block_entities.get(idx).is_none() {
+            let be = if new_state.as_u32() == 82 || new_state.as_u32() == 83 {
+                crate::block_entity::BlockEntityData::new_furnace()
+            } else {
+                crate::block_entity::BlockEntityData::new_chest()
+            };
+            self.block_entities.insert(idx, be);
         }
 
         true
@@ -363,5 +367,77 @@ impl Chunk {
     #[must_use]
     pub const fn is_dirty(&self) -> bool {
         self.is_dirty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block_entity::{BlockEntityData, BlockEntityKind, BlockEntitySlot};
+    use telos_core::coords::ChunkPos;
+
+    #[test]
+    fn test_chunk_set_furnace_lit_transition() {
+        let mut chunk = Chunk::new_uniform(ChunkPos::new(0, 0, 0), BlockStateId::AIR, false);
+        let idx = LocalIdx::from_coords(4, 5, 6).unwrap();
+
+        let air_flags = StateFlags::AIR;
+        let furnace_flags = StateFlags::OPAQUE_CUBE | StateFlags::HAS_BLOCK_ENTITY;
+        let lit_flags =
+            StateFlags::OPAQUE_CUBE | StateFlags::HAS_BLOCK_ENTITY | StateFlags::EMISSIVE;
+
+        let furnace_state = BlockStateId::new(82);
+        let lit_state = BlockStateId::new(83);
+
+        // 1. Place furnace -> creates default Furnace block entity
+        chunk.set(idx, furnace_state, air_flags, furnace_flags, 1);
+        let be = chunk
+            .block_entities()
+            .get(idx)
+            .expect("furnace entity spawned");
+        assert_eq!(be.kind(), BlockEntityKind::Furnace);
+        assert_eq!(be.items().len(), 3);
+
+        // 2. Put items and burn time into furnace
+        if let Some(BlockEntityData::Furnace {
+            items,
+            burn_time_remaining,
+            ..
+        }) = chunk.block_entities_mut().get_mut(idx)
+        {
+            items[0] = BlockEntitySlot::new(0, 50, 4);
+            *burn_time_remaining = 800;
+        }
+
+        // 3. Transition to lit furnace -> entity MUST be preserved!
+        chunk.set(idx, lit_state, furnace_flags, lit_flags, 2);
+        let be_lit = chunk
+            .block_entities()
+            .get(idx)
+            .expect("furnace entity preserved");
+        assert_eq!(be_lit.kind(), BlockEntityKind::Furnace);
+        assert_eq!(be_lit.items()[0].item, 50);
+        assert_eq!(be_lit.items()[0].count, 4);
+        if let BlockEntityData::Furnace {
+            burn_time_remaining,
+            ..
+        } = be_lit
+        {
+            assert_eq!(*burn_time_remaining, 800);
+        } else {
+            panic!("expected furnace");
+        }
+
+        // 4. Transition back to unlit furnace -> entity MUST be preserved!
+        chunk.set(idx, furnace_state, lit_flags, furnace_flags, 3);
+        let be_unlit = chunk
+            .block_entities()
+            .get(idx)
+            .expect("furnace entity preserved");
+        assert_eq!(be_unlit.items()[0].item, 50);
+
+        // 5. Break furnace -> entity removed
+        chunk.set(idx, BlockStateId::AIR, furnace_flags, air_flags, 4);
+        assert!(chunk.block_entities().get(idx).is_none());
     }
 }

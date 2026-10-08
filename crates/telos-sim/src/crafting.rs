@@ -69,6 +69,11 @@ pub fn find_recipe_2x2(inputs: &[ItemStack; 4]) -> Option<ItemStack> {
         return Some(ItemStack::new(14, 1));
     }
 
+    // 2b. 4 Cobblestone (4) -> 1 Furnace (64)
+    if non_empty_count == 4 && inputs.iter().all(|s| s.item == 4) {
+        return Some(ItemStack::new(crate::inventory::ITEM_FURNACE, 1));
+    }
+
     // 3. 2 Oak Planks (7) vertically -> 4 Sticks (13)
     if non_empty_count == 2 {
         // Left column: [0, 2]

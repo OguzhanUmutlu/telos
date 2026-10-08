@@ -2870,6 +2870,44 @@ impl S2cBlockEvent {
     }
 }
 
+/// Server synchronizes a container property value (e.g. furnace burn timer or cook progress).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cContainerProperty {
+    /// Window ID of the target open container (e.g. 1).
+    pub window_id: u8,
+    /// Property identifier (0: `burn_time`, 1: `total_burn`, 2: `cook_progress`, 3: `cook_duration`).
+    pub property_id: u16,
+    /// Property value.
+    pub value: i16,
+}
+
+impl S2cContainerProperty {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.window_id);
+        encode_varint(u32::from(self.property_id), buf);
+        encode_varint(zigzag_i32(i32::from(self.value)), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let window_id = cursor[0];
+        *cursor = &cursor[1..];
+        #[allow(clippy::cast_possible_truncation)]
+        let property_id = (decode_varint(cursor)? & 0xffff) as u16;
+        #[allow(clippy::cast_possible_truncation)]
+        let value = (unzigzag_i32(decode_varint(cursor)?) & 0xffff) as i16;
+        Ok(Self {
+            window_id,
+            property_id,
+            value,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

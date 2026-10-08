@@ -48,8 +48,9 @@ use telos_ui::menu::{
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
-    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, HudState, UiLayers, UiQuad, UiSlotItem,
-    chest_slot_at_pos, compute_gui_scale, render_chat_hud, render_chest_container, render_hud,
+    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, HudState,
+    UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos, compute_gui_scale, furnace_slot_at_pos,
+    render_chat_hud, render_chest_container, render_furnace_container, render_hud,
     render_inventory_screen, slot_at_pos,
 };
 
@@ -71,12 +72,14 @@ pub enum AppScreen {
     InGame,
 }
 
-/// Active container window state on the client (e.g. chest).
+/// Active container window state on the client (e.g. chest, furnace).
 #[derive(Debug, Clone)]
 pub struct ClientContainerState {
     /// Server window ID.
     pub window_id: u8,
-    /// Container display title (e.g. "Chest").
+    /// Container kind (0 = Chest, 1 = Furnace).
+    pub container_kind: u8,
+    /// Container display title (e.g. "Chest", "Furnace").
     pub title: String,
     /// Container block coordinate X.
     pub x: i32,
@@ -84,8 +87,10 @@ pub struct ClientContainerState {
     pub y: i32,
     /// Container block coordinate Z.
     pub z: i32,
-    /// Container item slot contents (27 slots for chest).
+    /// Container item slot contents (27 slots for chest, 3 slots for furnace).
     pub slots: [UiSlotItem; 27],
+    /// Container properties (e.g. furnace burn/cook timers).
+    pub properties: [i16; 4],
 }
 use telos_voxel::chunk::{Chunk, ChunkSnapshot};
 use telos_voxel::coords::LocalIdx;
@@ -1341,6 +1346,8 @@ struct App {
     ui_layers: UiLayers,
     hud_state: HudState,
     inventory_sim: telos_sim::Inventory,
+    fuel_registry: telos_sim::FuelRegistry,
+    smelting_registry: telos_sim::SmeltingRegistry,
     inventory_open: bool,
     container_state: Option<ClientContainerState>,
     container_hovered_slot: Option<usize>,
@@ -1802,6 +1809,8 @@ impl App {
             ui_layers: UiLayers::default(),
             hud_state: HudState::default(),
             inventory_sim: telos_sim::Inventory::default(),
+            fuel_registry: telos_sim::FuelRegistry::standard(),
+            smelting_registry: telos_sim::SmeltingRegistry::standard(),
             inventory_open: false,
             container_state: None,
             container_hovered_slot: None,
@@ -2131,19 +2140,38 @@ impl App {
                 .send(Lane::Control, Payload::Msg(click_msg));
             self.inventory_sim.selected_slot = hotbar_idx;
             if let Some(ref mut cont) = self.container_state {
-                let mut chest_inv = telos_sim::ChestInventory::default();
-                for (i, slot) in cont.slots.iter().enumerate() {
-                    chest_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
-                }
-                let _ = telos_sim::container_click(
-                    &mut chest_inv,
-                    &mut self.inventory_sim,
-                    hovered,
-                    telos_sim::ClickButton::Left,
-                    telos_sim::ClickMode::SwapHotbar,
-                );
-                for (i, slot) in chest_inv.slots.iter().enumerate() {
-                    cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                if cont.container_kind == 1 {
+                    let mut furnace_inv = telos_sim::FurnaceInventory::default();
+                    for (i, slot) in cont.slots.iter().take(3).enumerate() {
+                        furnace_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                    }
+                    let _ = telos_sim::furnace_container_click(
+                        &mut furnace_inv,
+                        &mut self.inventory_sim,
+                        hovered,
+                        telos_sim::ClickButton::Left,
+                        telos_sim::ClickMode::SwapHotbar,
+                        &self.fuel_registry,
+                        &self.smelting_registry,
+                    );
+                    for (i, slot) in furnace_inv.slots.iter().enumerate() {
+                        cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                    }
+                } else {
+                    let mut chest_inv = telos_sim::ChestInventory::default();
+                    for (i, slot) in cont.slots.iter().enumerate() {
+                        chest_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                    }
+                    let _ = telos_sim::container_click(
+                        &mut chest_inv,
+                        &mut self.inventory_sim,
+                        hovered,
+                        telos_sim::ClickButton::Left,
+                        telos_sim::ClickMode::SwapHotbar,
+                    );
+                    for (i, slot) in chest_inv.slots.iter().enumerate() {
+                        cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                    }
                 }
             }
             self.selected_block_state = BlockStateId::new(self.inventory_sim.selected_item().item);
@@ -2666,23 +2694,52 @@ impl App {
                         for (i, slot) in open.slots.iter().enumerate().take(27) {
                             slots[i] = UiSlotItem::new(slot.item, slot.count);
                         }
-                        self.container_state = Some(ClientContainerState {
-                            window_id: open.window_id,
-                            title: open.title.as_str().to_string(),
-                            x: open.x,
-                            y: open.y,
-                            z: open.z,
-                            slots,
-                        });
-                        self.inventory_open = false;
-                        self.controller.mouse_captured = false;
-                        self.set_cursor_captured(false);
-                        self.controller.forward = false;
-                        self.controller.backward = false;
-                        self.controller.left = false;
-                        self.controller.right = false;
-                        self.controller.up = false;
-                        self.controller.down = false;
+                        if let Some(existing) = &mut self.container_state {
+                            if existing.window_id == open.window_id {
+                                existing.container_kind = open.container_kind;
+                                existing.title = open.title.as_str().to_string();
+                                existing.slots = slots;
+                            } else {
+                                self.container_state = Some(ClientContainerState {
+                                    window_id: open.window_id,
+                                    container_kind: open.container_kind,
+                                    title: open.title.as_str().to_string(),
+                                    x: open.x,
+                                    y: open.y,
+                                    z: open.z,
+                                    slots,
+                                    properties: [0; 4],
+                                });
+                            }
+                        } else {
+                            self.container_state = Some(ClientContainerState {
+                                window_id: open.window_id,
+                                container_kind: open.container_kind,
+                                title: open.title.as_str().to_string(),
+                                x: open.x,
+                                y: open.y,
+                                z: open.z,
+                                slots,
+                                properties: [0; 4],
+                            });
+                            self.inventory_open = false;
+                            self.controller.mouse_captured = false;
+                            self.set_cursor_captured(false);
+                            self.controller.forward = false;
+                            self.controller.backward = false;
+                            self.controller.left = false;
+                            self.controller.right = false;
+                            self.controller.up = false;
+                            self.controller.down = false;
+                        }
+                    }
+                    S2cMessage::ContainerProperty(prop) => {
+                        if let Some(cont) = &mut self.container_state
+                            && cont.window_id == prop.window_id
+                            && (prop.property_id as usize) < cont.properties.len()
+                        {
+                            cont.properties[prop.property_id as usize] = prop.value;
+                        }
                     }
                     S2cMessage::CloseContainer(close) => {
                         if self
@@ -5667,15 +5724,6 @@ impl App {
                             );
 
                             if let Some(ref cont) = self.container_state {
-                                let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
-                                ui_slots[..27].copy_from_slice(&cont.slots);
-                                for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate()
-                                {
-                                    ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
-                                }
-                                for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
-                                    ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
-                                }
                                 let ui_carried = UiSlotItem::new(
                                     self.inventory_sim.carried.item,
                                     self.inventory_sim.carried.count,
@@ -5688,20 +5736,66 @@ impl App {
                                         telos_sim::item_name(id)
                                     }
                                 };
-                                render_chest_container(
-                                    &ui_slots,
-                                    ui_carried,
-                                    self.container_hovered_slot,
-                                    swapchain_extent.width,
-                                    swapchain_extent.height,
-                                    gui_scale,
-                                    font,
-                                    &self.ui_layers,
-                                    &cont.title,
-                                    item_lookup,
-                                    self.mouse_cursor_pos,
-                                    &mut ui_quads,
-                                );
+                                if cont.container_kind == 1 {
+                                    let mut ui_slots = [UiSlotItem::EMPTY; DUAL_FURNACE_SLOT_COUNT];
+                                    ui_slots[..3].copy_from_slice(&cont.slots[..3]);
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[9..36].iter().enumerate()
+                                    {
+                                        ui_slots[3 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[0..9].iter().enumerate()
+                                    {
+                                        ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    render_furnace_container(
+                                        &ui_slots,
+                                        ui_carried,
+                                        self.container_hovered_slot,
+                                        cont.properties[0],
+                                        cont.properties[1],
+                                        cont.properties[2],
+                                        cont.properties[3],
+                                        swapchain_extent.width,
+                                        swapchain_extent.height,
+                                        gui_scale,
+                                        font,
+                                        &self.ui_layers,
+                                        &cont.title,
+                                        item_lookup,
+                                        self.mouse_cursor_pos,
+                                        &mut ui_quads,
+                                    );
+                                } else {
+                                    let mut ui_slots =
+                                        [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
+                                    ui_slots[..27].copy_from_slice(&cont.slots);
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[9..36].iter().enumerate()
+                                    {
+                                        ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    for (i, slot) in
+                                        self.inventory_sim.slots[0..9].iter().enumerate()
+                                    {
+                                        ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                                    }
+                                    render_chest_container(
+                                        &ui_slots,
+                                        ui_carried,
+                                        self.container_hovered_slot,
+                                        swapchain_extent.width,
+                                        swapchain_extent.height,
+                                        gui_scale,
+                                        font,
+                                        &self.ui_layers,
+                                        &cont.title,
+                                        item_lookup,
+                                        self.mouse_cursor_pos,
+                                        &mut ui_quads,
+                                    );
+                                }
                             } else if self.inventory_open {
                                 let mut ui_slots =
                                     [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
@@ -6055,14 +6149,6 @@ impl App {
                     );
 
                     if let Some(ref cont) = self.container_state {
-                        let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
-                        ui_slots[..27].copy_from_slice(&cont.slots);
-                        for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
-                            ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
-                        }
-                        for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
-                            ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
-                        }
                         let ui_carried = UiSlotItem::new(
                             self.inventory_sim.carried.item,
                             self.inventory_sim.carried.count,
@@ -6074,20 +6160,57 @@ impl App {
                                 telos_sim::item_name(id)
                             }
                         };
-                        render_chest_container(
-                            &ui_slots,
-                            ui_carried,
-                            self.container_hovered_slot,
-                            width,
-                            height,
-                            gui_scale,
-                            font,
-                            &self.ui_layers,
-                            &cont.title,
-                            item_lookup,
-                            self.mouse_cursor_pos,
-                            &mut ui_quads,
-                        );
+                        if cont.container_kind == 1 {
+                            let mut ui_slots = [UiSlotItem::EMPTY; DUAL_FURNACE_SLOT_COUNT];
+                            ui_slots[..3].copy_from_slice(&cont.slots[..3]);
+                            for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
+                                ui_slots[3 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                                ui_slots[30 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            render_furnace_container(
+                                &ui_slots,
+                                ui_carried,
+                                self.container_hovered_slot,
+                                cont.properties[0],
+                                cont.properties[1],
+                                cont.properties[2],
+                                cont.properties[3],
+                                width,
+                                height,
+                                gui_scale,
+                                font,
+                                &self.ui_layers,
+                                &cont.title,
+                                item_lookup,
+                                self.mouse_cursor_pos,
+                                &mut ui_quads,
+                            );
+                        } else {
+                            let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
+                            ui_slots[..27].copy_from_slice(&cont.slots);
+                            for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
+                                ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                                ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                            render_chest_container(
+                                &ui_slots,
+                                ui_carried,
+                                self.container_hovered_slot,
+                                width,
+                                height,
+                                gui_scale,
+                                font,
+                                &self.ui_layers,
+                                &cont.title,
+                                item_lookup,
+                                self.mouse_cursor_pos,
+                                &mut ui_quads,
+                            );
+                        }
                     } else if self.inventory_open {
                         let mut ui_slots = [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
                         for (i, slot) in self
@@ -8161,13 +8284,22 @@ impl ApplicationHandler for App {
                     AppScreen::InGame => {
                         if self.is_paused {
                             self.pause_menu.handle_mouse_move(mx, my);
-                        } else if self.container_state.is_some() {
-                            self.container_hovered_slot = chest_slot_at_pos(
-                                self.mouse_cursor_pos,
-                                win_size.width,
-                                win_size.height,
-                                gui_scale,
-                            );
+                        } else if let Some(ref cont) = self.container_state {
+                            self.container_hovered_slot = if cont.container_kind == 1 {
+                                furnace_slot_at_pos(
+                                    self.mouse_cursor_pos,
+                                    win_size.width,
+                                    win_size.height,
+                                    gui_scale,
+                                )
+                            } else {
+                                chest_slot_at_pos(
+                                    self.mouse_cursor_pos,
+                                    win_size.width,
+                                    win_size.height,
+                                    gui_scale,
+                                )
+                            };
                         } else if self.inventory_open {
                             self.inventory_hovered_slot = slot_at_pos(
                                 self.mouse_cursor_pos,
@@ -8481,19 +8613,40 @@ impl ApplicationHandler for App {
                             telos_sim::ClickMode::Pickup
                         };
 
-                        let mut chest_inv = telos_sim::ChestInventory::default();
-                        for (i, slot) in cont.slots.iter().enumerate() {
-                            chest_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
-                        }
-                        let _ = telos_sim::container_click(
-                            &mut chest_inv,
-                            &mut self.inventory_sim,
-                            hovered,
-                            btn_sim,
-                            mode_sim,
-                        );
-                        for (i, slot) in chest_inv.slots.iter().enumerate() {
-                            cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                        if cont.container_kind == 1 {
+                            let mut furnace_inv = telos_sim::FurnaceInventory::default();
+                            for (i, slot) in cont.slots.iter().take(3).enumerate() {
+                                furnace_inv.slots[i] =
+                                    telos_sim::ItemStack::new(slot.item, slot.count);
+                            }
+                            let _ = telos_sim::furnace_container_click(
+                                &mut furnace_inv,
+                                &mut self.inventory_sim,
+                                hovered,
+                                btn_sim,
+                                mode_sim,
+                                &self.fuel_registry,
+                                &self.smelting_registry,
+                            );
+                            for (i, slot) in furnace_inv.slots.iter().enumerate() {
+                                cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                            }
+                        } else {
+                            let mut chest_inv = telos_sim::ChestInventory::default();
+                            for (i, slot) in cont.slots.iter().enumerate() {
+                                chest_inv.slots[i] =
+                                    telos_sim::ItemStack::new(slot.item, slot.count);
+                            }
+                            let _ = telos_sim::container_click(
+                                &mut chest_inv,
+                                &mut self.inventory_sim,
+                                hovered,
+                                btn_sim,
+                                mode_sim,
+                            );
+                            for (i, slot) in chest_inv.slots.iter().enumerate() {
+                                cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                            }
                         }
                         self.selected_block_state =
                             BlockStateId::new(self.inventory_sim.selected_item().item);
@@ -9905,7 +10058,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     let mut stack = ResourcePackStack::new();
     mount_asset_roots(&mut stack);
 
-    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 7) as usize];
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 8) as usize];
 
     // Helper to copy a sub-image into a 256x256 layer at specified offset
     let copy_to_layer_at = |dest: &mut [u8],
@@ -10198,8 +10351,8 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     };
     copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
 
-    // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for items 1..=19)
-    let item_textures: [(u32, &str, [u8; 4]); 19] = [
+    // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for registered items)
+    let item_textures: [(u32, &str, [u8; 4]); 31] = [
         (1, "textures/block/stone.png", [128, 128, 128, 255]),
         (2, "textures/block/dirt.png", [134, 96, 67, 255]),
         (3, "textures/block/grass_block_side.png", [90, 160, 60, 255]),
@@ -10227,6 +10380,18 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         ),
         (18, "textures/item/iron_leggings.png", [200, 200, 200, 255]),
         (19, "textures/item/iron_boots.png", [180, 180, 180, 255]),
+        (49, "textures/item/porkchop.png", [230, 150, 140, 255]),
+        (50, "textures/item/beef.png", [180, 60, 50, 255]),
+        (52, "textures/item/iron_ingot.png", [210, 210, 210, 255]),
+        (53, "textures/item/gold_ingot.png", [250, 220, 60, 255]),
+        (54, "textures/item/coal.png", [40, 40, 40, 255]),
+        (61, "textures/item/bow.png", [140, 100, 50, 255]),
+        (62, "textures/item/arrow.png", [200, 200, 200, 255]),
+        (63, "textures/block/chest_front.png", [150, 100, 40, 255]),
+        (64, "textures/block/furnace_front.png", [100, 100, 100, 255]),
+        (65, "textures/item/cooked_porkchop.png", [190, 110, 80, 255]),
+        (66, "textures/item/cooked_beef.png", [130, 70, 50, 255]),
+        (67, "textures/item/charcoal.png", [45, 45, 45, 255]),
     ];
 
     let copy_icon =
@@ -10287,7 +10452,72 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         copy_icon(&mut pixel_data, x_offset, y_offset, &icon_img);
     }
 
-    let regions: Vec<TextureMipRegion> = (0..7)
+    // Layer 7: Furnace Container Background and Sprites
+    let furnace_bg_img = if let Some(img) = stack
+        .find_texture("textures/gui/container/furnace.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 256, 256)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(176, 166);
+        for y in 0..166 {
+            for x in 0..176 {
+                let idx = ((y * 176 + x) * 4) as usize;
+                let is_border = x == 0 || x == 175 || y == 0 || y == 165;
+                let color = if is_border { 40 } else { 198 };
+                img.data[idx] = color;
+                img.data[idx + 1] = color;
+                img.data[idx + 2] = color;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 7, 0, 0, &furnace_bg_img);
+
+    // Lit flame sprite (14x14 at (176, 0))
+    let flame_img = if let Some(img) = stack
+        .find_texture("textures/gui/sprites/container/furnace/lit_progress.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 14, 14)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(14, 14);
+        for y in 0..14 {
+            for x in 0..14 {
+                let idx = ((y * 14 + x) * 4) as usize;
+                img.data[idx] = 255;
+                img.data[idx + 1] = 160;
+                img.data[idx + 2] = 20;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 7, 176, 0, &flame_img);
+
+    // Cook progress arrow sprite (24x16 at (176, 16))
+    let arrow_img = if let Some(img) = stack
+        .find_texture("textures/gui/sprites/container/furnace/burn_progress.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 24, 16)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(24, 16);
+        for y in 0..16 {
+            for x in 0..24 {
+                let idx = ((y * 24 + x) * 4) as usize;
+                img.data[idx] = 255;
+                img.data[idx + 1] = 255;
+                img.data[idx + 2] = 255;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 7, 176, 16, &arrow_img);
+
+    let regions: Vec<TextureMipRegion> = (0..8)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
             layer,
@@ -10303,10 +10533,10 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
 fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let texture_array = gpu_context.create_texture_array(UI_RES, 7, 1, &pixel_data, &regions)?;
+    let texture_array = gpu_context.create_texture_array(UI_RES, 8, 1, &pixel_data, &regions)?;
 
     info!(
-        "UI texture array loaded (7 layers, 256x256, font baked, survival icons, inventory background, item icons)"
+        "UI texture array loaded (8 layers, 256x256, font baked, survival icons, inventory background, item icons, furnace GUI)"
     );
 
     Ok((texture_array, font))
@@ -10317,7 +10547,7 @@ fn load_and_upload_ui_textures_gl(
 ) -> Result<(telos_gpu::opengl::GlTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 7, 1)?;
+    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 8, 1)?;
 
     for r in &regions {
         let start = r.buffer_offset as usize;

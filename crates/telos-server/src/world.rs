@@ -44,6 +44,8 @@ pub struct ServerWorld {
     lod_meshes: HashMap<LodNodeKey, Arc<LodMesh>>,
     storage: Option<WorldStorage>,
     dirty_chunks: HashSet<ChunkPos>,
+    /// Active furnace block positions tracked in this world.
+    pub furnace_positions: HashSet<BlockPos>,
     /// Deterministic logic & signal propagation engine.
     pub logic_engine: telos_sim::logic::LogicEngine,
     /// Real-time cellular automata fluid simulation engine.
@@ -78,6 +80,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: None,
             dirty_chunks: HashSet::new(),
+            furnace_positions: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
             fluid_engine: telos_sim::fluid::FluidEngine::new(),
         }
@@ -103,6 +106,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
+            furnace_positions: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
             fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
@@ -145,6 +149,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage: Some(storage),
             dirty_chunks: HashSet::new(),
+            furnace_positions: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
             fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
@@ -180,6 +185,7 @@ impl ServerWorld {
             lod_meshes: HashMap::new(),
             storage,
             dirty_chunks: HashSet::new(),
+            furnace_positions: HashSet::new(),
             logic_engine: telos_sim::logic::LogicEngine::new(),
             fluid_engine: telos_sim::fluid::FluidEngine::new(),
         })
@@ -210,6 +216,7 @@ impl ServerWorld {
     }
 
     /// Retrieves an existing chunk snapshot or generates, lights, and caches it.
+    #[allow(clippy::cast_possible_wrap)]
     pub fn get_or_generate_chunk(&mut self, pos: ChunkPos) -> Arc<ChunkSnapshot> {
         if let Some(sc) = self.chunks.get(&pos) {
             return sc.snapshot.clone();
@@ -254,6 +261,15 @@ impl ServerWorld {
             }
 
             let snapshot = chunk.publish_snapshot();
+            for (idx, be) in chunk.block_entities().iter() {
+                if be.kind() == telos_voxel::block_entity::BlockEntityKind::Furnace {
+                    self.furnace_positions.insert(BlockPos::new(
+                        pos.x() * 32 + idx.x() as i32,
+                        pos.y() * 32 + idx.y() as i32,
+                        pos.z() * 32 + idx.z() as i32,
+                    ));
+                }
+            }
             self.chunks.insert(
                 pos,
                 ServerChunk {
@@ -367,6 +383,9 @@ impl ServerWorld {
     ) -> Option<telos_voxel::block_entity::BlockEntityData> {
         let (chunk_pos, local_idx) = split_block_pos(pos);
         self.dirty_chunks.insert(chunk_pos);
+        if data.kind() == telos_voxel::block_entity::BlockEntityKind::Furnace {
+            self.furnace_positions.insert(pos);
+        }
         let sc = self.chunks.get_mut(&chunk_pos)?;
         sc.chunk.set_block_entity(local_idx, data)
     }
@@ -378,6 +397,7 @@ impl ServerWorld {
     ) -> Option<telos_voxel::block_entity::BlockEntityData> {
         let (chunk_pos, local_idx) = split_block_pos(pos);
         self.dirty_chunks.insert(chunk_pos);
+        self.furnace_positions.remove(&pos);
         let sc = self.chunks.get_mut(&chunk_pos)?;
         sc.chunk.remove_block_entity(local_idx)
     }
@@ -408,6 +428,14 @@ impl ServerWorld {
         let changed = sc.chunk.set(local_idx, new_state, old_flags, new_flags, 1);
         if !changed {
             return None;
+        }
+
+        let was_furnace = registry.is_furnace(old_state);
+        let is_now_furnace = registry.is_furnace(new_state);
+        if was_furnace && !is_now_furnace {
+            self.furnace_positions.remove(&pos);
+        } else if is_now_furnace {
+            self.furnace_positions.insert(pos);
         }
 
         // Update column heightmap

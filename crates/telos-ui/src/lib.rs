@@ -19,8 +19,9 @@ pub mod tree;
 
 pub use chat::{ChatEntry, ChatHudState, render_chat_hud};
 pub use container::{
-    CHEST_CONTAINER_SLOTS, DUAL_CONTAINER_SLOT_COUNT, chest_slot_at_pos, chest_slot_pos,
-    render_chest_container,
+    CHEST_CONTAINER_SLOTS, DUAL_CONTAINER_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT,
+    FURNACE_CONTAINER_SLOTS, chest_slot_at_pos, chest_slot_pos, furnace_slot_at_pos,
+    furnace_slot_pos, render_chest_container, render_furnace_container,
 };
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;

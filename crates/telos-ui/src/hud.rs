@@ -46,6 +46,14 @@ pub struct UiLayers {
     pub inventory_bg_uv: [f32; 4],
     /// Item icons atlas texture layer.
     pub item_icons: u32,
+    /// Furnace container background and sprite texture layer.
+    pub furnace_bg: u32,
+    /// Furnace container background UV bounds `[u0, v0, u1, v1]`.
+    pub furnace_bg_uv: [f32; 4],
+    /// Furnace lit flame sprite UV bounds `[u0, v0, u1, v1]`.
+    pub furnace_flame_uv: [f32; 4],
+    /// Furnace cook progress arrow sprite UV bounds `[u0, v0, u1, v1]`.
+    pub furnace_arrow_uv: [f32; 4],
 }
 
 impl Default for UiLayers {
@@ -70,6 +78,10 @@ impl Default for UiLayers {
             inventory_bg: 5,
             inventory_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
             item_icons: 6,
+            furnace_bg: 7,
+            furnace_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
+            furnace_flame_uv: [176.0 / 256.0, 0.0 / 256.0, 190.0 / 256.0, 14.0 / 256.0],
+            furnace_arrow_uv: [176.0 / 256.0, 16.0 / 256.0, 200.0 / 256.0, 32.0 / 256.0],
         }
     }
 }

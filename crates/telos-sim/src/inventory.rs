@@ -92,6 +92,14 @@ pub const ITEM_BOW: u32 = 61;
 pub const ITEM_ARROW: u32 = 62;
 /// Chest container item identifier (63).
 pub const ITEM_CHEST: u32 = 63;
+/// Furnace block container item identifier (64).
+pub const ITEM_FURNACE: u32 = 64;
+/// Cooked porkchop food item identifier (65).
+pub const ITEM_COOKED_PORKCHOP: u32 = 65;
+/// Cooked beef food item identifier (66).
+pub const ITEM_COOKED_BEEF: u32 = 66;
+/// Charcoal combustible fuel item identifier (67).
+pub const ITEM_CHARCOAL: u32 = 67;
 
 /// Returns true if the item is a bow.
 #[must_use]
@@ -109,6 +117,12 @@ pub const fn is_arrow(item: u32) -> bool {
 #[must_use]
 pub const fn is_chest(item: u32) -> bool {
     item == ITEM_CHEST
+}
+
+/// Returns true if the item is a furnace.
+#[must_use]
+pub const fn is_furnace(item: u32) -> bool {
+    item == ITEM_FURNACE
 }
 
 /// Checks if a slot accepts the specified item.
@@ -195,6 +209,10 @@ pub fn item_name(item: u32) -> &'static str {
         61 => "Bow",
         62 => "Arrow",
         63 => "Chest",
+        64 => "Furnace",
+        65 => "Cooked Porkchop",
+        66 => "Cooked Beef",
+        67 => "Charcoal",
         _ => "Unknown Item",
     }
 }
@@ -728,6 +746,7 @@ pub const fn block_to_drop_item(block_id: u32) -> Option<ItemStack> {
         36 => Some(ItemStack::new(36, 1)),         // Obsidian
         74..=76 => Some(ItemStack::new(5, 1)),     // Logs -> Wood Log
         81 => Some(ItemStack::new(ITEM_CHEST, 1)), // Chest
+        82 | 83 => Some(ItemStack::new(ITEM_FURNACE, 1)), // Furnace / Lit Furnace
         other => Some(ItemStack::new(other, 1)),   // Default self-drop
     }
 }
@@ -786,6 +805,7 @@ impl ChestInventory {
                     custom_name: custom_name.clone(),
                 }
             }
+            BlockEntityData::Furnace { .. } => Self::default(),
         }
     }
 

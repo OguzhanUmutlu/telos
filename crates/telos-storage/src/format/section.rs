@@ -2,7 +2,10 @@
 
 use crate::error::{Result, StorageError};
 use telos_voxel::{
-    block_entity::{BlockEntityData, BlockEntitySlot, BlockEntityTable, CHEST_CONTAINER_SLOTS},
+    block_entity::{
+        BlockEntityData, BlockEntitySlot, BlockEntityTable, CHEST_CONTAINER_SLOTS,
+        FURNACE_CONTAINER_SLOTS,
+    },
     coords::LocalIdx,
     state::BlockStateId,
     storage::{Blocks, Packed},
@@ -435,11 +438,42 @@ pub fn encode_block_entities(table: &BlockEntityTable, buf: &mut Vec<u8>) {
                     encode_varint_u32(u32::from(slot.count), buf);
                 }
             }
+            BlockEntityData::Furnace {
+                custom_name,
+                items,
+                burn_time_remaining,
+                total_burn_time,
+                cook_progress,
+                cook_duration,
+            } => {
+                buf.push(2); // kind 2 = Furnace
+                if let Some(name) = custom_name {
+                    #[allow(clippy::cast_possible_truncation)]
+                    encode_varint_u32(name.len() as u32, buf);
+                    buf.extend_from_slice(name.as_bytes());
+                } else {
+                    encode_varint_u32(0, buf);
+                }
+                encode_varint_u32(u32::from(*burn_time_remaining), buf);
+                encode_varint_u32(u32::from(*total_burn_time), buf);
+                encode_varint_u32(u32::from(*cook_progress), buf);
+                encode_varint_u32(u32::from(*cook_duration), buf);
+                let non_empty: Vec<&BlockEntitySlot> =
+                    items.iter().filter(|s| !s.is_empty()).collect();
+                #[allow(clippy::cast_possible_truncation)]
+                encode_varint_u32(non_empty.len() as u32, buf);
+                for slot in non_empty {
+                    buf.push(slot.slot);
+                    encode_varint_u32(slot.item, buf);
+                    encode_varint_u32(u32::from(slot.count), buf);
+                }
+            }
         }
     }
 }
 
 /// Decodes binary `BLOCK_ENTITIES` section into `BlockEntityTable`.
+#[allow(clippy::too_many_lines)]
 pub fn decode_block_entities(mut cursor: &[u8]) -> Result<BlockEntityTable> {
     if cursor.is_empty() {
         return Ok(BlockEntityTable::new());
@@ -519,6 +553,74 @@ pub fn decode_block_entities(mut cursor: &[u8]) -> Result<BlockEntityTable> {
                 let chest = BlockEntityData::Chest { custom_name, items };
                 table.insert(local_idx, chest);
             }
+            2 => {
+                // Furnace
+                let name_len = decode_varint_u32(&mut cursor)? as usize;
+                let custom_name = if name_len > 0 {
+                    if cursor.len() < name_len {
+                        return Err(StorageError::Truncated {
+                            actual: cursor.len() as u64,
+                            expected: name_len as u64,
+                        });
+                    }
+                    let s = std::str::from_utf8(&cursor[..name_len]).map_err(|e| {
+                        StorageError::CorruptPayload(format!("Invalid UTF-8 in custom name: {e}"))
+                    })?;
+                    cursor = &cursor[name_len..];
+                    Some(s.to_string())
+                } else {
+                    None
+                };
+
+                #[allow(clippy::cast_possible_truncation)]
+                let burn_time_remaining = (decode_varint_u32(&mut cursor)? & 0xffff) as u16;
+                #[allow(clippy::cast_possible_truncation)]
+                let total_burn_time = (decode_varint_u32(&mut cursor)? & 0xffff) as u16;
+                #[allow(clippy::cast_possible_truncation)]
+                let cook_progress = (decode_varint_u32(&mut cursor)? & 0xffff) as u16;
+                #[allow(clippy::cast_possible_truncation)]
+                let cook_duration = (decode_varint_u32(&mut cursor)? & 0xffff) as u16;
+
+                let mut items = [BlockEntitySlot::EMPTY; FURNACE_CONTAINER_SLOTS];
+                #[allow(clippy::cast_possible_truncation)]
+                for (i, slot) in items.iter_mut().enumerate() {
+                    slot.slot = i as u8;
+                }
+                let slot_count = decode_varint_u32(&mut cursor)? as usize;
+                if slot_count > FURNACE_CONTAINER_SLOTS {
+                    return Err(StorageError::CorruptPayload(format!(
+                        "Furnace slot count {slot_count} exceeds maximum {FURNACE_CONTAINER_SLOTS}"
+                    )));
+                }
+                for _ in 0..slot_count {
+                    if cursor.is_empty() {
+                        return Err(StorageError::CorruptPayload(
+                            "Truncated slot in BLOCK_ENTITIES".into(),
+                        ));
+                    }
+                    let slot_idx = cursor[0];
+                    cursor = &cursor[1..];
+                    let item = decode_varint_u32(&mut cursor)?;
+                    let item_count = decode_varint_u32(&mut cursor)?;
+                    if (slot_idx as usize) >= FURNACE_CONTAINER_SLOTS {
+                        return Err(StorageError::CorruptPayload(format!(
+                            "Furnace slot index {slot_idx} out of range"
+                        )));
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    let count_u16 = (item_count & 0xffff) as u16;
+                    items[slot_idx as usize] = BlockEntitySlot::new(slot_idx, item, count_u16);
+                }
+                let furnace = BlockEntityData::Furnace {
+                    custom_name,
+                    items,
+                    burn_time_remaining,
+                    total_burn_time,
+                    cook_progress,
+                    cook_duration,
+                };
+                table.insert(local_idx, furnace);
+            }
             other => {
                 return Err(StorageError::CorruptPayload(format!(
                     "Unknown block entity kind {other}"
@@ -542,13 +644,11 @@ mod tests {
 
         let idx = LocalIdx::from_coords(4, 5, 6).unwrap();
         let mut chest = BlockEntityData::new_chest();
-        let BlockEntityData::Chest {
-            ref mut custom_name,
-            ref mut items,
-        } = chest;
-        *custom_name = Some("Treasure Chest".into());
-        items[0] = BlockEntitySlot::new(0, 42, 64);
-        items[26] = BlockEntitySlot::new(26, 10, 1);
+        if let BlockEntityData::Chest { custom_name, items } = &mut chest {
+            *custom_name = Some("Treasure Chest".into());
+            items[0] = BlockEntitySlot::new(0, 42, 64);
+            items[26] = BlockEntitySlot::new(26, 10, 1);
+        }
         table.insert(idx, chest);
 
         let payload = ChunkPayload::with_block_entities(blocks, status, table);

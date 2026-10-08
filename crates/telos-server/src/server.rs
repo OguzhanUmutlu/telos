@@ -18,11 +18,11 @@ use telos_protocol::messages::{
     C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload,
     ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind,
     S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity, S2cEntityMove,
-    S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
-    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow,
+    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
     S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
@@ -136,6 +136,10 @@ pub struct Server {
     pub listener: Option<telos_net::QuicListener>,
     /// LAN discovery beacon emitter broadcasting over UDP.
     pub lan_emitter: Option<telos_net::LanBeaconEmitter>,
+    /// Registry of deterministic smelting recipes.
+    pub smelting_recipes: telos_sim::SmeltingRegistry,
+    /// Registry of combustible fuels and burn durations.
+    pub fuel_registry: telos_sim::FuelRegistry,
     /// Thread-safe signal to request server shutdown.
     shutdown_requested: Arc<AtomicBool>,
 }
@@ -311,6 +315,8 @@ impl Server {
             event_queue,
             listener: None,
             lan_emitter,
+            smelting_recipes: telos_sim::SmeltingRegistry::standard(),
+            fuel_registry: telos_sim::FuelRegistry::standard(),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1531,6 +1537,140 @@ impl Server {
         }
     }
 
+    /// Ticks active furnace block entities, advancing fuel combustion, cook progress, and lit state transitions.
+    #[allow(clippy::cast_possible_wrap, clippy::too_many_lines)]
+    pub fn tick_furnace_entities(&mut self) {
+        let mut furnace_targets = Vec::new();
+        for (world_name, world) in self.worlds.iter() {
+            for &pos in &world.furnace_positions {
+                furnace_targets.push((world_name.to_string(), pos));
+            }
+        }
+
+        if furnace_targets.is_empty() {
+            return;
+        }
+
+        for (world_name, pos) in furnace_targets {
+            let world = self.worlds.get_or_default_mut(&world_name);
+            let cur_block = world.get_loaded_block(pos);
+            if !world.registry().is_furnace(cur_block) {
+                world.furnace_positions.remove(&pos);
+                continue;
+            }
+
+            let Some(be) = world.get_block_entity_mut(pos) else {
+                world.furnace_positions.remove(&pos);
+                continue;
+            };
+
+            let mut furnace_inv = telos_sim::FurnaceInventory::from_block_entity(be);
+            let tick_res = telos_sim::tick_furnace_step(
+                &mut furnace_inv,
+                &self.smelting_recipes,
+                &self.fuel_registry,
+            );
+            furnace_inv.update_block_entity(be);
+
+            // 1. If lit state changed, toggle block state furnace <-> lit_furnace
+            if tick_res.lit_changed {
+                let target_ident_path = if tick_res.is_lit {
+                    "lit_furnace"
+                } else {
+                    "furnace"
+                };
+                let target_ident = telos_core::Identifier::new("telos", target_ident_path).unwrap();
+                if let Some(entry) = world.registry().get(&target_ident) {
+                    let target_state = entry.default_state();
+                    if let Some((_snapshot, version)) = world.set_block(pos, target_state) {
+                        let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                            x: pos.x(),
+                            y: pos.y(),
+                            z: pos.z(),
+                            state_id: target_state,
+                            version,
+                        });
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. If contents changed, broadcast slots to viewing players
+            if tick_res.contents_changed {
+                let mut slot_vec = Vec::with_capacity(furnace_inv.slots.len());
+                for slot in &furnace_inv.slots {
+                    slot_vec.push(SlotData {
+                        item: slot.item,
+                        count: slot.count,
+                    });
+                }
+                let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
+                let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                    window_id: 1,
+                    container_kind: 1,
+                    title: BoundedString::new(title_str)
+                        .unwrap_or_else(|_| BoundedString::new("Furnace").unwrap()),
+                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                    x: pos.x(),
+                    y: pos.y(),
+                    z: pos.z(),
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play
+                        && s.world_name == world_name
+                        && s.active_container.as_ref().map(|c| c.block_pos) == Some(pos)
+                    {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                    }
+                }
+            }
+
+            // 3. If properties changed, broadcast properties to viewing players
+            if tick_res.properties_changed {
+                let p0 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                    window_id: 1,
+                    property_id: 0,
+                    value: furnace_inv.burn_time_remaining as i16,
+                });
+                let p1 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                    window_id: 1,
+                    property_id: 1,
+                    value: furnace_inv.total_burn_time as i16,
+                });
+                let p2 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                    window_id: 1,
+                    property_id: 2,
+                    value: furnace_inv.cook_progress as i16,
+                });
+                let p3 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                    window_id: 1,
+                    property_id: 3,
+                    value: furnace_inv.cook_duration as i16,
+                });
+
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play
+                        && s.world_name == world_name
+                        && s.active_container.as_ref().map(|c| c.block_pos) == Some(pos)
+                    {
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(p0.clone()));
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(p1.clone()));
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(p2.clone()));
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(p3.clone()));
+                    }
+                }
+            }
+        }
+    }
+
     /// Accesses the ECS simulation world immutably.
     #[must_use]
     pub fn ecs_world(&self) -> &bevy_ecs::world::World {
@@ -1781,7 +1921,7 @@ impl Server {
     }
 
     /// Advances the server simulation by one tick (20 TPS fixed).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
     pub fn tick(&mut self) {
         self.tick_count += 1;
         self.js_plugins.dispatch_tick(self.tick_count);
@@ -3010,58 +3150,131 @@ impl Server {
             if let Some(active_cont) = active_container {
                 let world = self.worlds.get_or_default_mut(&session_world_name);
                 if let Some(be) = world.get_block_entity_mut(active_cont.block_pos) {
-                    let mut chest_inv = telos_sim::ChestInventory::from_block_entity(be);
-                    if telos_sim::container_click(&mut chest_inv, &mut inv, slot_idx, button, mode)
+                    if active_cont.container_kind == 1 {
+                        let mut furnace_inv = telos_sim::FurnaceInventory::from_block_entity(be);
+                        if telos_sim::furnace_container_click(
+                            &mut furnace_inv,
+                            &mut inv,
+                            slot_idx,
+                            button,
+                            mode,
+                            &self.fuel_registry,
+                            &self.smelting_recipes,
+                        )
                         .is_ok()
-                    {
-                        *be = chest_inv.to_block_entity();
+                        {
+                            *be = furnace_inv.to_block_entity();
 
-                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
-                        for slot in &inv.slots {
-                            slot_vec.push(SlotData {
-                                item: slot.item,
-                                count: slot.count,
+                            let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                            for slot in &inv.slots {
+                                slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                carried: SlotData {
+                                    item: inv.carried.item,
+                                    count: inv.carried.count,
+                                },
                             });
-                        }
-                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
-                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
-                            carried: SlotData {
-                                item: inv.carried.item,
-                                count: inv.carried.count,
-                            },
-                        });
-                        if let Some(s) = self.sessions.get_mut(&session_id) {
-                            let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
-                        }
+                            if let Some(s) = self.sessions.get_mut(&session_id) {
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                            }
 
-                        // Broadcast updated container slots to all sessions viewing this container
-                        let mut container_slot_vec = Vec::with_capacity(chest_inv.slots.len());
-                        for slot in &chest_inv.slots {
-                            container_slot_vec.push(SlotData {
-                                item: slot.item,
-                                count: slot.count,
+                            // Broadcast updated container slots to all sessions viewing this container
+                            let mut container_slot_vec =
+                                Vec::with_capacity(furnace_inv.slots.len());
+                            for slot in &furnace_inv.slots {
+                                container_slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
+                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                window_id: active_cont.window_id,
+                                container_kind: 1,
+                                title: BoundedString::new(title_str)
+                                    .unwrap_or_else(|_| BoundedString::new("Furnace").unwrap()),
+                                slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
+                                x: active_cont.block_pos.x(),
+                                y: active_cont.block_pos.y(),
+                                z: active_cont.block_pos.z(),
                             });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play
+                                    && s.world_name == session_world_name
+                                    && s.active_container.as_ref().map(|c| c.block_pos)
+                                        == Some(active_cont.block_pos)
+                                {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                                }
+                            }
                         }
-                        let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
-                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
-                            window_id: active_cont.window_id,
-                            container_kind: 0,
-                            title: BoundedString::new(title_str)
-                                .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
-                            slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
-                            x: active_cont.block_pos.x(),
-                            y: active_cont.block_pos.y(),
-                            z: active_cont.block_pos.z(),
-                        });
-                        for s in self.sessions.values_mut() {
-                            if s.phase == ConnectionPhase::Play
-                                && s.world_name == session_world_name
-                                && s.active_container.as_ref().map(|c| c.block_pos)
-                                    == Some(active_cont.block_pos)
-                            {
-                                let _ = s
-                                    .connection
-                                    .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                    } else {
+                        let mut chest_inv = telos_sim::ChestInventory::from_block_entity(be);
+                        if telos_sim::container_click(
+                            &mut chest_inv,
+                            &mut inv,
+                            slot_idx,
+                            button,
+                            mode,
+                        )
+                        .is_ok()
+                        {
+                            *be = chest_inv.to_block_entity();
+
+                            let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                            for slot in &inv.slots {
+                                slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                carried: SlotData {
+                                    item: inv.carried.item,
+                                    count: inv.carried.count,
+                                },
+                            });
+                            if let Some(s) = self.sessions.get_mut(&session_id) {
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                            }
+
+                            // Broadcast updated container slots to all sessions viewing this container
+                            let mut container_slot_vec = Vec::with_capacity(chest_inv.slots.len());
+                            for slot in &chest_inv.slots {
+                                container_slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
+                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                window_id: active_cont.window_id,
+                                container_kind: 0,
+                                title: BoundedString::new(title_str)
+                                    .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
+                                slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
+                                x: active_cont.block_pos.x(),
+                                y: active_cont.block_pos.y(),
+                                z: active_cont.block_pos.z(),
+                            });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play
+                                    && s.world_name == session_world_name
+                                    && s.active_container.as_ref().map(|c| c.block_pos)
+                                        == Some(active_cont.block_pos)
+                                {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                                }
                             }
                         }
                     }
@@ -3287,6 +3500,7 @@ impl Server {
                                 s.active_container = Some(ActiveContainerSession {
                                     window_id: 1,
                                     block_pos: target_pos,
+                                    container_kind: 0,
                                 });
                                 let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
                             }
@@ -3309,15 +3523,80 @@ impl Server {
                                 }
                             }
                         }
+                    } else if world.registry().is_furnace(old_state) {
+                        if world.get_block_entity(target_pos).is_none() {
+                            world.set_block_entity(
+                                target_pos,
+                                telos_voxel::block_entity::BlockEntityData::new_furnace(),
+                            );
+                        }
+                        if let Some(furnace_be) = world.get_block_entity(target_pos) {
+                            let furnace_inv =
+                                telos_sim::FurnaceInventory::from_block_entity(furnace_be);
+                            let mut slot_vec = Vec::with_capacity(furnace_inv.slots.len());
+                            for slot in &furnace_inv.slots {
+                                slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let title_str = furnace_inv.custom_name.as_deref().unwrap_or("Furnace");
+                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                window_id: 1,
+                                container_kind: 1,
+                                title: BoundedString::new(title_str)
+                                    .unwrap_or_else(|_| BoundedString::new("Furnace").unwrap()),
+                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                x: target_pos.x(),
+                                y: target_pos.y(),
+                                z: target_pos.z(),
+                            });
+                            if let Some(s) = self.sessions.get_mut(&session_id) {
+                                s.active_container = Some(ActiveContainerSession {
+                                    window_id: 1,
+                                    block_pos: target_pos,
+                                    container_kind: 1,
+                                });
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+
+                                // Transmit initial combustion & cooking properties
+                                let p0 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                                    window_id: 1,
+                                    property_id: 0,
+                                    value: furnace_inv.burn_time_remaining as i16,
+                                });
+                                let p1 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                                    window_id: 1,
+                                    property_id: 1,
+                                    value: furnace_inv.total_burn_time as i16,
+                                });
+                                let p2 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                                    window_id: 1,
+                                    property_id: 2,
+                                    value: furnace_inv.cook_progress as i16,
+                                });
+                                let p3 = S2cMessage::ContainerProperty(S2cContainerProperty {
+                                    window_id: 1,
+                                    property_id: 3,
+                                    value: furnace_inv.cook_duration as i16,
+                                });
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(p0));
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(p1));
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(p2));
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(p3));
+                            }
+                        }
                     }
                 } else {
-                    let chest_contents_to_drop = if matches!(action.action, BlockActionKind::Break)
-                        && world.registry().is_chest(old_state)
-                    {
-                        world.get_block_entity(target_pos).cloned()
-                    } else {
-                        None
-                    };
+                    let container_contents_to_drop =
+                        if matches!(action.action, BlockActionKind::Break)
+                            && (world.registry().is_chest(old_state)
+                                || world.registry().is_furnace(old_state))
+                        {
+                            world.get_block_entity(target_pos).cloned()
+                        } else {
+                            None
+                        };
 
                     if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
                         match action.action {
@@ -3328,7 +3607,7 @@ impl Server {
                                     actor_net_id: Some(u64::from(session_entity_id)),
                                 });
 
-                                if let Some(be) = chest_contents_to_drop {
+                                if let Some(be) = container_contents_to_drop {
                                     for slot in be.items() {
                                         if !slot.is_empty() {
                                             let spawn_pos = DVec3::new(
@@ -4160,6 +4439,9 @@ impl Server {
 
         // 7b. Monster mob spawners (runs every tick)
         self.tick_monster_spawners();
+
+        // 7c. Furnace block entities combustion & smelting (runs every tick)
+        self.tick_furnace_entities();
 
         // 8. Distance despawning based on simulation distance ((sim_dist * 32.0) + 16.0 blocks)
         let active_players: Vec<DVec3> = self

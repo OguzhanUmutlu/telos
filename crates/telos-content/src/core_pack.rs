@@ -1161,6 +1161,42 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 ..Default::default()
             },
         ),
+        // Smelting furnaces (Phase 54)
+        (
+            "furnace",
+            "Furnace",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                hardness: 3.5,
+                blast_resistance: 3.5,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::Auto,
+                material_texture_index: Some(67),
+                has_block_entity: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "lit_furnace",
+            "Lit Furnace",
+            BlockDef {
+                shape: BlockShapeDef::FullCube,
+                render_layer: RenderLayerDef::Opaque,
+                opacity: OpacityDef::Opaque,
+                light_emission: 13,
+                hardness: 3.5,
+                blast_resistance: 3.5,
+                tool: Some("telos:pickaxe".into()),
+                sound: Some("telos:stone".into()),
+                item: BlockItemPolicy::None,
+                material_texture_index: Some(68),
+                has_block_entity: true,
+                ..Default::default()
+            },
+        ),
     ]
 }
 
@@ -1444,6 +1480,31 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
             "arrow",
             ItemDef {
                 name: "Arrow".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        // Smelted food & fuels (Phase 54)
+        (
+            "cooked_porkchop",
+            ItemDef {
+                name: "Cooked Porkchop".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "cooked_beef",
+            ItemDef {
+                name: "Cooked Beef".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "charcoal",
+            ItemDef {
+                name: "Charcoal".into(),
                 max_stack_size: 64,
                 item_type: ItemTypeDef::Generic,
             },

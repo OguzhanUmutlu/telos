@@ -18,11 +18,11 @@ pub use play::{
     C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, NetworkEffect,
     ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
     S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk, S2cInventorySlot,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
-    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -256,6 +256,8 @@ pub enum S2cMessage {
     CloseContainer(S2cCloseContainer),
     /// Play phase block animation/sound event.
     BlockEvent(S2cBlockEvent),
+    /// Play phase container property update (burn time, cook progress, etc.).
+    ContainerProperty(S2cContainerProperty),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -297,7 +299,8 @@ impl S2cMessage {
             | Self::SpawnArrow(_)
             | Self::OpenContainer(_)
             | Self::CloseContainer(_)
-            | Self::BlockEvent(_) => Some(ConnectionPhase::Play),
+            | Self::BlockEvent(_)
+            | Self::ContainerProperty(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -337,6 +340,7 @@ impl S2cMessage {
             Self::OpenContainer(_) => 25,
             Self::CloseContainer(_) => 26,
             Self::BlockEvent(_) => 27,
+            Self::ContainerProperty(_) => 28,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -376,6 +380,7 @@ impl S2cMessage {
             Self::OpenContainer(m) => m.encode(buf),
             Self::CloseContainer(m) => m.encode(buf),
             Self::BlockEvent(m) => m.encode(buf),
+            Self::ContainerProperty(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

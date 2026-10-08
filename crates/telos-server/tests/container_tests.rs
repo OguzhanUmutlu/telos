@@ -484,3 +484,131 @@ fn test_chest_break_drops_stored_items() {
     assert_eq!(gold_entities.len(), 1);
     assert_eq!(gold_entities[0].stack.count, 16);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_furnace_interaction_and_combustion_ticking() {
+    let (mut server, client_conn, _session_id, surface_y) = setup_server_and_player();
+    let furnace_pos = BlockPos::new(128, surface_y as i32 + 1, 162);
+
+    let furnace_state = (0..server.world().registry().total_states() as u32)
+        .map(BlockStateId::new)
+        .find(|&id| {
+            server.world().registry().is_furnace(id)
+                && !server.world().registry().is_lit_furnace(id)
+        })
+        .expect("furnace block state registered");
+    server.world_mut().set_block(furnace_pos, furnace_state);
+
+    // Drain initial login packets
+    while let Ok(Some(_)) = client_conn.try_recv() {}
+
+    // Right click / interact with furnace
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::BlockAction(C2sBlockAction {
+                x: furnace_pos.x(),
+                y: furnace_pos.y(),
+                z: furnace_pos.z(),
+                action: BlockActionKind::Interact,
+                sequence: 1,
+                input_tick: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify client received OpenContainer with kind 1 (Furnace)
+    let mut opened = false;
+    let mut properties_received = 0;
+    while let Ok(Some(payload)) = client_conn.try_recv() {
+        if let Some(msg) = payload.into_msg() {
+            match msg {
+                S2cMessage::OpenContainer(open) => {
+                    assert_eq!(open.container_kind, 1);
+                    assert_eq!(open.slots.len(), 3);
+                    opened = true;
+                }
+                S2cMessage::ContainerProperty(_) => {
+                    properties_received += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(opened, "Client must receive OpenContainer for furnace");
+    assert!(
+        properties_received >= 4,
+        "Must receive initial 4 container properties"
+    );
+
+    // Populate furnace with 2 Raw Beef (item 50) in slot 0, and 1 Coal (item 54) in slot 1
+    if let Some(telos_voxel::block_entity::BlockEntityData::Furnace { items, .. }) =
+        server.world_mut().get_block_entity_mut(furnace_pos)
+    {
+        items[0] = telos_voxel::block_entity::BlockEntitySlot::new(0, 50, 2);
+        items[1] = telos_voxel::block_entity::BlockEntitySlot::new(1, 54, 1);
+    }
+
+    // Tick the server once -> combustion starts! Coal is consumed, block transitions to lit_furnace (83)
+    server.tick();
+
+    let cur_block = server.world_mut().get_block(furnace_pos);
+    assert!(
+        server.world().registry().is_lit_furnace(cur_block),
+        "Furnace must become lit_furnace"
+    );
+
+    // Simulate 200 ticks of smelting (10 seconds)
+    for _ in 0..200 {
+        server.tick();
+    }
+
+    // Verify cooked beef (item 66) is in output slot
+    let be = server
+        .world()
+        .get_block_entity(furnace_pos)
+        .expect("furnace entity exists");
+    if let telos_voxel::block_entity::BlockEntityData::Furnace { items, .. } = be {
+        assert_eq!(items[0].count, 1, "1 raw beef remaining in input");
+        assert_eq!(items[2].item, 66, "Cooked beef in output slot");
+        assert_eq!(items[2].count, 1, "1 cooked beef produced");
+    } else {
+        panic!("expected furnace block entity");
+    }
+
+    // Break the furnace
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::BlockAction(C2sBlockAction {
+                x: furnace_pos.x(),
+                y: furnace_pos.y(),
+                z: furnace_pos.z(),
+                action: BlockActionKind::Break,
+                sequence: 2,
+                input_tick: 0,
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Verify block is air and furnace entity was removed
+    assert!(server.world_mut().get_block(furnace_pos).is_air());
+    assert!(server.world().get_block_entity(furnace_pos).is_none());
+
+    // Verify items dropped in world: cooked beef (66) and remaining raw beef (50)
+    let mut query = server.ecs_world_mut().query::<&ItemEntity>();
+    let dropped: Vec<&ItemEntity> = query.iter(server.ecs_world()).collect();
+    assert!(
+        dropped
+            .iter()
+            .any(|item| item.stack.item == 66 && item.stack.count == 1)
+    );
+    assert!(
+        dropped
+            .iter()
+            .any(|item| item.stack.item == 50 && item.stack.count == 1)
+    );
+}

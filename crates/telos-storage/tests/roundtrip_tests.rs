@@ -294,13 +294,11 @@ fn test_chunk_with_block_entities_region_roundtrip() {
     let mut table = BlockEntityTable::new();
     let idx = LocalIdx::from_coords(10, 11, 12).unwrap();
     let mut chest = BlockEntityData::new_chest();
-    let BlockEntityData::Chest {
-        ref mut custom_name,
-        ref mut items,
-    } = chest;
-    *custom_name = Some("Dungeon Chest".into());
-    items[3] = BlockEntitySlot::new(3, 50, 16);
-    items[20] = BlockEntitySlot::new(20, 63, 1);
+    if let BlockEntityData::Chest { custom_name, items } = &mut chest {
+        *custom_name = Some("Dungeon Chest".into());
+        items[3] = BlockEntitySlot::new(3, 50, 16);
+        items[20] = BlockEntitySlot::new(20, 63, 1);
+    }
     table.insert(idx, chest);
 
     let blocks = Blocks::Uniform(BlockStateId::new(1));
@@ -324,4 +322,78 @@ fn test_chunk_with_block_entities_region_roundtrip() {
     assert_eq!(loaded_chest.items()[20].item, 63);
     assert_eq!(loaded_chest.items()[20].count, 1);
     assert!(loaded_chest.items()[0].is_empty());
+}
+
+#[test]
+fn test_chunk_with_furnace_block_entity_region_roundtrip() {
+    let sim_fs = SimFs::new();
+    let rx = 4;
+    let ry = 0;
+    let rz = 4;
+
+    let mut region = RegionFile::open(sim_fs.clone(), rx, ry, rz).expect("failed to open region");
+
+    let pos = ChunkPos::new(32, 0, 32);
+    let mut table = BlockEntityTable::new();
+    let idx = LocalIdx::from_coords(3, 4, 5).unwrap();
+
+    let mut furnace = BlockEntityData::new_furnace();
+    if let BlockEntityData::Furnace {
+        custom_name,
+        items,
+        burn_time_remaining,
+        total_burn_time,
+        cook_progress,
+        cook_duration,
+    } = &mut furnace
+    {
+        *custom_name = Some("Blast Oven".into());
+        items[0] = BlockEntitySlot::new(0, 50, 8); // Raw beef input
+        items[1] = BlockEntitySlot::new(1, 54, 3); // Coal fuel
+        items[2] = BlockEntitySlot::new(2, 66, 1); // Cooked beef output
+        *burn_time_remaining = 1420;
+        *total_burn_time = 1600;
+        *cook_progress = 95;
+        *cook_duration = 200;
+    }
+    table.insert(idx, furnace);
+
+    let blocks = Blocks::Uniform(BlockStateId::new(83)); // lit_furnace
+    let payload = ChunkPayload::with_block_entities(blocks, ChunkStatus::default(), table);
+
+    region
+        .commit_chunks(&[(pos, Some(payload))], CodecId::Zstd, 10)
+        .expect("commit furnace chunk failed");
+
+    let reloaded = RegionFile::open(sim_fs, rx, ry, rz).expect("reopen failed");
+    let loaded_chunk = reloaded.read_chunk(pos).unwrap().expect("chunk must exist");
+
+    assert_eq!(loaded_chunk.block_entities.len(), 1);
+    let loaded_furnace = loaded_chunk
+        .block_entities
+        .get(idx)
+        .expect("furnace entity must exist");
+    assert_eq!(loaded_furnace.custom_name(), Some("Blast Oven"));
+    assert_eq!(loaded_furnace.items()[0].item, 50);
+    assert_eq!(loaded_furnace.items()[0].count, 8);
+    assert_eq!(loaded_furnace.items()[1].item, 54);
+    assert_eq!(loaded_furnace.items()[1].count, 3);
+    assert_eq!(loaded_furnace.items()[2].item, 66);
+    assert_eq!(loaded_furnace.items()[2].count, 1);
+
+    if let BlockEntityData::Furnace {
+        burn_time_remaining,
+        total_burn_time,
+        cook_progress,
+        cook_duration,
+        ..
+    } = loaded_furnace
+    {
+        assert_eq!(*burn_time_remaining, 1420);
+        assert_eq!(*total_burn_time, 1600);
+        assert_eq!(*cook_progress, 95);
+        assert_eq!(*cook_duration, 200);
+    } else {
+        panic!("expected furnace block entity");
+    }
 }
