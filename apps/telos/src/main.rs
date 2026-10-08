@@ -10901,10 +10901,6 @@ fn mount_asset_roots(stack: &mut ResourcePackStack) {
         stack.add_root(format!("{home}/Projects/larvance/telos/dev-assets/classic-pack"));
         stack.add_root(format!("{home}/Projects/larvance/telos/assets/telos"));
         stack.add_root(format!("{home}/Projects/larvance/telos/assets/voxel"));
-        stack.add_root(format!("{home}/Projects/voxel/dev-assets/faithful-32x"));
-        stack.add_root(format!("{home}/Projects/voxel/dev-assets/classic-pack"));
-        stack.add_root(format!("{home}/Projects/voxel/assets/telos"));
-        stack.add_root(format!("{home}/Projects/voxel/assets/voxel"));
     }
     stack.add_root("dev-assets/faithful-32x");
     stack.add_root("dev-assets/classic-pack");
