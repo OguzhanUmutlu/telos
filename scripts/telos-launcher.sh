@@ -18,7 +18,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 
 # Fallback if invoked detached
 if [[ ! -f "$REPO_DIR/Cargo.toml" ]]; then
-    REPO_DIR="/home/usr/Projects/voxel"
+    REPO_DIR="/home/usr/Projects/larvance/telos"
 fi
 
 cd "$REPO_DIR"
