@@ -1,0 +1,6 @@
+{
+  "parent": "telos:block/cube_all",
+  "textures": {
+    "all": "hello_block:block/hello_block_block"
+  }
+}

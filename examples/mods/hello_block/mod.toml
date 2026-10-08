@@ -1,0 +1,29 @@
+[mod]
+id = "hello_block"
+version = "0.1.0"
+name = "Hello Block"
+description = "Adds custom blocks and mechanics for hello_block."
+authors = ["Mod Developer"]
+license = "MIT"
+side = "both"
+namespaces = []
+overrides = []
+
+[api]
+
+[dependencies]
+
+[ordering]
+after = []
+before = []
+
+[ordering.incompatible]
+
+[permissions]
+server = [
+    "world.read",
+    "world.write",
+    "command.register",
+    "events.listen",
+]
+client = []

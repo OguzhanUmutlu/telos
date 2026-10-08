@@ -1,0 +1,21 @@
+(
+    type: "shaped",
+    width: None,
+    height: None,
+    pattern: [
+        "###",
+        "#T#",
+        "###",
+    ],
+    key: {
+        "#": "telos:stone",
+        "T": "telos:torch",
+    },
+    flat_pattern: [],
+    result: (
+        item: "hello_block:hello_block_block",
+        count: 1,
+    ),
+    mirrored: true,
+    remainder: None,
+)

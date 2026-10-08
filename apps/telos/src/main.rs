@@ -10897,8 +10897,12 @@ fn mount_asset_roots(stack: &mut ResourcePackStack) {
     if let Ok(home) = std::env::var("HOME") {
         stack.add_root(format!("{home}/.local/share/telos/assets"));
         stack.add_root(format!("{home}/.local/share/voxel/assets"));
-        stack.add_root(format!("{home}/Projects/larvance/telos/dev-assets/faithful-32x"));
-        stack.add_root(format!("{home}/Projects/larvance/telos/dev-assets/classic-pack"));
+        stack.add_root(format!(
+            "{home}/Projects/larvance/telos/dev-assets/faithful-32x"
+        ));
+        stack.add_root(format!(
+            "{home}/Projects/larvance/telos/dev-assets/classic-pack"
+        ));
         stack.add_root(format!("{home}/Projects/larvance/telos/assets/telos"));
         stack.add_root(format!("{home}/Projects/larvance/telos/assets/voxel"));
     }

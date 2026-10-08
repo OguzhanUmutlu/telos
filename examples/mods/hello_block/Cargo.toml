@@ -1,0 +1,17 @@
+[package]
+name = "hello_block"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+telos-sdk = { path = "../../../crates/telos-sdk" }
+
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

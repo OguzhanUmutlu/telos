@@ -1,0 +1,5 @@
+(
+    name: "Hello Block Block",
+    max_stack_size: 64,
+    item_type: Block("hello_block:hello_block_block"),
+)

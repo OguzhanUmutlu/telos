@@ -1,0 +1,17 @@
+(
+    properties: {},
+    shape: FullCube,
+    render_layer: Opaque,
+    opacity: Opaque,
+    light_emission: 12,
+    hardness: 1.5,
+    blast_resistance: 6.0,
+    tool: Some("telos:pickaxe"),
+    sound: Some("telos:stone"),
+    item: Auto,
+    material_texture_index: None,
+    logic_component: false,
+    logic_powered: false,
+    has_block_entity: false,
+    base_color: Some((220, 160, 40, 255)),
+)

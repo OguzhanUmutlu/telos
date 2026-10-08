@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "hello_block:block/hello_block_block"
+    }
+  }
+}

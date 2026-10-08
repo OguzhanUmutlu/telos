@@ -2,6 +2,9 @@
 /target
 /web/dist
 Cargo.lock.d
+examples/mods/**/target
+examples/mods/**/dist
+examples/mods/**/server.wasm
 
 # Placeholder and copyrighted assets (ADR-22)
 /dev-assets

@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "hello_block:hello_block_block",
+      "required": true
+    }
+  ]
+}

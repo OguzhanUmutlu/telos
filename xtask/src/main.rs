@@ -1,5 +1,7 @@
 //! Build automation, diagnostic tools, and CI runners for the Telos engine.
 
+mod mod_cmd;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::{
@@ -20,6 +22,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Modding development, scaffolding, validation, and packaging tools
+    Mod {
+        #[command(subcommand)]
+        subcommand: mod_cmd::ModCommands,
+    },
     /// Run full continuous integration quality checks locally
     Ci,
     /// Inspect the local environment, drivers, compilers, and required tools
@@ -92,6 +99,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Mod { subcommand } => mod_cmd::run_mod_command(subcommand)?,
         Commands::Ci => run_ci()?,
         Commands::Doctor => run_doctor(),
         Commands::Shaders => compile_shaders()?,
@@ -131,7 +139,7 @@ fn run_ci() -> Result<()> {
     println!("            TELOS CI QUALITY ASSURANCE PIPELINE             ");
     println!("============================================================");
 
-    let steps: [(&str, &[&str]); 6] = [
+    let steps: [(&str, &[&str]); 7] = [
         (
             "Checking formatting (cargo fmt --check)",
             &["cargo", "fmt", "--all", "--", "--check"],
@@ -152,6 +160,16 @@ fn run_ci() -> Result<()> {
         (
             "Compiling and validating shaders",
             &["cargo", "xtask", "shaders"],
+        ),
+        (
+            "Validating reference mod (cargo xtask mod validate)",
+            &[
+                "cargo",
+                "xtask",
+                "mod",
+                "validate",
+                "examples/mods/hello_block",
+            ],
         ),
         (
             "Building documentation (cargo doc --no-deps)",

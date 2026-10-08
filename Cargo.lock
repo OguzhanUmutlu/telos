@@ -3471,6 +3471,7 @@ dependencies = [
  "serde",
  "serde_json",
  "telos-core",
+ "telos-sdk",
  "telos-voxel",
  "tempfile",
  "thiserror 2.0.21",
@@ -3590,6 +3591,18 @@ dependencies = [
  "telos-voxel",
  "thiserror 2.0.21",
  "xxhash-rust",
+]
+
+[[package]]
+name = "telos-sdk"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -5058,6 +5071,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "image",
+ "ron",
+ "semver",
+ "serde_json",
+ "telos-sdk",
 ]
 
 [[package]]

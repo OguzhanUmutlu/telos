@@ -17,10 +17,14 @@ members = [
     "crates/telos-sim",
     "crates/telos-mod",
     "crates/telos-audio",
+    "crates/telos-sdk",
     "apps/telos-server",
     "apps/telos",
     "apps/telos-web",
     "xtask",
+]
+exclude = [
+    "examples/mods/hello_block",
 ]
 
 [workspace.package]
@@ -49,6 +53,7 @@ telos-ui = { version = "0.1.0", path = "crates/telos-ui" }
 telos-sim = { version = "0.1.0", path = "crates/telos-sim" }
 telos-mod = { version = "0.1.0", path = "crates/telos-mod" }
 telos-audio = { version = "0.1.0", path = "crates/telos-audio" }
+telos-sdk = { version = "0.1.0", path = "crates/telos-sdk" }
 
 # Audio & spatial sound
 rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis", "wav"] }

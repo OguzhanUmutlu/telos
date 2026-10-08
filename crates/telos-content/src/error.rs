@@ -97,3 +97,22 @@ pub enum ContentError {
     #[error("cannot register content: registry is frozen")]
     RegistryFrozen,
 }
+
+impl From<telos_sdk::manifest::ManifestError> for ContentError {
+    fn from(err: telos_sdk::manifest::ManifestError) -> Self {
+        match err {
+            telos_sdk::manifest::ManifestError::Io(e) => Self::Io {
+                path: PathBuf::from("manifest"),
+                source: e,
+            },
+            telos_sdk::manifest::ManifestError::Toml(e) => Self::ManifestParse {
+                path: PathBuf::from("manifest"),
+                source: e,
+            },
+            telos_sdk::manifest::ManifestError::Validation(msg) => Self::DataParse {
+                path: PathBuf::from("manifest"),
+                reason: msg,
+            },
+        }
+    }
+}

@@ -1,21 +1,22 @@
 [package]
-name = "xtask"
+name = "telos-sdk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Internal automation and CI tasks for the Telos workspace"
+description = "Lightweight guest SDK for Telos mod developers, data-pack builders, and WASM/JS plugins"
 
 [dependencies]
-clap = { workspace = true }
-anyhow = { workspace = true }
-telos-sdk = { workspace = true }
-image = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 ron = { workspace = true }
+toml = { workspace = true }
 semver = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
