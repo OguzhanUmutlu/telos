@@ -49,6 +49,7 @@ layout(location = 4) out vec2 v_uv;
 layout(location = 5) out vec3 v_light; // x: ao (0..3), y: sky (0..15), z: block (0..15)
 
 const uint CORNER_INDICES[6] = uint[](0, 1, 2, 2, 3, 0);
+const uint CORNER_INDICES_FLIPPED[6] = uint[](1, 2, 3, 3, 0, 1);
 
 const vec3 NORMALS[6] = vec3[](
     vec3(1.0, 0.0, 0.0),   // +X
@@ -89,7 +90,6 @@ const vec3 PLANE_OFFSETS[6] = vec3[](
 void main() {
     uint quad_idx = gl_VertexIndex / 6;
     uint vert_sub_idx = gl_VertexIndex % 6;
-    uint corner = CORNER_INDICES[vert_sub_idx];
 
     TerrainDrawInfo draw_info = DrawInfoBuffer(pc.draw_info_buffer_address).draws[gl_InstanceIndex];
 
@@ -110,6 +110,27 @@ void main() {
 
     // Unpack LightPattern from table
     PackedQuad pattern = quad_buffer.quads[draw_info.pattern_offset + pattern_idx];
+    uint ao0 = pattern.word1 & 0x3u;
+    uint ao1 = (pattern.word1 >> 2u) & 0x3u;
+    uint ao2 = (pattern.word1 >> 4u) & 0x3u;
+    uint ao3 = (pattern.word1 >> 6u) & 0x3u;
+
+    uint sky0 = pattern.word0 & 0xFu;
+    uint sky1 = (pattern.word0 >> 4u) & 0xFu;
+    uint sky2 = (pattern.word0 >> 8u) & 0xFu;
+    uint sky3 = (pattern.word0 >> 12u) & 0xFu;
+
+    uint blk0 = (pattern.word0 >> 16u) & 0xFu;
+    uint blk1 = (pattern.word0 >> 20u) & 0xFu;
+    uint blk2 = (pattern.word0 >> 24u) & 0xFu;
+    uint blk3 = (pattern.word0 >> 28u) & 0xFu;
+
+    // Split quad along brighter diagonal to eliminate corner half-shadow pinch
+    uint l02 = (ao0 + ao2) * 32u + (sky0 + sky2) + (blk0 + blk2);
+    uint l13 = (ao1 + ao3) * 32u + (sky1 + sky3) + (blk1 + blk3);
+    bool flip = l02 < l13;
+    uint corner = flip ? CORNER_INDICES_FLIPPED[vert_sub_idx] : CORNER_INDICES[vert_sub_idx];
+
     uint sky = (pattern.word0 >> (corner * 4u)) & 0xFu;
     uint block = (pattern.word0 >> (16u + corner * 4u)) & 0xFu;
     uint ao = (pattern.word1 >> (corner * 2u)) & 0x3u;

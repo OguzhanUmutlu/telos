@@ -97,6 +97,8 @@ pub struct ClientEntity {
     pub item_id: u32,
     /// Item stack count if this entity is a dropped item.
     pub item_count: u16,
+    /// Whether an explicit despawn packet was received for this entity.
+    pub despawn_pending: bool,
     /// Ring buffer of historical entity snapshots for interpolation.
     pub snapshots: VecDeque<EntitySnapshot>,
 }
@@ -133,6 +135,7 @@ impl ClientEntity {
             max_health: msg.max_health,
             item_id: 0,
             item_count: 0,
+            despawn_pending: false,
             snapshots,
         }
     }
@@ -167,6 +170,7 @@ impl ClientEntity {
             max_health: 5.0,
             item_id: msg.item_id,
             item_count: msg.count,
+            despawn_pending: false,
             snapshots,
         }
     }
@@ -201,6 +205,7 @@ impl ClientEntity {
             max_health: 1.0,
             item_id: 0,
             item_count: 0,
+            despawn_pending: false,
             snapshots,
         }
     }
@@ -266,10 +271,12 @@ impl ClientEntityStore {
     /// Handles an incoming `S2cDespawnEntity` packet.
     pub fn on_despawn(&mut self, net_ids: &[u32]) {
         for &id in net_ids {
-            if let Some(entity) = self.entities.get(&id)
-                && entity.death_timer <= 0.0
-            {
-                self.entities.remove(&id);
+            if let Some(entity) = self.entities.get_mut(&id) {
+                if entity.death_timer <= 0.0 {
+                    self.entities.remove(&id);
+                } else {
+                    entity.despawn_pending = true;
+                }
             }
         }
     }
@@ -337,6 +344,8 @@ impl ClientEntityStore {
                 if entity.death_timer <= 0.0 {
                     return false;
                 }
+            } else if entity.despawn_pending {
+                return false;
             }
             true
         });
@@ -752,17 +761,17 @@ fn build_pig_mesh(
         out,
     );
 
-    // 2. Head: 8x8x8 at y=8..16, z=-14..-6, pivot at (0, 12, -6)
+    // 2. Head: 8x8x8 at y=8..16, z=6..14, pivot at (0, 12, 6)
     let head_rot_yaw = entity.head_yaw - entity.yaw;
     let head_pitch = entity.pitch;
     emit_cuboid(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(0.0, 12.0 * S, -6.0 * S),
+        Vec3::new(0.0, 12.0 * S, 6.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
-        Vec3::new(-4.0 * S, 8.0 * S, -14.0 * S),
-        Vec3::new(4.0 * S, 16.0 * S, -6.0 * S),
+        Vec3::new(-4.0 * S, 8.0 * S, 6.0 * S),
+        Vec3::new(4.0 * S, 16.0 * S, 14.0 * S),
         (0.0, 0.0, 8.0, 8.0, 8.0),
         sky,
         block,
@@ -771,15 +780,15 @@ fn build_pig_mesh(
         out,
     );
 
-    // 3. Snout: 4x3x1 at y=9..12, z=-15..-14
+    // 3. Snout: 4x3x1 at y=9..12, z=14..15
     emit_cuboid(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(0.0, 12.0 * S, -6.0 * S),
+        Vec3::new(0.0, 12.0 * S, 6.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
-        Vec3::new(-2.0 * S, 9.0 * S, -15.0 * S),
-        Vec3::new(2.0 * S, 12.0 * S, -14.0 * S),
+        Vec3::new(-2.0 * S, 9.0 * S, 14.0 * S),
+        Vec3::new(2.0 * S, 12.0 * S, 15.0 * S),
         (16.0, 16.0, 4.0, 3.0, 1.0),
         sky,
         block,
@@ -795,10 +804,10 @@ fn build_pig_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(-3.0 * S, 6.0 * S, -5.0 * S),
+        Vec3::new(-3.0 * S, 6.0 * S, 5.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
-        Vec3::new(-5.0 * S, 0.0, -7.0 * S),
-        Vec3::new(-S, 6.0 * S, -3.0 * S),
+        Vec3::new(-5.0 * S, 0.0, 3.0 * S),
+        Vec3::new(-S, 6.0 * S, 7.0 * S),
         (0.0, 16.0, 4.0, 6.0, 4.0),
         sky,
         block,
@@ -811,10 +820,10 @@ fn build_pig_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(3.0 * S, 6.0 * S, -5.0 * S),
+        Vec3::new(3.0 * S, 6.0 * S, 5.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
-        Vec3::new(1.0 * S, 0.0, -7.0 * S),
-        Vec3::new(5.0 * S, 6.0 * S, -3.0 * S),
+        Vec3::new(1.0 * S, 0.0, 3.0 * S),
+        Vec3::new(5.0 * S, 6.0 * S, 7.0 * S),
         (0.0, 16.0, 4.0, 6.0, 4.0),
         sky,
         block,
@@ -827,10 +836,10 @@ fn build_pig_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(-3.0 * S, 6.0 * S, 5.0 * S),
+        Vec3::new(-3.0 * S, 6.0 * S, -5.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
-        Vec3::new(-5.0 * S, 0.0, 3.0 * S),
-        Vec3::new(-S, 6.0 * S, 7.0 * S),
+        Vec3::new(-5.0 * S, 0.0, -7.0 * S),
+        Vec3::new(-S, 6.0 * S, -3.0 * S),
         (0.0, 16.0, 4.0, 6.0, 4.0),
         sky,
         block,
@@ -843,10 +852,10 @@ fn build_pig_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(3.0 * S, 6.0 * S, 5.0 * S),
+        Vec3::new(3.0 * S, 6.0 * S, -5.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
-        Vec3::new(1.0 * S, 0.0, 3.0 * S),
-        Vec3::new(5.0 * S, 6.0 * S, 7.0 * S),
+        Vec3::new(1.0 * S, 0.0, -7.0 * S),
+        Vec3::new(5.0 * S, 6.0 * S, -3.0 * S),
         (0.0, 16.0, 4.0, 6.0, 4.0),
         sky,
         block,
@@ -888,17 +897,17 @@ fn build_cow_mesh(
         out,
     );
 
-    // 2. Head: 8x8x6 at y=16..24, z=-14..-8, pivot at (0, 20, -8)
+    // 2. Head: 8x8x6 at y=16..24, z=8..14, pivot at (0, 20, 8)
     let head_rot_yaw = entity.head_yaw - entity.yaw;
     let head_pitch = entity.pitch;
     emit_cuboid(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(0.0, 20.0 * S, -8.0 * S),
+        Vec3::new(0.0, 20.0 * S, 8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
-        Vec3::new(-4.0 * S, 16.0 * S, -14.0 * S),
-        Vec3::new(4.0 * S, 24.0 * S, -8.0 * S),
+        Vec3::new(-4.0 * S, 16.0 * S, 8.0 * S),
+        Vec3::new(4.0 * S, 24.0 * S, 14.0 * S),
         (0.0, 0.0, 8.0, 8.0, 6.0),
         sky,
         block,
@@ -912,10 +921,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(0.0, 20.0 * S, -8.0 * S),
+        Vec3::new(0.0, 20.0 * S, 8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
-        Vec3::new(-5.0 * S, 23.0 * S, -12.0 * S),
-        Vec3::new(-4.0 * S, 26.0 * S, -11.0 * S),
+        Vec3::new(-5.0 * S, 23.0 * S, 10.0 * S),
+        Vec3::new(-4.0 * S, 26.0 * S, 11.0 * S),
         (22.0, 0.0, 1.0, 3.0, 1.0),
         sky,
         block,
@@ -927,10 +936,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(0.0, 20.0 * S, -8.0 * S),
+        Vec3::new(0.0, 20.0 * S, 8.0 * S),
         Vec3::new(head_pitch, head_rot_yaw, 0.0),
-        Vec3::new(4.0 * S, 23.0 * S, -12.0 * S),
-        Vec3::new(5.0 * S, 26.0 * S, -11.0 * S),
+        Vec3::new(4.0 * S, 23.0 * S, 10.0 * S),
+        Vec3::new(5.0 * S, 26.0 * S, 11.0 * S),
         (22.0, 0.0, 1.0, 3.0, 1.0),
         sky,
         block,
@@ -946,10 +955,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(-4.0 * S, 12.0 * S, -6.0 * S),
+        Vec3::new(-4.0 * S, 12.0 * S, 6.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
-        Vec3::new(-6.0 * S, 0.0, -8.0 * S),
-        Vec3::new(-2.0 * S, 12.0 * S, -4.0 * S),
+        Vec3::new(-6.0 * S, 0.0, 4.0 * S),
+        Vec3::new(-2.0 * S, 12.0 * S, 8.0 * S),
         (0.0, 16.0, 4.0, 12.0, 4.0),
         sky,
         block,
@@ -962,10 +971,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(4.0 * S, 12.0 * S, -6.0 * S),
+        Vec3::new(4.0 * S, 12.0 * S, 6.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
-        Vec3::new(2.0 * S, 0.0, -8.0 * S),
-        Vec3::new(6.0 * S, 12.0 * S, -4.0 * S),
+        Vec3::new(2.0 * S, 0.0, 4.0 * S),
+        Vec3::new(6.0 * S, 12.0 * S, 8.0 * S),
         (0.0, 16.0, 4.0, 12.0, 4.0),
         sky,
         block,
@@ -978,10 +987,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(-4.0 * S, 12.0 * S, 6.0 * S),
+        Vec3::new(-4.0 * S, 12.0 * S, -6.0 * S),
         Vec3::new(-leg_pitch, 0.0, 0.0),
-        Vec3::new(-6.0 * S, 0.0, 4.0 * S),
-        Vec3::new(-2.0 * S, 12.0 * S, 8.0 * S),
+        Vec3::new(-6.0 * S, 0.0, -8.0 * S),
+        Vec3::new(-2.0 * S, 12.0 * S, -4.0 * S),
         (0.0, 16.0, 4.0, 12.0, 4.0),
         sky,
         block,
@@ -994,10 +1003,10 @@ fn build_cow_mesh(
         entity.pos,
         body_quat,
         death_lift,
-        Vec3::new(4.0 * S, 12.0 * S, 6.0 * S),
+        Vec3::new(4.0 * S, 12.0 * S, -6.0 * S),
         Vec3::new(leg_pitch, 0.0, 0.0),
-        Vec3::new(2.0 * S, 0.0, 4.0 * S),
-        Vec3::new(6.0 * S, 12.0 * S, 8.0 * S),
+        Vec3::new(2.0 * S, 0.0, -8.0 * S),
+        Vec3::new(6.0 * S, 12.0 * S, -4.0 * S),
         (0.0, 16.0, 4.0, 12.0, 4.0),
         sky,
         block,

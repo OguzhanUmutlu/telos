@@ -24,7 +24,7 @@ pub const FLY_SPEED: f32 = 14.0;
 /// Sprinting creative flight speed in blocks/s.
 pub const FLY_SPRINT_SPEED: f32 = 35.0;
 /// Maximum step-up height for walking over slabs and stairs without jumping.
-pub const STEP_HEIGHT: f64 = 0.5;
+pub const STEP_HEIGHT: f64 = 0.6;
 
 /// Player game mode controlling physics rules and flight capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -333,7 +333,7 @@ impl PlayerPhysicsController {
             let move_speed = base_speed * self.speed_multiplier.max(0.1);
 
             let target_h = wish_dir * move_speed;
-            let accel = if self.on_ground { 15.0 * dt } else { 3.5 * dt };
+            let accel = if self.on_ground { 15.0 * dt } else { 10.0 * dt };
 
             if wish_dir == Vec3::ZERO {
                 let friction = if self.on_ground {
@@ -358,6 +358,13 @@ impl PlayerPhysicsController {
             if input.jump && self.on_ground {
                 self.vel.y = JUMP_VELOCITY + self.jump_boost;
                 self.on_ground = false;
+
+                // Forward leap impulse on jump (Minecraft adds forward momentum when jumping while moving)
+                if wish_dir != Vec3::ZERO {
+                    let boost = if input.sprint { 4.0 } else { 1.5 };
+                    self.vel.x += wish_dir.x * boost;
+                    self.vel.z += wish_dir.z * boost;
+                }
             }
 
             // Gravity
@@ -482,7 +489,8 @@ impl PlayerPhysicsController {
         let (normal_box, normal_dx, normal_dz) =
             Self::resolve_horizontal(player_box, wish_dx, wish_dz, &colliders);
 
-        if self.on_ground
+        let can_attempt_step = self.on_ground || self.vel.y > 0.0;
+        if can_attempt_step
             && (normal_dx.abs() < wish_dx.abs() - 1e-4 || normal_dz.abs() < wish_dz.abs() - 1e-4)
         {
             // Collision occurred with a step or obstacle: attempt step-up
@@ -532,6 +540,9 @@ impl PlayerPhysicsController {
                 if step_dist_sq > normal_dist_sq + 1e-4 {
                     player_box = elevated_box;
                     self.on_ground = true;
+                    if self.vel.y < 0.0 {
+                        self.vel.y = 0.0;
+                    }
                 } else {
                     player_box = normal_box;
                 }
@@ -731,5 +742,44 @@ mod tests {
         assert!(controller.on_ground);
         assert!(controller.pos.x <= 1.0);
         assert_eq!(controller.pos.y, 64.0);
+    }
+
+    #[test]
+    fn test_jump_onto_block() {
+        let mut controller =
+            PlayerPhysicsController::new(DVec3::new(0.5, 64.0, 0.5), GameMode::Survival);
+        controller.on_ground = true;
+
+        let mut input = PlayerInputState {
+            forward: true,
+            jump: true,
+            sprint: true,
+            ..Default::default()
+        };
+
+        // Ground at Y = 63, and 1-block high step at X = 1..=3, Y = 64 (height 1.0)
+        let colliders = |bx: i32, by: i32, bz: i32, out: &mut Vec<Aabb>| {
+            if (by == 63 && bx.abs() <= 4 && bz.abs() <= 2)
+                || ((1..=3).contains(&bx) && by == 64 && bz.abs() <= 2)
+            {
+                out.push(Aabb::from_block(bx, by, bz));
+            }
+        };
+
+        // Advance simulation: jump forward towards the 1-block step
+        controller.update(0.05, 0.0, &input, colliders);
+        input.jump = false;
+        for _ in 1..10 {
+            controller.update(0.05, 0.0, &input, colliders);
+        }
+
+        // Player should have successfully jumped onto the 1.0-high block
+        assert!(controller.pos.x > 1.0, "pos.x was {}", controller.pos.x);
+        assert!(
+            (controller.pos.y - 65.0).abs() < 1e-2,
+            "pos.y was {}",
+            controller.pos.y
+        );
+        assert!(controller.on_ground);
     }
 }

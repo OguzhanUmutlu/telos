@@ -329,18 +329,105 @@ pub fn mesh_cross_model(
     out.push(T2Quad::new(v0_r, v1_r, v2_r, v3_r));
 
     // Diagonal 2: (1, 0) to (0, 1)
+    // Offset slightly along normal n2 (0.0005 blocks) to avoid exact coplanar Z-fighting at the center line (0.5, 0.5)
+    let offset2 = n2 * 0.0005;
+    let p100_off = p100 + offset2;
+    let p001_off = p001 + offset2;
+    let p011_off = p011 + offset2;
+    let p110_off = p110 + offset2;
+
     // Forward quad
-    let v0_2 = T2Vertex::new(p100, [0.0, 1.0], material, n2, 3, sky, block, false, false);
-    let v1_2 = T2Vertex::new(p001, [1.0, 1.0], material, n2, 3, sky, block, false, false);
-    let v2_2 = T2Vertex::new(p011, [1.0, 0.0], material, n2, 3, sky, block, false, false);
-    let v3_2 = T2Vertex::new(p110, [0.0, 0.0], material, n2, 3, sky, block, false, false);
+    let v0_2 = T2Vertex::new(
+        p100_off,
+        [0.0, 1.0],
+        material,
+        n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v1_2 = T2Vertex::new(
+        p001_off,
+        [1.0, 1.0],
+        material,
+        n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v2_2 = T2Vertex::new(
+        p011_off,
+        [1.0, 0.0],
+        material,
+        n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v3_2 = T2Vertex::new(
+        p110_off,
+        [0.0, 0.0],
+        material,
+        n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
     out.push(T2Quad::new(v0_2, v1_2, v2_2, v3_2));
 
     // Reverse quad
-    let v0_2r = T2Vertex::new(p001, [0.0, 1.0], material, -n2, 3, sky, block, false, false);
-    let v1_2r = T2Vertex::new(p100, [1.0, 1.0], material, -n2, 3, sky, block, false, false);
-    let v2_2r = T2Vertex::new(p110, [1.0, 0.0], material, -n2, 3, sky, block, false, false);
-    let v3_2r = T2Vertex::new(p011, [0.0, 0.0], material, -n2, 3, sky, block, false, false);
+    let v0_2r = T2Vertex::new(
+        p001_off,
+        [0.0, 1.0],
+        material,
+        -n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v1_2r = T2Vertex::new(
+        p100_off,
+        [1.0, 1.0],
+        material,
+        -n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v2_2r = T2Vertex::new(
+        p110_off,
+        [1.0, 0.0],
+        material,
+        -n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
+    let v3_2r = T2Vertex::new(
+        p011_off,
+        [0.0, 0.0],
+        material,
+        -n2,
+        3,
+        sky,
+        block,
+        false,
+        false,
+    );
     out.push(T2Quad::new(v0_2r, v1_2r, v2_2r, v3_2r));
 }
 

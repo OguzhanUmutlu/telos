@@ -116,7 +116,7 @@ impl SettingsScreen {
         let col_w = 145.0;
         let col1_x = center_x - col_w - 6.0;
         let col2_x = center_x + 6.0;
-        let start_y = 66.0;
+        let start_y = 76.0;
         let row_h = 24.0;
 
         self.sliders.clear();
@@ -170,8 +170,8 @@ impl SettingsScreen {
                     col_w,
                     22.0,
                     "FPS Limit",
-                    30.0,
-                    240.0,
+                    0.0,
+                    360.0,
                     self.settings.video.fps_limit as f32,
                     " FPS",
                     true,
@@ -646,7 +646,7 @@ impl SettingsScreen {
                 out.push(UiQuad::solid(
                     [px_x, px_y],
                     [px_w, scale.max(1) as u16 * 2],
-                    UiQuad::rgba(255, 215, 0, 255),
+                    UiQuad::rgba(56, 189, 248, 255),
                 ));
             }
         }

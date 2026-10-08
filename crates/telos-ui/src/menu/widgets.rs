@@ -205,6 +205,16 @@ impl MenuSlider {
     /// Formats the current display string.
     #[must_use]
     pub fn display_text(&self) -> String {
+        if self.prefix == "FPS Limit" {
+            let val = self.value.round() as i32;
+            if val <= 0 {
+                return "FPS Limit: VSync".to_string();
+            }
+            if val >= self.max.round() as i32 {
+                return "FPS Limit: Unlimited".to_string();
+            }
+            return format!("FPS Limit: {val} FPS");
+        }
         if self.is_int {
             format!("{}: {}{}", self.prefix, self.value as i32, self.suffix)
         } else if self.suffix == "%" {

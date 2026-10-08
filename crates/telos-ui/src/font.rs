@@ -38,6 +38,67 @@ pub struct BitmapFont {
     pub texture_layer: u32,
 }
 
+/// Maps a Unicode character to its corresponding CP437 glyph index in Minecraft's `ascii.png` font texture.
+#[must_use]
+pub fn unicode_to_cp437(ch: char) -> u8 {
+    if ch.is_ascii() {
+        return ch as u8;
+    }
+    match ch {
+        // Degree symbol
+        '°' => 248,
+        // Spanish / French / German / Nordic characters
+        'Ç' => 128,
+        'ü' => 129,
+        'é' => 130,
+        'â' => 131,
+        'ä' => 132,
+        'à' => 133,
+        'å' => 134,
+        'ç' => 135,
+        'ê' => 136,
+        'ë' => 137,
+        'è' => 138,
+        'ï' => 139,
+        'î' => 140,
+        'ì' => 141,
+        'Ä' => 142,
+        'Å' => 143,
+        'É' => 144,
+        'æ' => 145,
+        'Æ' => 146,
+        'ô' => 147,
+        'ö' => 148,
+        'ò' => 149,
+        'û' => 150,
+        'ù' => 151,
+        'ÿ' => 152,
+        'Ö' => 153,
+        'Ü' => 154,
+        'á' => 160,
+        'í' => 161,
+        'ó' => 162,
+        'ú' => 163,
+        'ñ' => 164,
+        'Ñ' => 165,
+        '¿' => 168,
+        '¡' => 173,
+        '«' => 174,
+        '»' => 175,
+        'ß' => 225,
+        '±' => 241,
+        '·' | '•' => 250,
+        // Turkish Latin Extended mapping
+        'ğ' => b'g',
+        'Ğ' => b'G',
+        'ı' => b'i',
+        'İ' => b'I',
+        'ş' => b's',
+        'Ş' => b'S',
+        _ => b'?',
+    }
+}
+
 impl BitmapFont {
     /// Builds a `BitmapFont` from raw RGBA8 image pixels (e.g. `ascii.png`).
     #[must_use]
@@ -177,7 +238,7 @@ impl BitmapFont {
                 continue;
             }
 
-            let idx = (ch as usize).min(255);
+            let idx = unicode_to_cp437(ch) as usize;
             current_width += self.glyphs[idx].advance;
         }
 
@@ -251,10 +312,11 @@ impl BitmapFont {
                 continue;
             }
 
-            let idx = (ch as usize).min(255);
+            let cp = unicode_to_cp437(ch);
+            let idx = cp as usize;
             let glyph = &self.glyphs[idx];
 
-            if ch != ' ' {
+            if ch != ' ' && cp != 32 {
                 let px_x = snap_to_physical(cur_x, gui_scale);
                 let px_y = snap_to_physical(cur_y, gui_scale);
                 let glyph_w = (8 * gui_scale) as u16;
@@ -303,5 +365,22 @@ impl BitmapFont {
             'f' => UiQuad::rgba(255, 255, 255, 255),
             _ => default_color,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unicode_to_cp437_mappings() {
+        assert_eq!(unicode_to_cp437('°'), 248);
+        assert_eq!(unicode_to_cp437('ñ'), 164);
+        assert_eq!(unicode_to_cp437('ç'), 135);
+        assert_eq!(unicode_to_cp437('ü'), 129);
+        assert_eq!(unicode_to_cp437('ö'), 148);
+        assert_eq!(unicode_to_cp437('ğ'), b'g');
+        assert_eq!(unicode_to_cp437('ı'), b'i');
+        assert_eq!(unicode_to_cp437('ş'), b's');
     }
 }

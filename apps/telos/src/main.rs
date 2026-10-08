@@ -440,6 +440,13 @@ struct SkyPushConstants {
 }
 const _: () = assert!(size_of::<SkyPushConstants>() == 128);
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PanoramaPushConstants {
+    inv_view_proj: [f32; 16],
+}
+const _: () = assert!(size_of::<PanoramaPushConstants>() == 64);
+
 /// GPU representation of an atmospheric precipitation particle (rain streak or snowflake).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1358,6 +1365,14 @@ struct App {
     sky_descriptor_pool: Option<vk::DescriptorPool>,
     sky_descriptor_set: Option<vk::DescriptorSet>,
 
+    // 3D Title Screen Rotating Panorama
+    panorama_texture: Option<GpuTextureArray>,
+    panorama_pipeline: Option<GraphicsPipeline>,
+    panorama_frag_shader: Option<ShaderModule>,
+    panorama_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    panorama_descriptor_pool: Option<vk::DescriptorPool>,
+    panorama_descriptor_set: Option<vk::DescriptorSet>,
+
     // Weather Simulation & Precipitation Particles
     weather_rain_level: f32,
     weather_thunder_level: f32,
@@ -1809,6 +1824,13 @@ impl App {
             sky_descriptor_set_layout: None,
             sky_descriptor_pool: None,
             sky_descriptor_set: None,
+
+            panorama_texture: None,
+            panorama_pipeline: None,
+            panorama_frag_shader: None,
+            panorama_descriptor_set_layout: None,
+            panorama_descriptor_pool: None,
+            panorama_descriptor_set: None,
 
             weather_rain_level: 0.0,
             weather_thunder_level: 0.0,
@@ -2838,12 +2860,10 @@ impl App {
         clippy::too_many_lines
     )]
     fn update_particles(&mut self, dt: f32) {
-        // Dev/screenshot showcase burst: trigger a visual particle burst when in screenshot mode or on frame 20
-        let should_spawn_burst = if self.args.screenshot.is_some() {
-            false
-        } else {
-            self.total_frames == 20
-        };
+        // Dev/screenshot showcase burst: trigger a visual particle burst when in screenshot mode in-game
+        let should_spawn_burst = self.current_screen == AppScreen::InGame
+            && self.args.screenshot.is_some()
+            && self.total_frames == 20;
 
         if should_spawn_burst {
             let forward = self.camera.forward();
@@ -4395,145 +4415,155 @@ impl App {
             };
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
-            // Early Pass 1: Opaque T0
-            let t0_pc = TerrainMdiPushConstants {
-                view_proj,
-                draw_info_buffer_address: mdi.opaque_draw_early.device_address(),
-            };
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout(),
-                0,
-                &[descriptor_set],
-                &[],
-            );
-            device.cmd_push_constants(
-                cmd,
-                pipeline.layout(),
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytemuck::bytes_of(&t0_pc),
-            );
-            device.cmd_draw_indirect_count(
-                cmd,
-                mdi.opaque_cmd_early.raw(),
-                0,
-                mdi.chunk_counts_early.raw(),
-                0,
-                MAX_CHUNK_CANDIDATES as u32,
-                16,
-            );
-
-            // Early Pass 2: Opaque T1
-            if let Some(t1_pipeline) = &self.t1_pipeline {
-                let t1_pc = TerrainMdiPushConstants {
+            if self.current_screen == AppScreen::InGame {
+                // Early Pass 1: Opaque T0
+                let t0_pc = TerrainMdiPushConstants {
                     view_proj,
-                    draw_info_buffer_address: mdi.t1_draw_early.device_address(),
+                    draw_info_buffer_address: mdi.opaque_draw_early.device_address(),
                 };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, t1_pipeline.raw());
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
-                    t1_pipeline.layout(),
+                    pipeline.layout(),
                     0,
                     &[descriptor_set],
                     &[],
                 );
                 device.cmd_push_constants(
                     cmd,
-                    t1_pipeline.layout(),
+                    pipeline.layout(),
                     vk::ShaderStageFlags::VERTEX,
                     0,
-                    bytemuck::bytes_of(&t1_pc),
+                    bytemuck::bytes_of(&t0_pc),
                 );
                 device.cmd_draw_indirect_count(
                     cmd,
-                    mdi.t1_cmd_early.raw(),
+                    mdi.opaque_cmd_early.raw(),
                     0,
                     mdi.chunk_counts_early.raw(),
-                    4,
+                    0,
                     MAX_CHUNK_CANDIDATES as u32,
                     16,
                 );
-            }
 
-            // Early Pass 3: Cutout
-            if let Some(cutout_pipeline) = &self.cutout_pipeline {
-                let cutout_pc = TerrainMdiPushConstants {
-                    view_proj,
-                    draw_info_buffer_address: mdi.cutout_draw_early.device_address(),
-                };
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    cutout_pipeline.raw(),
-                );
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    cutout_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    cutout_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    bytemuck::bytes_of(&cutout_pc),
-                );
-                device.cmd_draw_indirect_count(
-                    cmd,
-                    mdi.cutout_cmd_early.raw(),
-                    0,
-                    mdi.chunk_counts_early.raw(),
-                    8,
-                    MAX_CHUNK_CANDIDATES as u32,
-                    16,
-                );
-            }
+                // Early Pass 2: Opaque T1
+                if let Some(t1_pipeline) = &self.t1_pipeline {
+                    let t1_pc = TerrainMdiPushConstants {
+                        view_proj,
+                        draw_info_buffer_address: mdi.t1_draw_early.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t1_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t1_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        t1_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytemuck::bytes_of(&t1_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.t1_cmd_early.raw(),
+                        0,
+                        mdi.chunk_counts_early.raw(),
+                        4,
+                        MAX_CHUNK_CANDIDATES as u32,
+                        16,
+                    );
+                }
 
-            // Early Pass 4: LOD
-            if let Some(lod_pipeline) = &self.lod_pipeline {
-                let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
-                let lod_pc = LodMdiPushConstants {
-                    view_proj,
-                    camera_pos: [
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z,
-                    ],
-                    max_distance: max_dist,
-                    draw_info_buffer_address: mdi.lod_draw_early.device_address(),
-                };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    lod_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    lod_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&lod_pc),
-                );
-                device.cmd_draw_indirect_count(
-                    cmd,
-                    mdi.lod_cmd_early.raw(),
-                    0,
-                    mdi.lod_counts_early.raw(),
-                    0,
-                    MAX_LOD_CANDIDATES as u32,
-                    16,
-                );
+                // Early Pass 3: Cutout
+                if let Some(cutout_pipeline) = &self.cutout_pipeline {
+                    let cutout_pc = TerrainMdiPushConstants {
+                        view_proj,
+                        draw_info_buffer_address: mdi.cutout_draw_early.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        cutout_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        cutout_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        cutout_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytemuck::bytes_of(&cutout_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.cutout_cmd_early.raw(),
+                        0,
+                        mdi.chunk_counts_early.raw(),
+                        8,
+                        MAX_CHUNK_CANDIDATES as u32,
+                        16,
+                    );
+                }
+
+                // Early Pass 4: LOD
+                if let Some(lod_pipeline) = &self.lod_pipeline {
+                    let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
+                    let lod_pc = LodMdiPushConstants {
+                        view_proj,
+                        camera_pos: [
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                        ],
+                        max_distance: max_dist,
+                        draw_info_buffer_address: mdi.lod_draw_early.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        lod_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        lod_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        lod_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&lod_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.lod_cmd_early.raw(),
+                        0,
+                        mdi.lod_counts_early.raw(),
+                        0,
+                        MAX_LOD_CANDIDATES as u32,
+                        16,
+                    );
+                }
             }
 
             device.cmd_end_rendering(cmd);
@@ -4834,205 +4864,251 @@ impl App {
             device.cmd_set_viewport(cmd, 0, &[viewport]);
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
-            // Late Pass 1: Opaque T0
-            let late_t0_pc = TerrainMdiPushConstants {
-                view_proj,
-                draw_info_buffer_address: mdi.opaque_draw_late.device_address(),
-            };
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout(),
-                0,
-                &[descriptor_set],
-                &[],
-            );
-            device.cmd_push_constants(
-                cmd,
-                pipeline.layout(),
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytemuck::bytes_of(&late_t0_pc),
-            );
-            device.cmd_draw_indirect_count(
-                cmd,
-                mdi.opaque_cmd_late.raw(),
-                0,
-                mdi.chunk_counts_late.raw(),
-                0,
-                MAX_CHUNK_CANDIDATES as u32,
-                16,
-            );
-
-            // Late Pass 2: Opaque T1
-            if let Some(t1_pipeline) = &self.t1_pipeline {
-                let late_t1_pc = TerrainMdiPushConstants {
+            if self.current_screen == AppScreen::InGame {
+                // Late Pass 1: Opaque T0
+                let late_t0_pc = TerrainMdiPushConstants {
                     view_proj,
-                    draw_info_buffer_address: mdi.t1_draw_late.device_address(),
+                    draw_info_buffer_address: mdi.opaque_draw_late.device_address(),
                 };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, t1_pipeline.raw());
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.raw());
                 device.cmd_bind_descriptor_sets(
                     cmd,
                     vk::PipelineBindPoint::GRAPHICS,
-                    t1_pipeline.layout(),
+                    pipeline.layout(),
                     0,
                     &[descriptor_set],
                     &[],
                 );
                 device.cmd_push_constants(
                     cmd,
-                    t1_pipeline.layout(),
+                    pipeline.layout(),
                     vk::ShaderStageFlags::VERTEX,
                     0,
-                    bytemuck::bytes_of(&late_t1_pc),
+                    bytemuck::bytes_of(&late_t0_pc),
                 );
                 device.cmd_draw_indirect_count(
                     cmd,
-                    mdi.t1_cmd_late.raw(),
+                    mdi.opaque_cmd_late.raw(),
                     0,
                     mdi.chunk_counts_late.raw(),
-                    4,
+                    0,
                     MAX_CHUNK_CANDIDATES as u32,
                     16,
                 );
-            }
 
-            // Late Pass 3: Cutout
-            if let Some(cutout_pipeline) = &self.cutout_pipeline {
-                let late_cutout_pc = TerrainMdiPushConstants {
-                    view_proj,
-                    draw_info_buffer_address: mdi.cutout_draw_late.device_address(),
-                };
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    cutout_pipeline.raw(),
-                );
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    cutout_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    cutout_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    bytemuck::bytes_of(&late_cutout_pc),
-                );
-                device.cmd_draw_indirect_count(
-                    cmd,
-                    mdi.cutout_cmd_late.raw(),
-                    0,
-                    mdi.chunk_counts_late.raw(),
-                    8,
-                    MAX_CHUNK_CANDIDATES as u32,
-                    16,
-                );
-            }
+                // Late Pass 2: Opaque T1
+                if let Some(t1_pipeline) = &self.t1_pipeline {
+                    let late_t1_pc = TerrainMdiPushConstants {
+                        view_proj,
+                        draw_info_buffer_address: mdi.t1_draw_late.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t1_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t1_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        t1_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytemuck::bytes_of(&late_t1_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.t1_cmd_late.raw(),
+                        0,
+                        mdi.chunk_counts_late.raw(),
+                        4,
+                        MAX_CHUNK_CANDIDATES as u32,
+                        16,
+                    );
+                }
 
-            // Late Pass 3b: Cutout T2 (Flora & torches: poppy, dandelion, torch)
-            if let Some(t2_cutout_pipeline) = &self.t2_cutout_pipeline {
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    t2_cutout_pipeline.raw(),
-                );
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    t2_cutout_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
-                for mesh in self.chunk_meshes.values() {
-                    if let Some(layer) = &mesh.t2_cutout
-                        && layer.quad_count > 0
-                    {
-                        let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
-                        if center.distance_squared(self.camera.position) > max_dist_sq {
-                            continue;
+                // Late Pass 3: Cutout
+                if let Some(cutout_pipeline) = &self.cutout_pipeline {
+                    let late_cutout_pc = TerrainMdiPushConstants {
+                        view_proj,
+                        draw_info_buffer_address: mdi.cutout_draw_late.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        cutout_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        cutout_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        cutout_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytemuck::bytes_of(&late_cutout_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.cutout_cmd_late.raw(),
+                        0,
+                        mdi.chunk_counts_late.raw(),
+                        8,
+                        MAX_CHUNK_CANDIDATES as u32,
+                        16,
+                    );
+                }
+
+                // Late Pass 3b: Cutout T2 (Flora & torches: poppy, dandelion, torch)
+                if let Some(t2_cutout_pipeline) = &self.t2_cutout_pipeline {
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t2_cutout_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t2_cutout_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
+                    for mesh in self.chunk_meshes.values() {
+                        if let Some(layer) = &mesh.t2_cutout
+                            && layer.quad_count > 0
+                        {
+                            let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
+                            if center.distance_squared(self.camera.position) > max_dist_sq {
+                                continue;
+                            }
+                            let pc = T2PushConstants {
+                                view_proj,
+                                quad_buffer_address: layer.buffer.device_address(),
+                                chunk_x: mesh.pos[0],
+                                chunk_y: mesh.pos[1],
+                                camera_pos: [
+                                    self.camera.position.x,
+                                    self.camera.position.y,
+                                    self.camera.position.z,
+                                    sim_dist_meters,
+                                ],
+                                chunk_z: mesh.pos[2],
+                                frame_tick_flags: self.frame_tick & 0x7FFF_FFFF,
+                                water_base_layer: self.anim_textures.water_still.base_layer,
+                                water_frame_count: self.anim_textures.water_still.frame_count,
+                                lava_base_layer: self.anim_textures.lava_still.base_layer,
+                                lava_frame_count: self.anim_textures.lava_still.frame_count,
+                                fire_base_layer: self.anim_textures.fire.base_layer,
+                                fire_frame_count: self.anim_textures.fire.frame_count,
+                            };
+                            device.cmd_push_constants(
+                                cmd,
+                                t2_cutout_pipeline.layout(),
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                bytemuck::bytes_of(&pc),
+                            );
+                            device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
                         }
-                        let pc = T2PushConstants {
-                            view_proj,
-                            quad_buffer_address: layer.buffer.device_address(),
-                            chunk_x: mesh.pos[0],
-                            chunk_y: mesh.pos[1],
-                            camera_pos: [
-                                self.camera.position.x,
-                                self.camera.position.y,
-                                self.camera.position.z,
-                                sim_dist_meters,
-                            ],
-                            chunk_z: mesh.pos[2],
-                            frame_tick_flags: self.frame_tick & 0x7FFF_FFFF,
-                            water_base_layer: self.anim_textures.water_still.base_layer,
-                            water_frame_count: self.anim_textures.water_still.frame_count,
-                            lava_base_layer: self.anim_textures.lava_still.base_layer,
-                            lava_frame_count: self.anim_textures.lava_still.frame_count,
-                            fire_base_layer: self.anim_textures.fire.base_layer,
-                            fire_frame_count: self.anim_textures.fire.frame_count,
-                        };
-                        device.cmd_push_constants(
-                            cmd,
-                            t2_cutout_pipeline.layout(),
-                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                            0,
-                            bytemuck::bytes_of(&pc),
-                        );
-                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
                     }
+                }
+
+                // Late Pass 4: LOD
+                if let Some(lod_pipeline) = &self.lod_pipeline {
+                    let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
+                    let late_lod_pc = LodMdiPushConstants {
+                        view_proj,
+                        camera_pos: [
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                        ],
+                        max_distance: max_dist,
+                        draw_info_buffer_address: mdi.lod_draw_late.device_address(),
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        lod_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        lod_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        lod_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&late_lod_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.lod_cmd_late.raw(),
+                        0,
+                        mdi.lod_counts_late.raw(),
+                        0,
+                        MAX_LOD_CANDIDATES as u32,
+                        16,
+                    );
                 }
             }
 
-            // Late Pass 4: LOD
-            if let Some(lod_pipeline) = &self.lod_pipeline {
-                let max_dist = (self.view_distance as f32 * 32.0) * 4.0;
-                let late_lod_pc = LodMdiPushConstants {
-                    view_proj,
-                    camera_pos: [
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z,
-                    ],
-                    max_distance: max_dist,
-                    draw_info_buffer_address: mdi.lod_draw_late.device_address(),
-                };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, lod_pipeline.raw());
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    lod_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    lod_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&late_lod_pc),
-                );
-                device.cmd_draw_indirect_count(
-                    cmd,
-                    mdi.lod_cmd_late.raw(),
-                    0,
-                    mdi.lod_counts_late.raw(),
-                    0,
-                    MAX_LOD_CANDIDATES as u32,
-                    16,
-                );
-            }
+            // Pass 12: Celestial Sky Pass (or 3D Rotating Panorama Skybox for Menus)
+            if self.current_screen != AppScreen::InGame {
+                if let (Some(pano_pipe), Some(pano_set)) =
+                    (&self.panorama_pipeline, self.panorama_descriptor_set)
+                {
+                    let yaw = (self.frame_counter as f32 * 0.0015) % std::f32::consts::TAU;
+                    let fov = 85.0_f32.to_radians();
+                    let aspect = swapchain_extent.width as f32 / swapchain_extent.height as f32;
+                    let mut pano_cam = Camera::new(Vec3::ZERO);
+                    pano_cam.yaw = yaw;
+                    pano_cam.pitch = 0.0;
+                    pano_cam.fov_y = fov;
+                    let inv_view_proj = pano_cam.view_proj_matrix(aspect).inverse();
+                    let pano_pc = PanoramaPushConstants {
+                        inv_view_proj: inv_view_proj.to_cols_array(),
+                    };
 
-            // Pass 12: Celestial Sky Pass (Fullscreen reversed-Z triangle at z = 0.0)
-            if let (Some(sky_pipe), Some(sky_set)) = (&self.sky_pipeline, self.sky_descriptor_set) {
+                    device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pano_pipe.raw());
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pano_pipe.layout(),
+                        0,
+                        &[pano_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        pano_pipe.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&pano_pc),
+                    );
+                    device.cmd_draw(cmd, 3, 1, 0, 0);
+                }
+            } else if let (Some(sky_pipe), Some(sky_set)) =
+                (&self.sky_pipeline, self.sky_descriptor_set)
+            {
                 let sky_pc = SkyPushConstants {
                     inv_view_proj,
                     sun_dir: sun_dir.to_array(),
@@ -5069,272 +5145,286 @@ impl App {
                 device.cmd_draw(cmd, 3, 1, 0, 0);
             }
 
-            // Late Pass 5: Translucent (Water)
-            if let Some(trans_pipeline) = &self.translucent_pipeline {
-                let trans_pc = TranslucentMdiPushConstants {
-                    view_proj,
-                    draw_info_buffer_address: mdi.translucent_draw_late.device_address(),
-                    frame_tick: self.frame_tick,
-                    water_base_layer: self.anim_textures.water_still.base_layer,
-                    camera_pos: [
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z,
-                        sim_dist_meters,
-                    ],
-                    water_frame_count: self.anim_textures.water_still.frame_count,
-                    water_flow_base_layer: self.anim_textures.water_flow.base_layer,
-                    water_flow_frame_count: self.anim_textures.water_flow.frame_count,
-                    lava_base_layer: self.anim_textures.lava_still.base_layer,
-                    lava_frame_count: self.anim_textures.lava_still.frame_count,
-                    fire_base_layer: self.anim_textures.fire.base_layer,
-                    fire_frame_count: self.anim_textures.fire.frame_count,
-                    _pad: 0,
-                };
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    trans_pipeline.raw(),
-                );
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    trans_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    trans_pipeline.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&trans_pc),
-                );
-                device.cmd_draw_indirect_count(
-                    cmd,
-                    mdi.translucent_cmd_late.raw(),
-                    0,
-                    mdi.chunk_counts_late.raw(),
-                    12,
-                    MAX_CHUNK_CANDIDATES as u32,
-                    16,
-                );
-            }
+            if self.current_screen == AppScreen::InGame {
+                // Late Pass 5: Translucent (Water)
+                if let Some(trans_pipeline) = &self.translucent_pipeline {
+                    let trans_pc = TranslucentMdiPushConstants {
+                        view_proj,
+                        draw_info_buffer_address: mdi.translucent_draw_late.device_address(),
+                        frame_tick: self.frame_tick,
+                        water_base_layer: self.anim_textures.water_still.base_layer,
+                        camera_pos: [
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                            sim_dist_meters,
+                        ],
+                        water_frame_count: self.anim_textures.water_still.frame_count,
+                        water_flow_base_layer: self.anim_textures.water_flow.base_layer,
+                        water_flow_frame_count: self.anim_textures.water_flow.frame_count,
+                        lava_base_layer: self.anim_textures.lava_still.base_layer,
+                        lava_frame_count: self.anim_textures.lava_still.frame_count,
+                        fire_base_layer: self.anim_textures.fire.base_layer,
+                        fire_frame_count: self.anim_textures.fire.frame_count,
+                        _pad: 0,
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        trans_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        trans_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        trans_pipeline.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&trans_pc),
+                    );
+                    device.cmd_draw_indirect_count(
+                        cmd,
+                        mdi.translucent_cmd_late.raw(),
+                        0,
+                        mdi.chunk_counts_late.raw(),
+                        12,
+                        MAX_CHUNK_CANDIDATES as u32,
+                        16,
+                    );
+                }
 
-            // Late Pass 5b: Translucent T2 (Sloped fluids & waterlogging)
-            if let Some(t2_trans_pipeline) = &self.t2_translucent_pipeline {
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    t2_trans_pipeline.raw(),
-                );
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    t2_trans_pipeline.layout(),
-                    0,
-                    &[descriptor_set],
-                    &[],
-                );
-                let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
-                for mesh in self.chunk_meshes.values() {
-                    if let Some(layer) = &mesh.t2_translucent
-                        && layer.quad_count > 0
-                    {
-                        let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
-                        if center.distance_squared(self.camera.position) > max_dist_sq {
-                            continue;
+                // Late Pass 5b: Translucent T2 (Sloped fluids & waterlogging)
+                if let Some(t2_trans_pipeline) = &self.t2_translucent_pipeline {
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t2_trans_pipeline.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        t2_trans_pipeline.layout(),
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                    let max_dist_sq = (self.view_distance as f32 * 32.0).powi(2);
+                    for mesh in self.chunk_meshes.values() {
+                        if let Some(layer) = &mesh.t2_translucent
+                            && layer.quad_count > 0
+                        {
+                            let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
+                            if center.distance_squared(self.camera.position) > max_dist_sq {
+                                continue;
+                            }
+                            let pc = T2PushConstants {
+                                view_proj,
+                                quad_buffer_address: layer.buffer.device_address(),
+                                chunk_x: mesh.pos[0],
+                                chunk_y: mesh.pos[1],
+                                camera_pos: [
+                                    self.camera.position.x,
+                                    self.camera.position.y,
+                                    self.camera.position.z,
+                                    sim_dist_meters,
+                                ],
+                                chunk_z: mesh.pos[2],
+                                frame_tick_flags: (self.frame_tick & 0x7FFF_FFFF) | 0x8000_0000,
+                                water_base_layer: self.anim_textures.water_still.base_layer,
+                                water_frame_count: self.anim_textures.water_still.frame_count,
+                                lava_base_layer: self.anim_textures.lava_still.base_layer,
+                                lava_frame_count: self.anim_textures.lava_still.frame_count,
+                                fire_base_layer: self.anim_textures.fire.base_layer,
+                                fire_frame_count: self.anim_textures.fire.frame_count,
+                            };
+                            device.cmd_push_constants(
+                                cmd,
+                                t2_trans_pipeline.layout(),
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                bytemuck::bytes_of(&pc),
+                            );
+                            device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
                         }
-                        let pc = T2PushConstants {
+                    }
+                }
+
+                // Pass 14: Dynamic Entities (Mobs: Zombie, Pig, Cow)
+                if self.entity_vertex_count > 0
+                    && let (Some(entity_pipe), Some(entity_set), Some(entity_buf)) = (
+                        &self.entity_pipeline,
+                        self.entity_descriptor_set,
+                        &self.entity_buffer,
+                    )
+                {
+                    let entity_pc = EntityPushConstants {
+                        view_proj,
+                        vertex_buffer_address: entity_buf.device_address(),
+                        pad: [0, 0],
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        entity_pipe.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        entity_pipe.layout(),
+                        0,
+                        &[entity_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        entity_pipe.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&entity_pc),
+                    );
+                    device.cmd_draw(cmd, self.entity_vertex_count, 1, 0, 0);
+                }
+
+                // Pass 17: Atmospheric Precipitation Particles (Rain streaks & fluttering Snow)
+                if self.weather_particles_count > 0
+                    && let (Some(weather_pipe), Some(weather_set), Some(weather_buf)) = (
+                        &self.weather_pipeline,
+                        self.weather_descriptor_set,
+                        &self.weather_buffer,
+                    )
+                {
+                    let weather_pc = WeatherPushConstants {
+                        view_proj,
+                        camera_right: self.camera.right().to_array(),
+                        pad0: 0.0,
+                        camera_up: self.camera.up().to_array(),
+                        pad1: 0.0,
+                        particle_buffer_address: weather_buf.device_address(),
+                        pad2: [0, 0],
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        weather_pipe.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        weather_pipe.layout(),
+                        0,
+                        &[weather_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        weather_pipe.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&weather_pc),
+                    );
+                    device.cmd_draw(cmd, 6, self.weather_particles_count, 0, 0);
+                }
+
+                // Pass 17a: Visual Billboard Particles (Block debris, dust, torch smoke/flame, sparks, hearts)
+                if self.active_particles_count > 0
+                    && let (Some(particle_pipe), Some(particle_set), Some(particle_buf)) = (
+                        &self.particle_pipeline,
+                        self.particle_descriptor_set,
+                        &self.particle_buffer,
+                    )
+                {
+                    let particle_pc = ParticlePushConstants {
+                        view_proj,
+                        camera_right: self.camera.right().to_array(),
+                        pad0: 0.0,
+                        camera_up: self.camera.up().to_array(),
+                        pad1: 0.0,
+                        particle_buffer_address: particle_buf.device_address(),
+                        pad2: [0, 0],
+                    };
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        particle_pipe.raw(),
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        particle_pipe.layout(),
+                        0,
+                        &[particle_set],
+                        &[],
+                    );
+                    device.cmd_push_constants(
+                        cmd,
+                        particle_pipe.layout(),
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytemuck::bytes_of(&particle_pc),
+                    );
+                    device.cmd_draw(cmd, 6, self.active_particles_count, 0, 0);
+                }
+
+                // Pass 6: Block selection wireframe highlight
+                if let (Some(hit), Some(highlight_pipeline)) =
+                    (self.targeted_block, &self.highlight_pipeline)
+                {
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        highlight_pipeline.raw(),
+                    );
+                    #[allow(clippy::cast_precision_loss)]
+                    let (bx, by, bz) = (hit.pos.x() as f32, hit.pos.y() as f32, hit.pos.z() as f32);
+
+                    let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(hit.pos);
+                    let boxes = if let Some(snap) = self.chunks.get(&chunk_pos) {
+                        let state = snap.blocks().get(local_idx);
+                        match self.block_registry.shape(state) {
+                            BlockShape::Boxes(b) if !b.is_empty() => b.clone(),
+                            _ => vec![telos_voxel::shape::SubBox::FULL_CUBE],
+                        }
+                    } else {
+                        vec![telos_voxel::shape::SubBox::FULL_CUBE]
+                    };
+
+                    for b in boxes {
+                        #[allow(clippy::cast_precision_loss)]
+                        let min_bound = [
+                            bx + f32::from(b.min[0]) / 16.0 - 0.002,
+                            by + f32::from(b.min[1]) / 16.0 - 0.002,
+                            bz + f32::from(b.min[2]) / 16.0 - 0.002,
+                            0.0,
+                        ];
+                        #[allow(clippy::cast_precision_loss)]
+                        let max_bound = [
+                            bx + f32::from(b.max[0]) / 16.0 + 0.002,
+                            by + f32::from(b.max[1]) / 16.0 + 0.002,
+                            bz + f32::from(b.max[2]) / 16.0 + 0.002,
+                            0.0,
+                        ];
+
+                        let pc = HighlightPushConstants {
                             view_proj,
-                            quad_buffer_address: layer.buffer.device_address(),
-                            chunk_x: mesh.pos[0],
-                            chunk_y: mesh.pos[1],
-                            camera_pos: [
-                                self.camera.position.x,
-                                self.camera.position.y,
-                                self.camera.position.z,
-                                sim_dist_meters,
-                            ],
-                            chunk_z: mesh.pos[2],
-                            frame_tick_flags: (self.frame_tick & 0x7FFF_FFFF) | 0x8000_0000,
-                            water_base_layer: self.anim_textures.water_still.base_layer,
-                            water_frame_count: self.anim_textures.water_still.frame_count,
-                            lava_base_layer: self.anim_textures.lava_still.base_layer,
-                            lava_frame_count: self.anim_textures.lava_still.frame_count,
-                            fire_base_layer: self.anim_textures.fire.base_layer,
-                            fire_frame_count: self.anim_textures.fire.frame_count,
+                            min_bound,
+                            max_bound,
+                            color: [0.05, 0.05, 0.05, 0.75],
                         };
                         device.cmd_push_constants(
                             cmd,
-                            t2_trans_pipeline.layout(),
+                            highlight_pipeline.layout(),
                             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
                             bytemuck::bytes_of(&pc),
                         );
-                        device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                        device.cmd_draw(cmd, 24, 1, 0, 0);
                     }
-                }
-            }
-
-            // Pass 14: Dynamic Entities (Mobs: Zombie, Pig, Cow)
-            if self.entity_vertex_count > 0
-                && let (Some(entity_pipe), Some(entity_set), Some(entity_buf)) = (
-                    &self.entity_pipeline,
-                    self.entity_descriptor_set,
-                    &self.entity_buffer,
-                )
-            {
-                let entity_pc = EntityPushConstants {
-                    view_proj,
-                    vertex_buffer_address: entity_buf.device_address(),
-                    pad: [0, 0],
-                };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, entity_pipe.raw());
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    entity_pipe.layout(),
-                    0,
-                    &[entity_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    entity_pipe.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&entity_pc),
-                );
-                device.cmd_draw(cmd, self.entity_vertex_count, 1, 0, 0);
-            }
-
-            // Pass 17: Atmospheric Precipitation Particles (Rain streaks & fluttering Snow)
-            if self.weather_particles_count > 0
-                && let (Some(weather_pipe), Some(weather_set), Some(weather_buf)) = (
-                    &self.weather_pipeline,
-                    self.weather_descriptor_set,
-                    &self.weather_buffer,
-                )
-            {
-                let weather_pc = WeatherPushConstants {
-                    view_proj,
-                    camera_right: self.camera.right().to_array(),
-                    pad0: 0.0,
-                    camera_up: self.camera.up().to_array(),
-                    pad1: 0.0,
-                    particle_buffer_address: weather_buf.device_address(),
-                    pad2: [0, 0],
-                };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, weather_pipe.raw());
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    weather_pipe.layout(),
-                    0,
-                    &[weather_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    weather_pipe.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&weather_pc),
-                );
-                device.cmd_draw(cmd, 6, self.weather_particles_count, 0, 0);
-            }
-
-            // Pass 17a: Visual Billboard Particles (Block debris, dust, torch smoke/flame, sparks, hearts)
-            if self.active_particles_count > 0
-                && let (Some(particle_pipe), Some(particle_set), Some(particle_buf)) = (
-                    &self.particle_pipeline,
-                    self.particle_descriptor_set,
-                    &self.particle_buffer,
-                )
-            {
-                let particle_pc = ParticlePushConstants {
-                    view_proj,
-                    camera_right: self.camera.right().to_array(),
-                    pad0: 0.0,
-                    camera_up: self.camera.up().to_array(),
-                    pad1: 0.0,
-                    particle_buffer_address: particle_buf.device_address(),
-                    pad2: [0, 0],
-                };
-                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, particle_pipe.raw());
-                device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    particle_pipe.layout(),
-                    0,
-                    &[particle_set],
-                    &[],
-                );
-                device.cmd_push_constants(
-                    cmd,
-                    particle_pipe.layout(),
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    bytemuck::bytes_of(&particle_pc),
-                );
-                device.cmd_draw(cmd, 6, self.active_particles_count, 0, 0);
-            }
-
-            // Pass 6: Block selection wireframe highlight
-            if let (Some(hit), Some(highlight_pipeline)) =
-                (self.targeted_block, &self.highlight_pipeline)
-            {
-                device.cmd_bind_pipeline(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    highlight_pipeline.raw(),
-                );
-                #[allow(clippy::cast_precision_loss)]
-                let (bx, by, bz) = (hit.pos.x() as f32, hit.pos.y() as f32, hit.pos.z() as f32);
-
-                let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(hit.pos);
-                let boxes = if let Some(snap) = self.chunks.get(&chunk_pos) {
-                    let state = snap.blocks().get(local_idx);
-                    match self.block_registry.shape(state) {
-                        BlockShape::Boxes(b) if !b.is_empty() => b.clone(),
-                        _ => vec![telos_voxel::shape::SubBox::FULL_CUBE],
-                    }
-                } else {
-                    vec![telos_voxel::shape::SubBox::FULL_CUBE]
-                };
-
-                for b in boxes {
-                    #[allow(clippy::cast_precision_loss)]
-                    let min_bound = [
-                        bx + f32::from(b.min[0]) / 16.0 - 0.002,
-                        by + f32::from(b.min[1]) / 16.0 - 0.002,
-                        bz + f32::from(b.min[2]) / 16.0 - 0.002,
-                        0.0,
-                    ];
-                    #[allow(clippy::cast_precision_loss)]
-                    let max_bound = [
-                        bx + f32::from(b.max[0]) / 16.0 + 0.002,
-                        by + f32::from(b.max[1]) / 16.0 + 0.002,
-                        bz + f32::from(b.max[2]) / 16.0 + 0.002,
-                        0.0,
-                    ];
-
-                    let pc = HighlightPushConstants {
-                        view_proj,
-                        min_bound,
-                        max_bound,
-                        color: [0.05, 0.05, 0.05, 0.75],
-                    };
-                    device.cmd_push_constants(
-                        cmd,
-                        highlight_pipeline.layout(),
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        bytemuck::bytes_of(&pc),
-                    );
-                    device.cmd_draw(cmd, 24, 1, 0, 0);
                 }
             }
 
@@ -5365,11 +5455,13 @@ impl App {
                 let sun_dir = [sun_angle.sin(), sun_angle.cos(), 0.2];
 
                 let mut flags = 0u32;
-                if self.game_settings.video.ssao {
-                    flags |= 1;
-                }
-                if self.game_settings.video.volumetric_fog {
-                    flags |= 2;
+                if self.current_screen == AppScreen::InGame {
+                    if self.game_settings.video.ssao {
+                        flags |= 1;
+                    }
+                    if self.game_settings.video.volumetric_fog {
+                        flags |= 2;
+                    }
                 }
                 if self.game_settings.video.tonemapping {
                     flags |= 4;
@@ -7253,6 +7345,133 @@ impl ApplicationHandler for App {
         };
 
         // ---------------------------------------------------------------------
+        // Initialize 3D Rotating Panorama Skybox Resources (Phase 53)
+        // ---------------------------------------------------------------------
+        let panorama_texture = match load_and_upload_panorama_textures(&gpu_context) {
+            Ok(tex) => Some(tex),
+            Err(err) => {
+                tracing::warn!("Failed to load 3D panorama textures: {err}");
+                None
+            }
+        };
+
+        let pano_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let pano_bindings = [pano_binding];
+        let pano_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&pano_bindings);
+        let panorama_descriptor_set_layout = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_set_layout(&pano_layout_info, None)
+            {
+                Ok(l) => l,
+                Err(err) => {
+                    tracing::error!("Failed to create panorama descriptor set layout: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let pano_pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)];
+        let pano_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&pano_pool_sizes)
+            .max_sets(1);
+        let panorama_descriptor_pool = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .create_descriptor_pool(&pano_pool_info, None)
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!("Failed to create panorama descriptor pool: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        let pano_alloc_layouts = [panorama_descriptor_set_layout];
+        let pano_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(panorama_descriptor_pool)
+            .set_layouts(&pano_alloc_layouts);
+        let panorama_descriptor_set = unsafe {
+            match gpu_context
+                .device()
+                .raw()
+                .allocate_descriptor_sets(&pano_alloc_info)
+            {
+                Ok(mut sets) => sets.pop().unwrap(),
+                Err(err) => {
+                    tracing::error!("Failed to allocate panorama descriptor set: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        };
+
+        if let Some(pano_tex) = &panorama_texture {
+            let pano_image_info = [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(pano_tex.view())
+                .sampler(pano_tex.sampler())];
+            let pano_descriptor_write = [vk::WriteDescriptorSet::default()
+                .dst_set(panorama_descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&pano_image_info)];
+            unsafe {
+                gpu_context
+                    .device()
+                    .raw()
+                    .update_descriptor_sets(&pano_descriptor_write, &[]);
+            }
+        }
+
+        let pano_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/panorama.frag.spv"));
+        let panorama_frag_module =
+            match ShaderModule::from_spv(gpu_context.device().raw(), pano_frag_spv) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::error!("Failed to create panorama fragment shader module: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let pano_push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<PanoramaPushConstants>() as u32);
+
+        let panorama_pipeline = match GraphicsPipeline::create_dynamic_sky(
+            gpu_context.device().raw(),
+            sky_vert_module.raw(),
+            panorama_frag_module.raw(),
+            gpu_context.swapchain().format(),
+            Some(vk::Format::D32_SFLOAT),
+            &[panorama_descriptor_set_layout],
+            &[pano_push_constant_range],
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!("Failed to create panorama graphics pipeline: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        // ---------------------------------------------------------------------
         // Initialize Atmospheric Weather & Precipitation Resources (Phase 20)
         // ---------------------------------------------------------------------
         let weather_texture = match load_and_upload_weather_textures(&gpu_context) {
@@ -7763,6 +7982,14 @@ impl ApplicationHandler for App {
         self.sky_vert_shader = Some(sky_vert_module);
         self.sky_frag_shader = Some(sky_frag_module);
         self.sky_pipeline = Some(sky_pipeline);
+
+        self.panorama_texture = panorama_texture;
+        self.panorama_descriptor_set_layout = Some(panorama_descriptor_set_layout);
+        self.panorama_descriptor_pool = Some(panorama_descriptor_pool);
+        self.panorama_descriptor_set = Some(panorama_descriptor_set);
+        self.panorama_frag_shader = Some(panorama_frag_module);
+        self.panorama_pipeline = Some(panorama_pipeline);
+
         self.lightmap_texture = Some(lightmap_texture);
         self.lightmap_staging_buffers = lightmap_staging_buffers;
 
@@ -7950,6 +8177,57 @@ impl ApplicationHandler for App {
                             );
                         }
                     }
+                }
+
+                let is_hovered = match &self.current_screen {
+                    AppScreen::MainMenu => self
+                        .main_menu
+                        .buttons
+                        .iter()
+                        .any(|b| b.hovered && b.enabled),
+                    AppScreen::WorldSelect => self
+                        .world_select
+                        .buttons
+                        .iter()
+                        .any(|b| b.hovered && b.enabled),
+                    AppScreen::WorldCreate => self
+                        .world_create
+                        .buttons
+                        .iter()
+                        .any(|b| b.hovered && b.enabled),
+                    AppScreen::Settings { .. } => {
+                        self.settings_screen.tab_buttons.iter().any(|b| b.hovered)
+                            || self.settings_screen.sliders.iter().any(|s| s.hovered)
+                            || self
+                                .settings_screen
+                                .toggle_buttons
+                                .iter()
+                                .any(|b| b.hovered)
+                            || self.settings_screen.done_button.hovered
+                    }
+                    AppScreen::InGame => {
+                        if self.is_paused {
+                            self.pause_menu
+                                .buttons
+                                .iter()
+                                .any(|b| b.hovered && b.enabled)
+                        } else if self.container_state.is_some() {
+                            self.container_hovered_slot.is_some()
+                        } else if self.inventory_open {
+                            self.inventory_hovered_slot.is_some()
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if let Some(window) = &self.window {
+                    let icon = if is_hovered {
+                        winit::window::CursorIcon::Pointer
+                    } else {
+                        winit::window::CursorIcon::Default
+                    };
+                    window.set_cursor(icon);
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -9220,6 +9498,25 @@ impl ApplicationHandler for App {
             if let Some(mut pipeline) = self.sky_pipeline.take() {
                 pipeline.destroy(device);
             }
+            if let Some(mut pipeline) = self.panorama_pipeline.take() {
+                pipeline.destroy(device);
+            }
+            if let Some(mut frag) = self.panorama_frag_shader.take() {
+                frag.destroy(device);
+            }
+            if let Some(pool) = self.panorama_descriptor_pool.take() {
+                unsafe {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+            }
+            if let Some(layout) = self.panorama_descriptor_set_layout.take() {
+                unsafe {
+                    device.destroy_descriptor_set_layout(layout, None);
+                }
+            }
+            if let Some(mut tex) = self.panorama_texture.take() {
+                tex.destroy(device, allocator);
+            }
             if let Some(mut vert) = self.sky_vert_shader.take() {
                 vert.destroy(device);
             }
@@ -9631,6 +9928,15 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         copy_to_layer_at(dest, layer, 0, 0, img);
     };
 
+    let ensure_size =
+        |img: telos_assets::RgbaImage, target_w: u32, target_h: u32| -> telos_assets::RgbaImage {
+            if img.width != target_w || img.height != target_h {
+                img.rescale(target_w, target_h)
+            } else {
+                img
+            }
+        };
+
     // Layer 0: Hotbar (182x22)
     let hotbar_img = stack.load_gui_sprite("hud/hotbar").unwrap_or_else(|_| {
         let mut img = telos_assets::RgbaImage::new(182, 22);
@@ -9642,6 +9948,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let hotbar_img = ensure_size(hotbar_img, 182, 22);
     copy_to_layer(&mut pixel_data, 0, &hotbar_img);
 
     // Layer 1: Hotbar Selection (24x23)
@@ -9663,6 +9970,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
             }
             img
         });
+    let selection_img = ensure_size(selection_img, 24, 23);
     copy_to_layer(&mut pixel_data, 1, &selection_img);
 
     // Layer 2: Crosshair (15x15)
@@ -9683,6 +9991,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let crosshair_img = ensure_size(crosshair_img, 15, 15);
     copy_to_layer(&mut pixel_data, 2, &crosshair_img);
 
     // Layer 3: Ascii Font (128x128 -> scale 2x to 256x256)
@@ -9751,6 +10060,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
             }
             img
         });
+    let heart_container_img = ensure_size(heart_container_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 0, 0, &heart_container_img);
 
     let heart_full_img = stack.load_gui_sprite("hud/heart/full").unwrap_or_else(|_| {
@@ -9766,6 +10076,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let heart_full_img = ensure_size(heart_full_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 16, 0, &heart_full_img);
 
     let heart_half_img = stack.load_gui_sprite("hud/heart/half").unwrap_or_else(|_| {
@@ -9781,6 +10092,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let heart_half_img = ensure_size(heart_half_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 32, 0, &heart_half_img);
 
     let food_empty_img = stack.load_gui_sprite("hud/food_empty").unwrap_or_else(|_| {
@@ -9798,6 +10110,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let food_empty_img = ensure_size(food_empty_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 48, 0, &food_empty_img);
 
     let food_full_img = stack.load_gui_sprite("hud/food_full").unwrap_or_else(|_| {
@@ -9813,6 +10126,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let food_full_img = ensure_size(food_full_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 64, 0, &food_full_img);
 
     let food_half_img = stack.load_gui_sprite("hud/food_half").unwrap_or_else(|_| {
@@ -9828,6 +10142,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         }
         img
     });
+    let food_half_img = ensure_size(food_half_img, 9, 9);
     copy_to_layer_at(&mut pixel_data, 4, 80, 0, &food_half_img);
 
     let xp_bar_bg_img = stack
@@ -9842,6 +10157,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
             }
             img
         });
+    let xp_bar_bg_img = ensure_size(xp_bar_bg_img, 182, 5);
     copy_to_layer_at(&mut pixel_data, 4, 0, 16, &xp_bar_bg_img);
 
     let xp_bar_progress_img = stack
@@ -9856,27 +10172,30 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
             }
             img
         });
+    let xp_bar_progress_img = ensure_size(xp_bar_progress_img, 182, 5);
     copy_to_layer_at(&mut pixel_data, 4, 0, 24, &xp_bar_progress_img);
 
-    // Layer 5: Inventory Container Background (176x166)
-    let inv_bg_img = stack
+    // Layer 5: Inventory Container Background (176x166 window on 256x256 canvas)
+    let inv_bg_img = if let Some(img) = stack
         .find_texture("textures/gui/container/inventory.png")
         .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
-        .unwrap_or_else(|| {
-            let mut img = telos_assets::RgbaImage::new(176, 166);
-            for y in 0..166 {
-                for x in 0..176 {
-                    let idx = ((y * 176 + x) * 4) as usize;
-                    let is_border = x == 0 || x == 175 || y == 0 || y == 165;
-                    let color = if is_border { 40 } else { 198 };
-                    img.data[idx] = color;
-                    img.data[idx + 1] = color;
-                    img.data[idx + 2] = color;
-                    img.data[idx + 3] = 255;
-                }
+    {
+        ensure_size(img, 256, 256)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(176, 166);
+        for y in 0..166 {
+            for x in 0..176 {
+                let idx = ((y * 176 + x) * 4) as usize;
+                let is_border = x == 0 || x == 175 || y == 0 || y == 165;
+                let color = if is_border { 40 } else { 198 };
+                img.data[idx] = color;
+                img.data[idx + 1] = color;
+                img.data[idx + 2] = color;
+                img.data[idx + 3] = 255;
             }
-            img
-        });
+        }
+        img
+    };
     copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
 
     // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for items 1..=19)
@@ -9934,35 +10253,37 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         let x_offset = col * 16;
         let y_offset = row * 16;
 
-        let icon_img = stack
+        let icon_img = if let Some(img) = stack
             .find_texture(rel_path)
             .and_then(|p| telos_assets::RgbaImage::from_file(&p).ok())
-            .unwrap_or_else(|| {
-                let mut img = telos_assets::RgbaImage::new(16, 16);
-                for y in 0..16 {
-                    for x in 0..16 {
-                        let i = ((y * 16 + x) * 4) as usize;
-                        let is_edge = x == 0 || x == 15 || y == 0 || y == 15;
-                        img.data[i] = if is_edge {
-                            fallback_color[0].saturating_sub(40)
-                        } else {
-                            fallback_color[0]
-                        };
-                        img.data[i + 1] = if is_edge {
-                            fallback_color[1].saturating_sub(40)
-                        } else {
-                            fallback_color[1]
-                        };
-                        img.data[i + 2] = if is_edge {
-                            fallback_color[2].saturating_sub(40)
-                        } else {
-                            fallback_color[2]
-                        };
-                        img.data[i + 3] = fallback_color[3];
-                    }
+        {
+            ensure_size(img, 16, 16)
+        } else {
+            let mut img = telos_assets::RgbaImage::new(16, 16);
+            for y in 0..16 {
+                for x in 0..16 {
+                    let i = ((y * 16 + x) * 4) as usize;
+                    let is_edge = x == 0 || x == 15 || y == 0 || y == 15;
+                    img.data[i] = if is_edge {
+                        fallback_color[0].saturating_sub(40)
+                    } else {
+                        fallback_color[0]
+                    };
+                    img.data[i + 1] = if is_edge {
+                        fallback_color[1].saturating_sub(40)
+                    } else {
+                        fallback_color[1]
+                    };
+                    img.data[i + 2] = if is_edge {
+                        fallback_color[2].saturating_sub(40)
+                    } else {
+                        fallback_color[2]
+                    };
+                    img.data[i + 3] = fallback_color[3];
                 }
-                img
-            });
+            }
+            img
+        };
         copy_icon(&mut pixel_data, x_offset, y_offset, &icon_img);
     }
 
@@ -10408,79 +10729,97 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
     mount_asset_roots(&mut stack);
 
     // Layer 0: Zombie
-    let zombie_img = stack
+    let zombie_img = if let Some(img) = stack
         .find_texture("textures/entity/zombie/zombie.png")
         .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
-        .unwrap_or_else(|| {
-            let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-            for y in 0..ENTITY_RES {
-                for x in 0..ENTITY_RES {
-                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                    if y < 32 {
-                        // Head & torso
-                        img.data[idx] = 60;
-                        img.data[idx + 1] = 140;
-                        img.data[idx + 2] = 60;
-                        img.data[idx + 3] = 255;
-                    } else {
-                        // Legs / pants
-                        img.data[idx] = 40;
-                        img.data[idx + 1] = 50;
-                        img.data[idx + 2] = 160;
-                        img.data[idx + 3] = 255;
-                    }
-                }
-            }
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
             img
-        });
-    copy_to_layer(&mut pixel_data, 0, &zombie_img);
-
-    // Layer 1: Pig
-    let pig_img = stack
-        .find_texture("textures/entity/pig/pig_temperate.png")
-        .or_else(|| stack.find_texture("textures/entity/pig/pig.png"))
-        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
-        .unwrap_or_else(|| {
-            let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-            for y in 0..ENTITY_RES {
-                for x in 0..ENTITY_RES {
-                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                    img.data[idx] = 240;
-                    img.data[idx + 1] = 160;
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                if y < 32 {
+                    // Head & torso
+                    img.data[idx] = 60;
+                    img.data[idx + 1] = 140;
+                    img.data[idx + 2] = 60;
+                    img.data[idx + 3] = 255;
+                } else {
+                    // Legs / pants
+                    img.data[idx] = 40;
+                    img.data[idx + 1] = 50;
                     img.data[idx + 2] = 160;
                     img.data[idx + 3] = 255;
                 }
             }
+        }
+        img
+    };
+    copy_to_layer(&mut pixel_data, 0, &zombie_img);
+
+    // Layer 1: Pig
+    let pig_img = if let Some(img) = stack
+        .find_texture("textures/entity/pig/pig_temperate.png")
+        .or_else(|| stack.find_texture("textures/entity/pig/pig.png"))
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
             img
-        });
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                img.data[idx] = 240;
+                img.data[idx + 1] = 160;
+                img.data[idx + 2] = 160;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
     copy_to_layer(&mut pixel_data, 1, &pig_img);
 
     // Layer 2: Cow
-    let cow_img = stack
+    let cow_img = if let Some(img) = stack
         .find_texture("textures/entity/cow/cow_temperate.png")
         .or_else(|| stack.find_texture("textures/entity/cow/cow.png"))
         .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
-        .unwrap_or_else(|| {
-            let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
-            for y in 0..ENTITY_RES {
-                for x in 0..ENTITY_RES {
-                    let idx = ((y * ENTITY_RES + x) * 4) as usize;
-                    let is_spot = ((x / 8) + (y / 8)) % 2 == 0;
-                    if is_spot {
-                        img.data[idx] = 80;
-                        img.data[idx + 1] = 50;
-                        img.data[idx + 2] = 40;
-                        img.data[idx + 3] = 255;
-                    } else {
-                        img.data[idx] = 230;
-                        img.data[idx + 1] = 230;
-                        img.data[idx + 2] = 230;
-                        img.data[idx + 3] = 255;
-                    }
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
+            img
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                let is_spot = ((x / 8) + (y / 8)) % 2 == 0;
+                if is_spot {
+                    img.data[idx] = 80;
+                    img.data[idx + 1] = 50;
+                    img.data[idx + 2] = 40;
+                    img.data[idx + 3] = 255;
+                } else {
+                    img.data[idx] = 230;
+                    img.data[idx + 1] = 230;
+                    img.data[idx + 2] = 230;
+                    img.data[idx + 3] = 255;
                 }
             }
-            img
-        });
+        }
+        img
+    };
     copy_to_layer(&mut pixel_data, 2, &cow_img);
 
     let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
@@ -10497,6 +10836,96 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
         gpu_context.create_texture_array(ENTITY_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
 
     info!("Entity texture array loaded (3 layers: Zombie, Pig, Cow, 64x64)");
+
+    Ok(texture_array)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+fn load_and_upload_panorama_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
+    const PANO_RES: u32 = 512;
+    const LAYER_COUNT: u32 = 6;
+
+    let mut pixel_data = vec![0u8; (PANO_RES * PANO_RES * 4 * LAYER_COUNT) as usize];
+
+    let copy_to_layer = |dest: &mut [u8], layer: usize, img: &telos_assets::RgbaImage| {
+        let layer_offset = layer * (PANO_RES * PANO_RES * 4) as usize;
+        let w = img.width.min(PANO_RES);
+        let h = img.height.min(PANO_RES);
+        for y in 0..h {
+            let src_start = ((y * img.width) * 4) as usize;
+            let src_end = src_start + (w * 4) as usize;
+            let dst_start = layer_offset + ((y * PANO_RES) * 4) as usize;
+            dest[dst_start..dst_start + (w * 4) as usize]
+                .copy_from_slice(&img.data[src_start..src_end]);
+        }
+    };
+
+    let mut stack = ResourcePackStack::new();
+    mount_asset_roots(&mut stack);
+
+    let pano_names = [
+        "textures/gui/title/background/panorama_0.png",
+        "textures/gui/title/background/panorama_1.png",
+        "textures/gui/title/background/panorama_2.png",
+        "textures/gui/title/background/panorama_3.png",
+        "textures/gui/title/background/panorama_4.png",
+        "textures/gui/title/background/panorama_5.png",
+    ];
+
+    for (layer, name) in pano_names.iter().enumerate() {
+        let pano_img = if let Some(img) = stack
+            .find_texture(name)
+            .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+            .filter(|img| img.width >= 16 && img.height >= 16)
+        {
+            if img.width != PANO_RES || img.height != PANO_RES {
+                img.rescale(PANO_RES, PANO_RES)
+            } else {
+                img
+            }
+        } else {
+            let mut img = telos_assets::RgbaImage::new(PANO_RES, PANO_RES);
+            for y in 0..PANO_RES {
+                let v = y as f32 / PANO_RES as f32;
+                for x in 0..PANO_RES {
+                    let idx = ((y * PANO_RES + x) * 4) as usize;
+                    let col = match layer {
+                        4 => [70, 140, 240, 255],
+                        5 => [50, 110, 45, 255],
+                        _ => {
+                            let r = (50.0 * (1.0 - v) + 120.0 * v) as u8;
+                            let g = (100.0 * (1.0 - v) + 180.0 * v) as u8;
+                            let b = (200.0 * (1.0 - v) + 100.0 * v) as u8;
+                            [r, g, b, 255]
+                        }
+                    };
+                    img.data[idx..idx + 4].copy_from_slice(&col);
+                }
+            }
+            img
+        };
+
+        copy_to_layer(&mut pixel_data, layer, &pano_img);
+    }
+
+    let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
+        .map(|layer| TextureMipRegion {
+            buffer_offset: u64::from(layer * PANO_RES * PANO_RES * 4),
+            layer,
+            mip_level: 0,
+            width: PANO_RES,
+            height: PANO_RES,
+        })
+        .collect();
+
+    let texture_array =
+        gpu_context.create_texture_array(PANO_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
+
+    info!("3D Panorama cubemap texture array loaded (6 layers, {PANO_RES}x{PANO_RES})");
 
     Ok(texture_array)
 }

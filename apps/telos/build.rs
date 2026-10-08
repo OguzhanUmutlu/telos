@@ -23,6 +23,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../shaders/cull_lod.comp");
     println!("cargo:rerun-if-changed=../../shaders/ui.vert");
     println!("cargo:rerun-if-changed=../../shaders/ui.frag");
+    println!("cargo:rerun-if-changed=../../shaders/panorama.frag");
     println!("cargo:rerun-if-changed=../../shaders/sky.vert");
     println!("cargo:rerun-if-changed=../../shaders/sky.frag");
     println!("cargo:rerun-if-changed=../../shaders/weather.vert");
@@ -68,6 +69,7 @@ fn main() {
         ("../../shaders/cull_lod.comp", "cull_lod.comp.spv"),
         ("../../shaders/ui.vert", "ui.vert.spv"),
         ("../../shaders/ui.frag", "ui.frag.spv"),
+        ("../../shaders/panorama.frag", "panorama.frag.spv"),
         ("../../shaders/sky.vert", "sky.vert.spv"),
         ("../../shaders/sky.frag", "sky.frag.spv"),
         ("../../shaders/weather.vert", "weather.vert.spv"),
