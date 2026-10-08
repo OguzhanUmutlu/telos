@@ -1148,7 +1148,7 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
             "chest",
             "Chest",
             BlockDef {
-                shape: BlockShapeDef::FullCube,
+                shape: BlockShapeDef::Chest,
                 render_layer: RenderLayerDef::Opaque,
                 opacity: OpacityDef::Transparent,
                 hardness: 2.5,
@@ -1157,6 +1157,7 @@ pub fn core_blocks() -> Vec<(&'static str, &'static str, BlockDef)> {
                 sound: Some("telos:wood".into()),
                 item: BlockItemPolicy::Auto,
                 material_texture_index: Some(66),
+                has_block_entity: true,
                 ..Default::default()
             },
         ),

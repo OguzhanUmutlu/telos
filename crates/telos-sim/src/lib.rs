@@ -64,10 +64,11 @@ pub use foliage::{LEAF_DECAY_RADIUS, is_leaf_decaying};
 pub use hunger::{Hunger, HungerTickResult, SimParams, tick_hunger};
 pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,
-    CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ClickButton, ClickMode, HOTBAR_SLOTS, ITEM_ARROW,
-    ITEM_BOW, Inventory, InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT,
-    PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS, block_to_drop_item, inventory_click, is_armor, is_arrow,
-    is_boots, is_bow, is_chestplate, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
+    CHEST_CONTAINER_SLOTS, CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ChestInventory, ClickButton,
+    ClickMode, DUAL_CONTAINER_SLOTS, HOTBAR_SLOTS, ITEM_ARROW, ITEM_BOW, ITEM_CHEST, Inventory,
+    InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
+    block_to_drop_item, container_click, inventory_click, is_armor, is_arrow, is_boots, is_bow,
+    is_chest, is_chestplate, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
     matching_armor_slot,
 };
 pub use logic::{

@@ -6,6 +6,7 @@ use telos_storage::format::header::{CodecId, EntryFlags};
 use telos_storage::format::section::{ChunkPayload, ChunkStatus};
 use telos_storage::io::SimFs;
 use telos_storage::region::{RegionFile, RegionPos};
+use telos_voxel::block_entity::{BlockEntityData, BlockEntitySlot, BlockEntityTable};
 use telos_voxel::coords::LocalIdx;
 use telos_voxel::registry::BlockRegistry;
 use telos_voxel::state::BlockStateId;
@@ -278,4 +279,49 @@ fn test_uncompressed_container_roundtrip() {
         loaded_chunk.blocks.get(LocalIdx::ZERO),
         payload.blocks.get(LocalIdx::ZERO)
     );
+}
+
+#[test]
+fn test_chunk_with_block_entities_region_roundtrip() {
+    let sim_fs = SimFs::new();
+    let rx = 0;
+    let ry = 0;
+    let rz = 0;
+
+    let mut region = RegionFile::open(sim_fs.clone(), rx, ry, rz).expect("failed to open region");
+
+    let pos = ChunkPos::new(2, 0, 3);
+    let mut table = BlockEntityTable::new();
+    let idx = LocalIdx::from_coords(10, 11, 12).unwrap();
+    let mut chest = BlockEntityData::new_chest();
+    let BlockEntityData::Chest {
+        ref mut custom_name,
+        ref mut items,
+    } = chest;
+    *custom_name = Some("Dungeon Chest".into());
+    items[3] = BlockEntitySlot::new(3, 50, 16);
+    items[20] = BlockEntitySlot::new(20, 63, 1);
+    table.insert(idx, chest);
+
+    let blocks = Blocks::Uniform(BlockStateId::new(1));
+    let payload = ChunkPayload::with_block_entities(blocks, ChunkStatus::default(), table);
+
+    region
+        .commit_chunks(&[(pos, Some(payload))], CodecId::Zstd, 10)
+        .expect("commit chunk with block entities failed");
+
+    let reloaded = RegionFile::open(sim_fs, rx, ry, rz).expect("reopen failed");
+    let loaded_chunk = reloaded.read_chunk(pos).unwrap().expect("chunk must exist");
+
+    assert_eq!(loaded_chunk.block_entities.len(), 1);
+    let loaded_chest = loaded_chunk
+        .block_entities
+        .get(idx)
+        .expect("chest block entity must be loaded");
+    assert_eq!(loaded_chest.custom_name(), Some("Dungeon Chest"));
+    assert_eq!(loaded_chest.items()[3].item, 50);
+    assert_eq!(loaded_chest.items()[3].count, 16);
+    assert_eq!(loaded_chest.items()[20].item, 63);
+    assert_eq!(loaded_chest.items()[20].count, 1);
+    assert!(loaded_chest.items()[0].is_empty());
 }

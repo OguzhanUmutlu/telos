@@ -20,7 +20,7 @@ pub use error::ServerError;
 pub use multi_world::{MultiWorldManager, WorldConfig, WorldError};
 pub use priority::{QueuedChunk, compute_chunk_priority};
 pub use server::Server;
-pub use session::PlayerSession;
+pub use session::{ActiveContainerSession, PlayerSession};
 pub use storage::WorldStorage;
 pub use telos_worldgen::GeneratorKind;
 pub use world::{ServerChunk, ServerWorld};

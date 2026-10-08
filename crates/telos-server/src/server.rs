@@ -14,12 +14,13 @@ use telos_mod::{JsPlugin, JsPluginEngine, ModConfig, ModManager, ModPermissions,
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
-    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
-    C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload,
-    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate,
-    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions, S2cConfigDone,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
+    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
+    C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload,
+    ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cDespawnEntity, S2cEntityMove,
+    S2cEntityStatus, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cOpenContainer,
     S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
     S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
     S2cUpdateWeather, SlotData,
@@ -48,7 +49,7 @@ use crate::builder::ServerBuilder;
 use crate::config::ServerConfig;
 use crate::error::ServerError;
 use crate::multi_world::{MultiWorldManager, WorldError};
-use crate::session::PlayerSession;
+use crate::session::{ActiveContainerSession, PlayerSession};
 use crate::world::ServerWorld;
 
 fn register_world_command(dispatcher: &mut CommandDispatcher) {
@@ -1803,6 +1804,7 @@ impl Server {
         let mut player_joined = Vec::new();
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
         let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
+        let mut container_closes: Vec<(u64, C2sCloseContainer)> = Vec::new();
         let mut player_commands: Vec<(u64, C2sPlayerCommand)> = Vec::new();
         let mut entity_interactions: Vec<(u64, C2sInteractEntity)> = Vec::new();
         let mut chat_messages: Vec<(u64, C2sChatMessage)> = Vec::new();
@@ -2166,6 +2168,9 @@ impl Server {
                         C2sMessage::InventoryClick(click) => {
                             inventory_clicks.push((*session_id, click));
                         }
+                        C2sMessage::CloseContainer(close) => {
+                            container_closes.push((*session_id, close));
+                        }
                         C2sMessage::PlayerCommand(cmd) => {
                             player_commands.push((*session_id, cmd));
                         }
@@ -2196,6 +2201,31 @@ impl Server {
 
         for id in disconnected {
             if let Some(session) = self.sessions.remove(&id) {
+                if let Some(active_cont) = session.active_container {
+                    let chest_pos = active_cont.block_pos;
+                    let world_name = session.world_name.clone();
+                    let remaining_viewers = self.sessions.values().any(|s| {
+                        s.phase == ConnectionPhase::Play
+                            && s.world_name == world_name
+                            && s.active_container.as_ref().map(|c| c.block_pos) == Some(chest_pos)
+                    });
+                    if !remaining_viewers {
+                        let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                            x: chest_pos.x(),
+                            y: chest_pos.y(),
+                            z: chest_pos.z(),
+                            action: 1,
+                            param: 0,
+                        });
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                            }
+                        }
+                    }
+                }
                 self.event_queue.push(GameEvent::PlayerLeft {
                     entity_net_id: session.entity_id,
                     username: session.username.clone(),
@@ -2951,12 +2981,14 @@ impl Server {
             }
         }
 
-        // 5. Process inventory clicks
+        // 3. Process inventory and container clicks
         for (session_id, click) in inventory_clicks {
-            let Some(session) = self.sessions.get(&session_id) else {
-                continue;
-            };
-            let Some(entity) = session.ecs_entity else {
+            let (session_world_name, active_container, entity) =
+                match self.sessions.get(&session_id) {
+                    Some(s) => (s.world_name.clone(), s.active_container, s.ecs_entity),
+                    None => continue,
+                };
+            let Some(entity) = entity else {
                 continue;
             };
             let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity) else {
@@ -2975,7 +3007,66 @@ impl Server {
             };
 
             let slot_idx = click.slot as usize;
-            if telos_sim::inventory_click(&mut inv, slot_idx, button, mode).is_ok() {
+            if let Some(active_cont) = active_container {
+                let world = self.worlds.get_or_default_mut(&session_world_name);
+                if let Some(be) = world.get_block_entity_mut(active_cont.block_pos) {
+                    let mut chest_inv = telos_sim::ChestInventory::from_block_entity(be);
+                    if telos_sim::container_click(&mut chest_inv, &mut inv, slot_idx, button, mode)
+                        .is_ok()
+                    {
+                        *be = chest_inv.to_block_entity();
+
+                        let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                        for slot in &inv.slots {
+                            slot_vec.push(SlotData {
+                                item: slot.item,
+                                count: slot.count,
+                            });
+                        }
+                        let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                            slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                            carried: SlotData {
+                                item: inv.carried.item,
+                                count: inv.carried.count,
+                            },
+                        });
+                        if let Some(s) = self.sessions.get_mut(&session_id) {
+                            let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                        }
+
+                        // Broadcast updated container slots to all sessions viewing this container
+                        let mut container_slot_vec = Vec::with_capacity(chest_inv.slots.len());
+                        for slot in &chest_inv.slots {
+                            container_slot_vec.push(SlotData {
+                                item: slot.item,
+                                count: slot.count,
+                            });
+                        }
+                        let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
+                        let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                            window_id: active_cont.window_id,
+                            container_kind: 0,
+                            title: BoundedString::new(title_str)
+                                .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
+                            slots: BoundedVec::new(container_slot_vec).expect("slots <= 64"),
+                            x: active_cont.block_pos.x(),
+                            y: active_cont.block_pos.y(),
+                            z: active_cont.block_pos.z(),
+                        });
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play
+                                && s.world_name == session_world_name
+                                && s.active_container.as_ref().map(|c| c.block_pos)
+                                    == Some(active_cont.block_pos)
+                            {
+                                let _ = s
+                                    .connection
+                                    .send(Lane::Control, Payload::Msg(open_msg.clone()));
+                            }
+                        }
+                    }
+                }
+            } else if telos_sim::inventory_click(&mut inv, slot_idx, button, mode).is_ok() {
                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                 for slot in &inv.slots {
                     slot_vec.push(SlotData {
@@ -2990,17 +3081,88 @@ impl Server {
                         count: inv.carried.count,
                     },
                 });
-                let _ = session
-                    .connection
-                    .send(Lane::Control, Payload::Msg(bulk_msg));
+                if let Some(s) = self.sessions.get_mut(&session_id) {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                }
+            }
+        }
+
+        // 3b. Process container close requests
+        for (session_id, close) in container_closes {
+            let mut close_event_to_broadcast = None;
+            if let Some(session) = self.sessions.get_mut(&session_id)
+                && let Some(active_cont) = session.active_container
+                && active_cont.window_id == close.window_id
+            {
+                let chest_pos = active_cont.block_pos;
+                let world_name = session.world_name.clone();
+                session.active_container = None;
+
+                // Return any carried stack to inventory
+                if let Some(entity) = session.ecs_entity
+                    && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+                    && !inv.carried.is_empty()
+                {
+                    inv.return_carried();
+                    let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                    for slot in &inv.slots {
+                        slot_vec.push(SlotData {
+                            item: slot.item,
+                            count: slot.count,
+                        });
+                    }
+                    let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                        slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                        carried: SlotData {
+                            item: inv.carried.item,
+                            count: inv.carried.count,
+                        },
+                    });
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(bulk_msg));
+                }
+
+                close_event_to_broadcast = Some((world_name, chest_pos));
+            }
+            if let Some((world_name, chest_pos)) = close_event_to_broadcast {
+                let remaining_viewers = self.sessions.values().any(|s| {
+                    s.phase == ConnectionPhase::Play
+                        && s.world_name == world_name
+                        && s.active_container.as_ref().map(|c| c.block_pos) == Some(chest_pos)
+                });
+                if !remaining_viewers {
+                    let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                        x: chest_pos.x(),
+                        y: chest_pos.y(),
+                        z: chest_pos.z(),
+                        action: 1,
+                        param: 0,
+                    });
+                    for s in self.sessions.values_mut() {
+                        if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                            let _ = s
+                                .connection
+                                .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                        }
+                    }
+                }
             }
         }
 
         // 4. Process block actions (authoritative validation & simulation)
         let mut dropped_items_to_spawn = Vec::new();
         for (session_id, action) in block_actions {
-            let Some(session) = self.sessions.get(&session_id) else {
-                continue;
+            let (session_pos, session_entity_id, session_move_mode, session_world_name) = {
+                let Some(session) = self.sessions.get(&session_id) else {
+                    continue;
+                };
+                (
+                    session.position,
+                    session.entity_id,
+                    session.move_mode,
+                    session.world_name.clone(),
+                )
             };
 
             let (target_pos, new_state) = match action.action {
@@ -3036,19 +3198,18 @@ impl Server {
                 f64::from(target_pos.y()) + 0.5,
                 f64::from(target_pos.z()) + 0.5,
             );
-            let dist_sq = (session.position - block_center).length_squared();
+            let dist_sq = (session_pos - block_center).length_squared();
             let max_reach = 6.0; // 5.0 blocks + 1.0 tolerance for latency
             let is_in_reach = dist_sq <= max_reach * max_reach;
             let is_in_bounds = target_pos.y() >= -1024 && target_pos.y() < 2048;
 
-            let session_world_name = session.world_name.clone();
             let world = self.worlds.get_or_default_mut(&session_world_name);
             let old_state = world.get_block(target_pos);
 
             if is_in_reach && is_in_bounds {
                 if matches!(action.action, BlockActionKind::Break)
                     && !self.js_plugins.dispatch_block_break(
-                        session.entity_id,
+                        session_entity_id,
                         old_state.0,
                         target_pos.x(),
                         target_pos.y(),
@@ -3063,9 +3224,9 @@ impl Server {
                         state_id: old_state,
                         version: 0,
                     });
-                    let _ = session
-                        .connection
-                        .send(Lane::Control, Payload::Msg(rollback));
+                    if let Some(s) = self.sessions.get_mut(&session_id) {
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(rollback));
+                    }
                     continue;
                 }
 
@@ -3095,104 +3256,204 @@ impl Server {
                                 }
                             }
                         }
-                    }
-                } else if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
-                    match action.action {
-                        BlockActionKind::Break => {
-                            self.event_queue.push(GameEvent::BlockBroken {
-                                pos: target_pos,
-                                old_state,
-                                actor_net_id: Some(u64::from(session.entity_id)),
+                    } else if world.registry().is_chest(old_state) {
+                        if world.get_block_entity(target_pos).is_none() {
+                            world.set_block_entity(
+                                target_pos,
+                                telos_voxel::block_entity::BlockEntityData::new_chest(),
+                            );
+                        }
+                        if let Some(chest_be) = world.get_block_entity(target_pos) {
+                            let chest_inv = telos_sim::ChestInventory::from_block_entity(chest_be);
+                            let mut slot_vec = Vec::with_capacity(chest_inv.slots.len());
+                            for slot in &chest_inv.slots {
+                                slot_vec.push(SlotData {
+                                    item: slot.item,
+                                    count: slot.count,
+                                });
+                            }
+                            let title_str = chest_inv.custom_name.as_deref().unwrap_or("Chest");
+                            let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+                                window_id: 1,
+                                container_kind: 0,
+                                title: BoundedString::new(title_str)
+                                    .unwrap_or_else(|_| BoundedString::new("Chest").unwrap()),
+                                slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                                x: target_pos.x(),
+                                y: target_pos.y(),
+                                z: target_pos.z(),
                             });
+                            if let Some(s) = self.sessions.get_mut(&session_id) {
+                                s.active_container = Some(ActiveContainerSession {
+                                    window_id: 1,
+                                    block_pos: target_pos,
+                                });
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(open_msg));
+                            }
 
-                            if session.move_mode == MoveMode::Walk
-                                && let Some(drop_stack) = block_to_drop_item(old_state.0)
-                            {
-                                let spawn_pos = DVec3::new(
-                                    f64::from(target_pos.x()) + 0.5,
-                                    f64::from(target_pos.y()) + 0.25,
-                                    f64::from(target_pos.z()) + 0.5,
-                                );
-                                let vel = glam::Vec3::new(0.0, 0.1, 0.0);
-                                dropped_items_to_spawn.push((
-                                    session_world_name.clone(),
-                                    spawn_pos,
-                                    vel,
-                                    drop_stack,
-                                ));
+                            // Broadcast chest open block event (action 1, param 1)
+                            let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                                x: target_pos.x(),
+                                y: target_pos.y(),
+                                z: target_pos.z(),
+                                action: 1,
+                                param: 1,
+                            });
+                            for s in self.sessions.values_mut() {
+                                if s.phase == ConnectionPhase::Play
+                                    && s.world_name == session_world_name
+                                {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                                }
                             }
                         }
-                        BlockActionKind::Place { .. } => {
-                            self.event_queue.push(GameEvent::BlockPlaced {
-                                pos: target_pos,
-                                new_state,
-                                actor_net_id: Some(u64::from(session.entity_id)),
-                            });
-                        }
-                        BlockActionKind::Interact => {}
                     }
-
-                    if world.registry().is_spawner(old_state) {
-                        self.active_spawners.remove(&target_pos);
-                    }
-                    if world.registry().is_spawner(new_state) {
-                        self.active_spawners.insert(
-                            target_pos,
-                            SpawnerState {
-                                mob_type: EntityType::Zombie,
-                                spawn_delay: 100,
-                            },
-                        );
-                    }
-
-                    let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
-                        x: target_pos.x(),
-                        y: target_pos.y(),
-                        z: target_pos.z(),
-                        state_id: new_state,
-                        version,
-                    });
-
-                    let particle_msg = match action.action {
-                        BlockActionKind::Break => {
-                            Some(S2cMessage::ParticleEvent(S2cParticleEvent {
-                                effect: ParticleEffectKind::BlockBreak,
-                                x: target_pos.x() as f32 + 0.5,
-                                y: target_pos.y() as f32 + 0.5,
-                                z: target_pos.z() as f32 + 0.5,
-                                count: 24,
-                                speed: 1.0,
-                                block_state_id: old_state.0,
-                            }))
-                        }
-                        BlockActionKind::Place { .. } => {
-                            Some(S2cMessage::ParticleEvent(S2cParticleEvent {
-                                effect: ParticleEffectKind::BlockPlace,
-                                x: target_pos.x() as f32 + 0.5,
-                                y: target_pos.y() as f32 + 0.5,
-                                z: target_pos.z() as f32 + 0.5,
-                                count: 10,
-                                speed: 0.5,
-                                block_state_id: new_state.0,
-                            }))
-                        }
-                        BlockActionKind::Interact => None,
+                } else {
+                    let chest_contents_to_drop = if matches!(action.action, BlockActionKind::Break)
+                        && world.registry().is_chest(old_state)
+                    {
+                        world.get_block_entity(target_pos).cloned()
+                    } else {
+                        None
                     };
 
-                    // Broadcast block update and particle effects to players in the same world in Play phase
-                    for s in self.sessions.values_mut() {
-                        if s.phase == ConnectionPhase::Play && s.world_name == session_world_name {
-                            let _ = s
-                                .connection
-                                .send(Lane::Control, Payload::Msg(update_msg.clone()));
+                    if let Some((_snapshot, version)) = world.set_block(target_pos, new_state) {
+                        match action.action {
+                            BlockActionKind::Break => {
+                                self.event_queue.push(GameEvent::BlockBroken {
+                                    pos: target_pos,
+                                    old_state,
+                                    actor_net_id: Some(u64::from(session_entity_id)),
+                                });
 
-                            // Broadcast visual particle bursts to other players (local player predicts immediately)
-                            if s.session_id != session_id
-                                && let Some(ref p_msg) = particle_msg
+                                if let Some(be) = chest_contents_to_drop {
+                                    for slot in be.items() {
+                                        if !slot.is_empty() {
+                                            let spawn_pos = DVec3::new(
+                                                f64::from(target_pos.x()) + 0.5,
+                                                f64::from(target_pos.y()) + 0.5,
+                                                f64::from(target_pos.z()) + 0.5,
+                                            );
+                                            let vel = glam::Vec3::new(0.0, 0.1, 0.0);
+                                            dropped_items_to_spawn.push((
+                                                session_world_name.clone(),
+                                                spawn_pos,
+                                                vel,
+                                                ItemStack::new(slot.item, slot.count),
+                                            ));
+                                        }
+                                    }
+                                    let close_msg = S2cMessage::CloseContainer(S2cCloseContainer {
+                                        window_id: 1,
+                                    });
+                                    for s in self.sessions.values_mut() {
+                                        if s.phase == ConnectionPhase::Play
+                                            && s.world_name == session_world_name
+                                            && s.active_container.as_ref().map(|c| c.block_pos)
+                                                == Some(target_pos)
+                                        {
+                                            s.active_container = None;
+                                            let _ = s.connection.send(
+                                                Lane::Control,
+                                                Payload::Msg(close_msg.clone()),
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if session_move_mode == MoveMode::Walk
+                                    && let Some(drop_stack) = block_to_drop_item(old_state.0)
+                                {
+                                    let spawn_pos = DVec3::new(
+                                        f64::from(target_pos.x()) + 0.5,
+                                        f64::from(target_pos.y()) + 0.25,
+                                        f64::from(target_pos.z()) + 0.5,
+                                    );
+                                    let vel = glam::Vec3::new(0.0, 0.1, 0.0);
+                                    dropped_items_to_spawn.push((
+                                        session_world_name.clone(),
+                                        spawn_pos,
+                                        vel,
+                                        drop_stack,
+                                    ));
+                                }
+                            }
+                            BlockActionKind::Place { .. } => {
+                                self.event_queue.push(GameEvent::BlockPlaced {
+                                    pos: target_pos,
+                                    new_state,
+                                    actor_net_id: Some(u64::from(session_entity_id)),
+                                });
+                            }
+                            BlockActionKind::Interact => {}
+                        }
+
+                        if world.registry().is_spawner(old_state) {
+                            self.active_spawners.remove(&target_pos);
+                        }
+                        if world.registry().is_spawner(new_state) {
+                            self.active_spawners.insert(
+                                target_pos,
+                                SpawnerState {
+                                    mob_type: EntityType::Zombie,
+                                    spawn_delay: 100,
+                                },
+                            );
+                        }
+
+                        let update_msg = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                            x: target_pos.x(),
+                            y: target_pos.y(),
+                            z: target_pos.z(),
+                            state_id: new_state,
+                            version,
+                        });
+
+                        let particle_msg = match action.action {
+                            BlockActionKind::Break => {
+                                Some(S2cMessage::ParticleEvent(S2cParticleEvent {
+                                    effect: ParticleEffectKind::BlockBreak,
+                                    x: target_pos.x() as f32 + 0.5,
+                                    y: target_pos.y() as f32 + 0.5,
+                                    z: target_pos.z() as f32 + 0.5,
+                                    count: 24,
+                                    speed: 1.0,
+                                    block_state_id: old_state.0,
+                                }))
+                            }
+                            BlockActionKind::Place { .. } => {
+                                Some(S2cMessage::ParticleEvent(S2cParticleEvent {
+                                    effect: ParticleEffectKind::BlockPlace,
+                                    x: target_pos.x() as f32 + 0.5,
+                                    y: target_pos.y() as f32 + 0.5,
+                                    z: target_pos.z() as f32 + 0.5,
+                                    count: 10,
+                                    speed: 0.5,
+                                    block_state_id: new_state.0,
+                                }))
+                            }
+                            BlockActionKind::Interact => None,
+                        };
+
+                        // Broadcast block update and particle effects to players in the same world in Play phase
+                        for s in self.sessions.values_mut() {
+                            if s.phase == ConnectionPhase::Play
+                                && s.world_name == session_world_name
                             {
                                 let _ = s
                                     .connection
-                                    .send(Lane::Control, Payload::Msg(p_msg.clone()));
+                                    .send(Lane::Control, Payload::Msg(update_msg.clone()));
+
+                                // Broadcast visual particle bursts to other players (local player predicts immediately)
+                                if s.session_id != session_id
+                                    && let Some(ref p_msg) = particle_msg
+                                {
+                                    let _ = s
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(p_msg.clone()));
+                                }
                             }
                         }
                     }
@@ -3309,6 +3570,83 @@ impl Server {
                 let _ = session
                     .connection
                     .send(Lane::Control, Payload::Msg(ack_msg));
+            }
+        }
+
+        // 4d. Auto-close container sessions if player moved beyond reach (> 5.0m)
+        let mut distance_closed_containers = Vec::new();
+        for session in self.sessions.values_mut() {
+            if session.phase != ConnectionPhase::Play {
+                continue;
+            }
+            if let Some(active_cont) = session.active_container {
+                let block_center = DVec3::new(
+                    f64::from(active_cont.block_pos.x()) + 0.5,
+                    f64::from(active_cont.block_pos.y()) + 0.5,
+                    f64::from(active_cont.block_pos.z()) + 0.5,
+                );
+                let dist_sq = (session.position - block_center).length_squared();
+                if dist_sq > 5.0 * 5.0 {
+                    session.active_container = None;
+                    let close_msg = S2cMessage::CloseContainer(S2cCloseContainer {
+                        window_id: active_cont.window_id,
+                    });
+                    let _ = session
+                        .connection
+                        .send(Lane::Control, Payload::Msg(close_msg));
+                    distance_closed_containers.push((
+                        session.world_name.clone(),
+                        active_cont.block_pos,
+                        session.ecs_entity,
+                        session.session_id,
+                    ));
+                }
+            }
+        }
+        for (world_name, block_pos, ecs_entity, session_id) in distance_closed_containers {
+            if let Some(entity) = ecs_entity
+                && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+                && !inv.carried.is_empty()
+            {
+                inv.return_carried();
+                let mut slot_vec = Vec::with_capacity(inv.slots.len());
+                for slot in &inv.slots {
+                    slot_vec.push(SlotData {
+                        item: slot.item,
+                        count: slot.count,
+                    });
+                }
+                let bulk_msg = S2cMessage::InventoryBulk(S2cInventoryBulk {
+                    slots: BoundedVec::new(slot_vec).expect("slots <= 64"),
+                    carried: SlotData {
+                        item: inv.carried.item,
+                        count: inv.carried.count,
+                    },
+                });
+                if let Some(s) = self.sessions.get_mut(&session_id) {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
+                }
+            }
+            let remaining = self.sessions.values().any(|s| {
+                s.phase == ConnectionPhase::Play
+                    && s.world_name == world_name
+                    && s.active_container.as_ref().map(|c| c.block_pos) == Some(block_pos)
+            });
+            if !remaining {
+                let block_event_msg = S2cMessage::BlockEvent(S2cBlockEvent {
+                    x: block_pos.x(),
+                    y: block_pos.y(),
+                    z: block_pos.z(),
+                    action: 1,
+                    param: 0,
+                });
+                for s in self.sessions.values_mut() {
+                    if s.phase == ConnectionPhase::Play && s.world_name == world_name {
+                        let _ = s
+                            .connection
+                            .send(Lane::Control, Payload::Msg(block_event_msg.clone()));
+                    }
+                }
             }
         }
 

@@ -8,13 +8,14 @@ use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
 use crate::messages::login::{C2sLoginStart, S2cLoginSuccess};
 use crate::messages::play::{
-    C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick,
-    C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck,
-    S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather,
+    C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest, C2sInteractEntity,
+    C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition,
+    C2sTeleportAck, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
+    S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove,
+    S2cEntityStatus, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow,
+    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -275,6 +276,7 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
                 7 => C2sMessage::CommandSuggest(C2sCommandSuggest::decode(&mut frame_cur)?),
                 8 => C2sMessage::PlayerInput(C2sPlayerInput::decode(&mut frame_cur)?),
                 9 => C2sMessage::TeleportAck(C2sTeleportAck::decode(&mut frame_cur)?),
+                10 => C2sMessage::CloseContainer(C2sCloseContainer::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
@@ -388,6 +390,9 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 22 => S2cMessage::UpdateEffects(S2cUpdateEffects::decode(&mut frame_cur)?),
                 23 => S2cMessage::SpawnItem(S2cSpawnItem::decode(&mut frame_cur)?),
                 24 => S2cMessage::SpawnArrow(S2cSpawnArrow::decode(&mut frame_cur)?),
+                25 => S2cMessage::OpenContainer(S2cOpenContainer::decode(&mut frame_cur)?),
+                26 => S2cMessage::CloseContainer(S2cCloseContainer::decode(&mut frame_cur)?),
+                27 => S2cMessage::BlockEvent(S2cBlockEvent::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

@@ -2720,6 +2720,156 @@ impl S2cSpawnArrow {
     }
 }
 
+/// Client notifies server that a container window has been closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C2sCloseContainer {
+    /// Window ID being closed (e.g. 1 for chest, 0 for inventory).
+    pub window_id: u8,
+}
+
+impl C2sCloseContainer {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.window_id);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let window_id = cursor[0];
+        *cursor = &cursor[1..];
+        Ok(Self { window_id })
+    }
+}
+
+/// Server commands client to open a container window with initial item contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cOpenContainer {
+    /// Window ID (e.g. 1).
+    pub window_id: u8,
+    /// Container kind (0 = Chest).
+    pub container_kind: u8,
+    /// Container display title (e.g. "Chest").
+    pub title: BoundedString<32>,
+    /// Container slot contents (up to 64 slots, typically 27 for chest).
+    pub slots: BoundedVec<SlotData, 64>,
+    /// World block coordinate X.
+    pub x: i32,
+    /// World block coordinate Y.
+    pub y: i32,
+    /// World block coordinate Z.
+    pub z: i32,
+}
+
+impl S2cOpenContainer {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.window_id);
+        buf.push(self.container_kind);
+        self.title.encode(buf);
+        self.slots.encode_with(buf, SlotData::encode);
+        encode_varint(zigzag_i32(self.x), buf);
+        encode_varint(zigzag_i32(self.y), buf);
+        encode_varint(zigzag_i32(self.z), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 2 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let window_id = cursor[0];
+        let container_kind = cursor[1];
+        *cursor = &cursor[2..];
+        let title = BoundedString::<32>::decode(cursor)?;
+        let slots = BoundedVec::<SlotData, 64>::decode_with(cursor, SlotData::decode)?;
+        let x = unzigzag_i32(decode_varint(cursor)?);
+        let y = unzigzag_i32(decode_varint(cursor)?);
+        let z = unzigzag_i32(decode_varint(cursor)?);
+        Ok(Self {
+            window_id,
+            container_kind,
+            title,
+            slots,
+            x,
+            y,
+            z,
+        })
+    }
+}
+
+/// Server commands client to forcefully close an open container window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cCloseContainer {
+    /// Window ID to close.
+    pub window_id: u8,
+}
+
+impl S2cCloseContainer {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.window_id);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let window_id = cursor[0];
+        *cursor = &cursor[1..];
+        Ok(Self { window_id })
+    }
+}
+
+/// Server broadcasts a block event animation or sound trigger (e.g. chest open/close lid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cBlockEvent {
+    /// World block coordinate X.
+    pub x: i32,
+    /// World block coordinate Y.
+    pub y: i32,
+    /// World block coordinate Z.
+    pub z: i32,
+    /// Event action ID (1 = Chest lid animation/viewer count).
+    pub action: u8,
+    /// Event action parameter (1 = Open, 0 = Close).
+    pub param: u8,
+}
+
+impl S2cBlockEvent {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(zigzag_i32(self.x), buf);
+        encode_varint(zigzag_i32(self.y), buf);
+        encode_varint(zigzag_i32(self.z), buf);
+        buf.push(self.action);
+        buf.push(self.param);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let x = unzigzag_i32(decode_varint(cursor)?);
+        let y = unzigzag_i32(decode_varint(cursor)?);
+        let z = unzigzag_i32(decode_varint(cursor)?);
+        if cursor.len() < 2 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let action = cursor[0];
+        let param = cursor[1];
+        *cursor = &cursor[2..];
+        Ok(Self {
+            x,
+            y,
+            z,
+            action,
+            param,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

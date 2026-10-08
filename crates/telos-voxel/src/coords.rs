@@ -29,6 +29,18 @@ impl LocalIdx {
         }
     }
 
+    /// Creates a `LocalIdx` from a raw `u16` index (`0..32768`).
+    /// Returns `None` if `index >= 32768`.
+    #[inline]
+    #[must_use]
+    pub const fn from_u16(index: u16) -> Option<Self> {
+        if index < 32768 {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
     /// Creates a `LocalIdx` without checking the bound.
     ///
     /// # Safety

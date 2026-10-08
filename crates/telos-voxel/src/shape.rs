@@ -274,6 +274,12 @@ impl BlockShape {
     pub fn post() -> Self {
         Self::Boxes(vec![SubBox::new([7, 0, 7], [9, 10, 9])])
     }
+
+    /// Standard chest shape (14/16 high, 1/16 inset from sides): [1, 0, 1] to [15, 14, 15].
+    #[must_use]
+    pub fn chest() -> Self {
+        Self::Boxes(vec![SubBox::new([1, 0, 1], [15, 14, 15])])
+    }
 }
 
 #[cfg(test)]

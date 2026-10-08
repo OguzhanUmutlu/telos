@@ -417,6 +417,7 @@ impl<I: RegionIo> RegionFile<I> {
                 payload.status.inhabited_ticks == 0 && payload.status.flags == 0;
             if payload.blocks.is_uniform()
                 && payload.unknown_sections.is_empty()
+                && payload.block_entities.is_empty()
                 && is_default_status
             {
                 let block_id = match payload.blocks {

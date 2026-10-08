@@ -333,6 +333,95 @@ pub fn synthesize_arrow_hit(is_entity: bool) -> Arc<[f32]> {
     samples.into()
 }
 
+/// Synthesizes a wooden chest opening sound (creaking upward hinge friction, mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_chest_open() -> Arc<[f32]> {
+    let duration_sec = 0.35;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0xCAFE);
+
+    let mut phase_hinge = 0.0f32;
+    let mut phase_creak = 0.0f32;
+    let mut filtered_noise = 0.0f32;
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let attack = (t / 0.03).min(1.0);
+        let release = ((duration_sec - t) / 0.05).clamp(0.0, 1.0);
+        let env = attack * release;
+
+        let progress = t / duration_sec;
+        let hinge_freq = 180.0 + 240.0 * progress.powf(1.4);
+        phase_hinge += 2.0 * std::f32::consts::PI * hinge_freq / SYNTH_SAMPLE_RATE as f32;
+        let tone = phase_hinge.sin();
+
+        let creak_freq = hinge_freq * 2.5 + (t * 80.0).sin() * 25.0;
+        phase_creak += 2.0 * std::f32::consts::PI * creak_freq / SYNTH_SAMPLE_RATE as f32;
+        let creak = phase_creak.sin() * 0.4;
+
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.25 * (raw_noise - filtered_noise);
+
+        let sample = (tone * 0.5 + creak * 0.3 + filtered_noise * 0.2) * env * 0.8;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a wooden chest closing sound (downward hinge sweep and solid latch thud, mono, 44.1 kHz).
+#[must_use]
+pub fn synthesize_chest_close() -> Arc<[f32]> {
+    let duration_sec = 0.32;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0xBEEF);
+
+    let mut phase_hinge = 0.0f32;
+    let mut phase_thud = 0.0f32;
+    let mut filtered_noise = 0.0f32;
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+
+        let hinge_env = if t < 0.24 {
+            let attack = (t / 0.02).min(1.0);
+            let release = ((0.24 - t) / 0.04).clamp(0.0, 1.0);
+            attack * release
+        } else {
+            0.0
+        };
+
+        let progress = (t / 0.24).min(1.0);
+        let hinge_freq = 380.0 - 240.0 * progress.powf(0.8);
+        phase_hinge += 2.0 * std::f32::consts::PI * hinge_freq / SYNTH_SAMPLE_RATE as f32;
+        let hinge_tone = phase_hinge.sin() * hinge_env;
+
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.22 * (raw_noise - filtered_noise);
+        let noise_comp = filtered_noise * hinge_env * 0.3;
+
+        let thud_env = if t >= 0.20 {
+            let dt = t - 0.20;
+            let thud_att = (dt / 0.003).min(1.0);
+            thud_att * (-35.0 * dt).exp()
+        } else {
+            0.0
+        };
+
+        let thud_freq = 110.0 * (0.6 + 1.4 * (-60.0 * (t - 0.20).max(0.0)).exp());
+        phase_thud += 2.0 * std::f32::consts::PI * thud_freq / SYNTH_SAMPLE_RATE as f32;
+        let thud_tone = phase_thud.sin() * thud_env * 0.9;
+        let thud_noise = (rng.next_f32() * 0.4) * thud_env;
+
+        let sample = (hinge_tone * 0.5 + noise_comp + thud_tone * 0.6 + thud_noise * 0.2) * 0.85;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +486,23 @@ mod tests {
                 assert!(!s.is_nan());
                 assert!((-1.0..=1.0).contains(&s));
             }
+        }
+    }
+
+    #[test]
+    fn test_chest_open_close_bounds() {
+        let open_buf = synthesize_chest_open();
+        assert!(!open_buf.is_empty());
+        for &s in open_buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+
+        let close_buf = synthesize_chest_close();
+        assert!(!close_buf.is_empty());
+        for &s in close_buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
         }
     }
 }

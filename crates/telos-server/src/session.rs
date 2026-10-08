@@ -97,6 +97,17 @@ pub struct PlayerSession {
     pub selected_slot: u8,
     /// Name of the world/dimension this session currently resides in.
     pub world_name: String,
+    /// Currently open container session (if any).
+    pub active_container: Option<ActiveContainerSession>,
+}
+
+/// Tracks an open container window for a player session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveContainerSession {
+    /// Window ID (typically 1).
+    pub window_id: u8,
+    /// World coordinates of the container block.
+    pub block_pos: BlockPos,
 }
 
 impl PlayerSession {
@@ -177,6 +188,7 @@ impl PlayerSession {
             move_mode: MoveMode::Walk,
             selected_slot: 0,
             world_name: "overworld".to_string(),
+            active_container: None,
         }
     }
 

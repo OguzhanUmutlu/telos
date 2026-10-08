@@ -4,6 +4,7 @@ use crate::crafting::find_recipe_2x2;
 use crate::enchantment::CompactEnchantments;
 use bevy_ecs::component::Component;
 use std::ops::Range;
+use telos_voxel::block_entity::{BlockEntityData, BlockEntitySlot};
 use thiserror::Error;
 
 /// Maximum number of items in a standard stackable item stack.
@@ -89,6 +90,8 @@ pub const fn matching_armor_slot(item: u32) -> Option<usize> {
 pub const ITEM_BOW: u32 = 61;
 /// Arrow projectile ammo item identifier (62).
 pub const ITEM_ARROW: u32 = 62;
+/// Chest container item identifier (63).
+pub const ITEM_CHEST: u32 = 63;
 
 /// Returns true if the item is a bow.
 #[must_use]
@@ -100,6 +103,12 @@ pub const fn is_bow(item: u32) -> bool {
 #[must_use]
 pub const fn is_arrow(item: u32) -> bool {
     item == ITEM_ARROW
+}
+
+/// Returns true if the item is a chest.
+#[must_use]
+pub const fn is_chest(item: u32) -> bool {
+    item == ITEM_CHEST
 }
 
 /// Checks if a slot accepts the specified item.
@@ -185,6 +194,7 @@ pub fn item_name(item: u32) -> &'static str {
         60 => "Name Tag",
         61 => "Bow",
         62 => "Arrow",
+        63 => "Chest",
         _ => "Unknown Item",
     }
 }
@@ -717,8 +727,289 @@ pub const fn block_to_drop_item(block_id: u32) -> Option<ItemStack> {
         15 => Some(ItemStack::new(20, 1)),         // Diamond ore -> Diamond
         36 => Some(ItemStack::new(36, 1)),         // Obsidian
         74..=76 => Some(ItemStack::new(5, 1)),     // Logs -> Wood Log
-        81 => Some(ItemStack::new(66, 1)),         // Chest
+        81 => Some(ItemStack::new(ITEM_CHEST, 1)), // Chest
         other => Some(ItemStack::new(other, 1)),   // Default self-drop
+    }
+}
+
+/// Number of item slots in a chest container.
+pub const CHEST_CONTAINER_SLOTS: usize = 27;
+
+/// Total number of slots in a dual chest container window (27 chest + 27 storage + 9 hotbar = 63).
+pub const DUAL_CONTAINER_SLOTS: usize = 63;
+
+/// Chest container slot range (0..27).
+pub const CONTAINER_CHEST_SLOTS: Range<usize> = 0..27;
+/// Player storage slot range in dual container window (27..54).
+pub const CONTAINER_PLAYER_STORAGE_SLOTS: Range<usize> = 27..54;
+/// Player hotbar slot range in dual container window (54..63).
+pub const CONTAINER_PLAYER_HOTBAR_SLOTS: Range<usize> = 54..63;
+
+/// Chest container inventory component holding 27 item slots.
+#[derive(Debug, Clone, PartialEq, Eq, Component)]
+pub struct ChestInventory {
+    /// 27 container slots.
+    pub slots: [ItemStack; CHEST_CONTAINER_SLOTS],
+    /// Optional custom display title.
+    pub custom_name: Option<String>,
+}
+
+impl Default for ChestInventory {
+    fn default() -> Self {
+        Self {
+            slots: [ItemStack::EMPTY; CHEST_CONTAINER_SLOTS],
+            custom_name: None,
+        }
+    }
+}
+
+impl ChestInventory {
+    /// Creates a new empty chest inventory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a `ChestInventory` from `BlockEntityData`.
+    #[must_use]
+    pub fn from_block_entity(be: &BlockEntityData) -> Self {
+        match be {
+            BlockEntityData::Chest { custom_name, items } => {
+                let mut slots = [ItemStack::EMPTY; CHEST_CONTAINER_SLOTS];
+                for (i, slot) in items.iter().enumerate() {
+                    if i < CHEST_CONTAINER_SLOTS && !slot.is_empty() {
+                        slots[i] = ItemStack::new(slot.item, slot.count);
+                    }
+                }
+                Self {
+                    slots,
+                    custom_name: custom_name.clone(),
+                }
+            }
+        }
+    }
+
+    /// Converts this `ChestInventory` to `BlockEntityData`.
+    #[must_use]
+    pub fn to_block_entity(&self) -> BlockEntityData {
+        let mut items = [BlockEntitySlot::EMPTY; CHEST_CONTAINER_SLOTS];
+        #[allow(clippy::cast_possible_truncation)]
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.is_empty() {
+                items[i].slot = i as u8;
+            } else {
+                items[i] = BlockEntitySlot::new(i as u8, slot.item, slot.count);
+            }
+        }
+        BlockEntityData::Chest {
+            custom_name: self.custom_name.clone(),
+            items,
+        }
+    }
+
+    /// Returns whether this container has no items.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.iter().all(ItemStack::is_empty)
+    }
+
+    /// Gets a reference to a slot.
+    #[must_use]
+    pub fn get(&self, slot: usize) -> Option<&ItemStack> {
+        self.slots.get(slot)
+    }
+
+    /// Gets a mutable reference to a slot.
+    pub fn get_mut(&mut self, slot: usize) -> Option<&mut ItemStack> {
+        self.slots.get_mut(slot)
+    }
+}
+
+fn get_container_slot_mut<'a>(
+    chest_slots: &'a mut [ItemStack; CHEST_CONTAINER_SLOTS],
+    player_slots: &'a mut [ItemStack; PLAYER_INVENTORY_SLOTS],
+    slot_idx: usize,
+) -> &'a mut ItemStack {
+    if slot_idx < CHEST_CONTAINER_SLOTS {
+        &mut chest_slots[slot_idx]
+    } else if slot_idx < 54 {
+        &mut player_slots[slot_idx - 27 + 9]
+    } else {
+        &mut player_slots[slot_idx - 54]
+    }
+}
+
+/// Executes a deterministic click interaction on a dual container window (chest + player inventory).
+pub fn container_click(
+    container: &mut ChestInventory,
+    player_inv: &mut Inventory,
+    slot_idx: usize,
+    button: ClickButton,
+    mode: ClickMode,
+) -> Result<(), InventoryError> {
+    if slot_idx >= DUAL_CONTAINER_SLOTS {
+        return Err(InventoryError::SlotOutOfBounds(slot_idx));
+    }
+
+    match mode {
+        ClickMode::Pickup => handle_container_pickup(container, player_inv, slot_idx, button),
+        ClickMode::QuickMove => handle_container_quick_move(container, player_inv, slot_idx),
+        ClickMode::SwapHotbar => {
+            handle_container_swap_hotbar(container, player_inv, slot_idx, button);
+        }
+        ClickMode::Drop => handle_container_drop(container, player_inv, slot_idx, button),
+    }
+
+    Ok(())
+}
+
+fn handle_container_pickup(
+    container: &mut ChestInventory,
+    player_inv: &mut Inventory,
+    slot_idx: usize,
+    button: ClickButton,
+) {
+    let target = get_container_slot_mut(&mut container.slots, &mut player_inv.slots, slot_idx);
+    match button {
+        ClickButton::Left => {
+            if player_inv.carried.is_empty() {
+                player_inv.carried = *target;
+                *target = ItemStack::EMPTY;
+            } else if target.is_empty() {
+                *target = player_inv.carried;
+                player_inv.carried = ItemStack::EMPTY;
+            } else if target.item == player_inv.carried.item {
+                let space = MAX_STACK_SIZE.saturating_sub(target.count);
+                let to_move = player_inv.carried.count.min(space);
+                target.count += to_move;
+                player_inv.carried.count -= to_move;
+                player_inv.carried.normalize();
+            } else {
+                std::mem::swap(target, &mut player_inv.carried);
+            }
+        }
+        ClickButton::Right => {
+            if player_inv.carried.is_empty() {
+                if !target.is_empty() {
+                    let take = target.count.div_ceil(2);
+                    player_inv.carried = ItemStack::new(target.item, take);
+                    target.count -= take;
+                    target.normalize();
+                }
+            } else if target.is_empty() {
+                *target = ItemStack::new(player_inv.carried.item, 1);
+                player_inv.carried.count -= 1;
+                player_inv.carried.normalize();
+            } else if target.item == player_inv.carried.item && target.count < MAX_STACK_SIZE {
+                target.count += 1;
+                player_inv.carried.count -= 1;
+                player_inv.carried.normalize();
+            }
+        }
+    }
+}
+
+fn handle_container_quick_move(
+    container: &mut ChestInventory,
+    player_inv: &mut Inventory,
+    slot_idx: usize,
+) {
+    if slot_idx < CHEST_CONTAINER_SLOTS {
+        // Move from chest into player inventory (storage first, then hotbar)
+        let slot = &mut container.slots[slot_idx];
+        if !slot.is_empty() {
+            let mut to_move = *slot;
+            player_inv.insert_into_storage_or_hotbar(&mut to_move);
+            *slot = to_move;
+        }
+    } else {
+        // Move from player inventory into chest
+        let player_slot_idx = if slot_idx < 54 {
+            slot_idx - 27 + 9
+        } else {
+            slot_idx - 54
+        };
+        let slot = &mut player_inv.slots[player_slot_idx];
+        if !slot.is_empty() {
+            let mut to_move = *slot;
+            // 1. Merge into matching slots in chest
+            for target in &mut container.slots {
+                if target.item == to_move.item && target.count < MAX_STACK_SIZE {
+                    let space = MAX_STACK_SIZE - target.count;
+                    let move_amt = to_move.count.min(space);
+                    target.count += move_amt;
+                    to_move.count -= move_amt;
+                    if to_move.count == 0 {
+                        to_move.normalize();
+                        break;
+                    }
+                }
+            }
+            // 2. Place remainder into empty slots in chest
+            if !to_move.is_empty() {
+                for target in &mut container.slots {
+                    if target.is_empty() {
+                        *target = to_move;
+                        to_move = ItemStack::EMPTY;
+                        break;
+                    }
+                }
+            }
+            *slot = to_move;
+        }
+    }
+}
+
+fn handle_container_swap_hotbar(
+    container: &mut ChestInventory,
+    player_inv: &mut Inventory,
+    slot_idx: usize,
+    button: ClickButton,
+) {
+    let hotbar_slot = match button {
+        ClickButton::Left => player_inv.selected_slot.min(8),
+        ClickButton::Right => return,
+    };
+    if slot_idx < CHEST_CONTAINER_SLOTS {
+        std::mem::swap(
+            &mut container.slots[slot_idx],
+            &mut player_inv.slots[hotbar_slot],
+        );
+    } else if slot_idx < 54 {
+        let player_slot = slot_idx - 27 + 9;
+        let (left, right) = match player_slot.cmp(&hotbar_slot) {
+            std::cmp::Ordering::Less => {
+                let (l, r) = player_inv.slots.split_at_mut(hotbar_slot);
+                (&mut l[player_slot], &mut r[0])
+            }
+            std::cmp::Ordering::Greater => {
+                let (l, r) = player_inv.slots.split_at_mut(player_slot);
+                (&mut l[hotbar_slot], &mut r[0])
+            }
+            std::cmp::Ordering::Equal => return,
+        };
+        std::mem::swap(left, right);
+    }
+}
+
+fn handle_container_drop(
+    container: &mut ChestInventory,
+    player_inv: &mut Inventory,
+    slot_idx: usize,
+    button: ClickButton,
+) {
+    let target = get_container_slot_mut(&mut container.slots, &mut player_inv.slots, slot_idx);
+    if target.is_empty() {
+        return;
+    }
+    match button {
+        ClickButton::Left => {
+            target.count -= 1;
+            target.normalize();
+        }
+        ClickButton::Right => {
+            *target = ItemStack::EMPTY;
+        }
     }
 }
 
@@ -856,5 +1147,98 @@ mod tests {
         assert_eq!(inv.slots[42], ItemStack::EMPTY);
         assert_eq!(inv.slots[CRAFTING_RESULT_SLOT], ItemStack::EMPTY);
         assert_eq!(inv.slots[9], ItemStack::new(7, 4)); // Combined into storage
+    }
+
+    #[test]
+    fn test_chest_inventory_block_entity_roundtrip() {
+        let mut chest = ChestInventory::new();
+        chest.custom_name = Some("Loot Box".into());
+        chest.slots[0] = ItemStack::new(1, 32);
+        chest.slots[26] = ItemStack::new(ITEM_CHEST, 1);
+
+        let be = chest.to_block_entity();
+        let restored = ChestInventory::from_block_entity(&be);
+        assert_eq!(restored.custom_name.as_deref(), Some("Loot Box"));
+        assert_eq!(restored.slots[0], ItemStack::new(1, 32));
+        assert_eq!(restored.slots[26], ItemStack::new(ITEM_CHEST, 1));
+        assert!(restored.slots[1].is_empty());
+    }
+
+    #[test]
+    fn test_container_click_pickup_and_split() {
+        let mut chest = ChestInventory::new();
+        let mut player_inv = Inventory::default();
+
+        // Put 10 iron ingots (52) into chest slot 0
+        chest.slots[0] = ItemStack::new(52, 10);
+
+        // Left click on chest slot 0: picks up all 10
+        container_click(
+            &mut chest,
+            &mut player_inv,
+            0,
+            ClickButton::Left,
+            ClickMode::Pickup,
+        )
+        .unwrap();
+        assert_eq!(chest.slots[0], ItemStack::EMPTY);
+        assert_eq!(player_inv.carried, ItemStack::new(52, 10));
+
+        // Right click on chest slot 1: places 1
+        container_click(
+            &mut chest,
+            &mut player_inv,
+            1,
+            ClickButton::Right,
+            ClickMode::Pickup,
+        )
+        .unwrap();
+        assert_eq!(chest.slots[1], ItemStack::new(52, 1));
+        assert_eq!(player_inv.carried, ItemStack::new(52, 9));
+
+        // Place remainder into player storage slot (container slot 27 = player slot 9)
+        container_click(
+            &mut chest,
+            &mut player_inv,
+            27,
+            ClickButton::Left,
+            ClickMode::Pickup,
+        )
+        .unwrap();
+        assert_eq!(player_inv.slots[9], ItemStack::new(52, 9));
+        assert_eq!(player_inv.carried, ItemStack::EMPTY);
+    }
+
+    #[test]
+    fn test_container_quick_move_bidirectional() {
+        let mut chest = ChestInventory::new();
+        let mut player_inv = Inventory::default();
+
+        // 64 stone in chest slot 0
+        chest.slots[0] = ItemStack::new(1, 64);
+
+        // Shift click chest slot 0 -> moves into player storage (slot 9)
+        container_click(
+            &mut chest,
+            &mut player_inv,
+            0,
+            ClickButton::Left,
+            ClickMode::QuickMove,
+        )
+        .unwrap();
+        assert_eq!(chest.slots[0], ItemStack::EMPTY);
+        assert_eq!(player_inv.slots[9], ItemStack::new(1, 64));
+
+        // Shift click container slot 27 (player storage slot 9) -> moves back into chest slot 0
+        container_click(
+            &mut chest,
+            &mut player_inv,
+            27,
+            ClickButton::Left,
+            ClickMode::QuickMove,
+        )
+        .unwrap();
+        assert_eq!(player_inv.slots[9], ItemStack::EMPTY);
+        assert_eq!(chest.slots[0], ItemStack::new(1, 64));
     }
 }

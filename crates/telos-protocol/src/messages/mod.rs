@@ -13,15 +13,16 @@ pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
-    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCommandSuggest, C2sInteractEntity,
-    C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition,
-    C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, NetworkEffect, ParticleEffectKind,
-    PlayerCommandKind, S2cBlockActionAck, S2cBlockUpdate, S2cChatMessage, S2cChunkData,
-    S2cChunkUnload, S2cCommandSuggestions, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity,
-    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
+    C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput,
+    C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, NetworkEffect,
+    ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
+    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk, S2cInventorySlot,
+    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cOpenContainer,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
+    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -109,6 +110,8 @@ pub enum C2sMessage {
     PlayerInput(C2sPlayerInput),
     /// Play phase acknowledgment of server-initiated teleport.
     TeleportAck(C2sTeleportAck),
+    /// Play phase client notifications of closing a container.
+    CloseContainer(C2sCloseContainer),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -134,7 +137,8 @@ impl C2sMessage {
             | Self::InteractEntity(_)
             | Self::CommandSuggest(_)
             | Self::PlayerInput(_)
-            | Self::TeleportAck(_) => Some(ConnectionPhase::Play),
+            | Self::TeleportAck(_)
+            | Self::CloseContainer(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -156,6 +160,7 @@ impl C2sMessage {
             Self::CommandSuggest(_) => 7,
             Self::PlayerInput(_) => 8,
             Self::TeleportAck(_) => 9,
+            Self::CloseContainer(_) => 10,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -178,6 +183,7 @@ impl C2sMessage {
             Self::CommandSuggest(m) => m.encode(buf),
             Self::PlayerInput(m) => m.encode(buf),
             Self::TeleportAck(m) => m.encode(buf),
+            Self::CloseContainer(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -244,6 +250,12 @@ pub enum S2cMessage {
     SpawnItem(S2cSpawnItem),
     /// Play phase projectile arrow entity spawn.
     SpawnArrow(S2cSpawnArrow),
+    /// Play phase commands opening a container window.
+    OpenContainer(S2cOpenContainer),
+    /// Play phase commands closing a container window.
+    CloseContainer(S2cCloseContainer),
+    /// Play phase block animation/sound event.
+    BlockEvent(S2cBlockEvent),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -282,7 +294,10 @@ impl S2cMessage {
             | Self::ParticleEvent(_)
             | Self::UpdateEffects(_)
             | Self::SpawnItem(_)
-            | Self::SpawnArrow(_) => Some(ConnectionPhase::Play),
+            | Self::SpawnArrow(_)
+            | Self::OpenContainer(_)
+            | Self::CloseContainer(_)
+            | Self::BlockEvent(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -319,6 +334,9 @@ impl S2cMessage {
             Self::UpdateEffects(_) => 22,
             Self::SpawnItem(_) => 23,
             Self::SpawnArrow(_) => 24,
+            Self::OpenContainer(_) => 25,
+            Self::CloseContainer(_) => 26,
+            Self::BlockEvent(_) => 27,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -355,6 +373,9 @@ impl S2cMessage {
             Self::UpdateEffects(m) => m.encode(buf),
             Self::SpawnItem(m) => m.encode(buf),
             Self::SpawnArrow(m) => m.encode(buf),
+            Self::OpenContainer(m) => m.encode(buf),
+            Self::CloseContainer(m) => m.encode(buf),
+            Self::BlockEvent(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

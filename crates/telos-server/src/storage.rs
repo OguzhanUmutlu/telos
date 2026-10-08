@@ -163,7 +163,8 @@ impl WorldStorage {
                 .flags(id)
                 .contains(telos_voxel::state::StateFlags::OPAQUE_FULL)
         };
-        let chunk = Chunk::from_blocks(pos, blocks, is_opaque);
+        let mut chunk = Chunk::from_blocks(pos, blocks, is_opaque);
+        chunk.block_entities = payload.block_entities;
         Ok(Some(chunk))
     }
 
@@ -186,7 +187,11 @@ impl WorldStorage {
             } else {
                 raw_blocks
             };
-            let payload = ChunkPayload::new(disk_blocks, ChunkStatus::default());
+            let payload = ChunkPayload::with_block_entities(
+                disk_blocks,
+                ChunkStatus::default(),
+                chunk.block_entities.clone(),
+            );
             grouped.entry(rpos).or_default().push((pos, Some(payload)));
             count += 1;
         }

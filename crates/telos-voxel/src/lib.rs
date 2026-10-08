@@ -10,6 +10,7 @@
 //! - Block and block-state registry mapping namespaced IDs to dense numeric IDs.
 //! - Generational `ChunkMap` with lock-free `Arc<ChunkSnapshot>` publishing.
 
+pub mod block_entity;
 pub mod chunk;
 pub mod coords;
 pub mod fluid;
@@ -21,6 +22,9 @@ pub mod shape;
 pub mod state;
 pub mod storage;
 
+pub use block_entity::{
+    BlockEntityData, BlockEntityKind, BlockEntitySlot, BlockEntityTable, CHEST_CONTAINER_SLOTS,
+};
 pub use chunk::{Chunk, ChunkSnapshot};
 pub use coords::{CHUNK_SIZE, CHUNK_VOLUME, LocalIdx, split_block_pos, to_block_pos};
 pub use fluid::{FluidKind, FluidState};

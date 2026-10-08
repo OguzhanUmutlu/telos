@@ -594,11 +594,14 @@ impl BlockRegistry {
         reg.register(monster_spawner_id, StateFlags::OPAQUE_CUBE);
 
         let chest_id = Identifier::new("telos", "chest").unwrap();
-        reg.register(
+        reg.register_with_shape(
             chest_id,
             StateFlags::from_bits_truncate(
-                StateFlags::NON_EMPTY.bits() | StateFlags::LIGHT_BLOCKING.bits(),
+                StateFlags::NON_EMPTY.bits()
+                    | StateFlags::LIGHT_BLOCKING.bits()
+                    | StateFlags::HAS_BLOCK_ENTITY.bits(),
             ),
+            crate::shape::BlockShape::chest(),
         );
 
         reg.freeze();

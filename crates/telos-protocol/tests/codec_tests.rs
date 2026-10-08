@@ -10,13 +10,13 @@ use telos_protocol::codec::{
 use telos_protocol::error::ProtocolError;
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
-    C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries, C2sLoginStart,
-    C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect,
-    DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCommandSuggestions,
-    S2cConfigDone, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cLoginSuccess, S2cMessage, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem,
-    S2cUniformChunk,
+    C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries,
+    C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
+    Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cHelloReply, S2cJoinGame,
+    S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cOpenContainer,
+    S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -721,6 +721,68 @@ fn test_command_suggestion_packets_roundtrip() {
         .expect("failed to decode S2cCommandSuggestions");
     assert_eq!(decoded_s2c, resp);
     assert!(cursor_s2c.is_empty());
+}
+
+#[test]
+fn test_container_packets_roundtrip() {
+    // 1. S2cOpenContainer
+    let mut slots = Vec::new();
+    slots.push(SlotData { item: 1, count: 64 });
+    for _ in 1..27 {
+        slots.push(SlotData { item: 0, count: 0 });
+    }
+    let open_msg = S2cMessage::OpenContainer(S2cOpenContainer {
+        window_id: 1,
+        container_kind: 0,
+        title: BoundedString::new("Chest").unwrap(),
+        slots: BoundedVec::new(slots).unwrap(),
+        x: 10,
+        y: 64,
+        z: -20,
+    });
+    let mut buf = Vec::new();
+    encode_s2c(&open_msg, &mut buf);
+    let mut cursor = &buf[..];
+    let decoded_open =
+        decode_s2c(ConnectionPhase::Play, &mut cursor).expect("decode S2cOpenContainer");
+    assert_eq!(decoded_open, open_msg);
+    assert!(cursor.is_empty());
+
+    // 2. C2sCloseContainer
+    let close_c2s = C2sMessage::CloseContainer(C2sCloseContainer { window_id: 1 });
+    let mut buf_c2s = Vec::new();
+    encode_c2s(&close_c2s, &mut buf_c2s);
+    let mut cursor_c2s = &buf_c2s[..];
+    let decoded_close_c2s =
+        decode_c2s(ConnectionPhase::Play, &mut cursor_c2s).expect("decode C2sCloseContainer");
+    assert_eq!(decoded_close_c2s, close_c2s);
+    assert!(cursor_c2s.is_empty());
+
+    // 3. S2cCloseContainer
+    let close_s2c = S2cMessage::CloseContainer(S2cCloseContainer { window_id: 1 });
+    let mut buf_s2c = Vec::new();
+    encode_s2c(&close_s2c, &mut buf_s2c);
+    let mut cursor_s2c = &buf_s2c[..];
+    let decoded_close_s2c =
+        decode_s2c(ConnectionPhase::Play, &mut cursor_s2c).expect("decode S2cCloseContainer");
+    assert_eq!(decoded_close_s2c, close_s2c);
+    assert!(cursor_s2c.is_empty());
+
+    // 4. S2cBlockEvent
+    let block_event = S2cMessage::BlockEvent(S2cBlockEvent {
+        x: 10,
+        y: 64,
+        z: -20,
+        action: 1,
+        param: 1,
+    });
+    let mut buf_event = Vec::new();
+    encode_s2c(&block_event, &mut buf_event);
+    let mut cursor_event = &buf_event[..];
+    let decoded_event =
+        decode_s2c(ConnectionPhase::Play, &mut cursor_event).expect("decode S2cBlockEvent");
+    assert_eq!(decoded_event, block_event);
+    assert!(cursor_event.is_empty());
 }
 
 proptest! {

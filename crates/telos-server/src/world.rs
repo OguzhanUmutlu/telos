@@ -336,6 +336,52 @@ impl ServerWorld {
         }
     }
 
+    /// Retrieves a block entity at `pos`, if present and loaded.
+    #[must_use]
+    pub fn get_block_entity(
+        &self,
+        pos: BlockPos,
+    ) -> Option<&telos_voxel::block_entity::BlockEntityData> {
+        let (chunk_pos, local_idx) = split_block_pos(pos);
+        let sc = self.chunks.get(&chunk_pos)?;
+        sc.chunk.get_block_entity(local_idx)
+    }
+
+    /// Retrieves a mutable block entity at `pos`, if present and loaded.
+    /// Flags the chunk dirty for persistence.
+    pub fn get_block_entity_mut(
+        &mut self,
+        pos: BlockPos,
+    ) -> Option<&mut telos_voxel::block_entity::BlockEntityData> {
+        let (chunk_pos, local_idx) = split_block_pos(pos);
+        self.dirty_chunks.insert(chunk_pos);
+        let sc = self.chunks.get_mut(&chunk_pos)?;
+        sc.chunk.get_block_entity_mut(local_idx)
+    }
+
+    /// Sets or replaces a block entity at `pos`, flagging the chunk dirty for persistence.
+    pub fn set_block_entity(
+        &mut self,
+        pos: BlockPos,
+        data: telos_voxel::block_entity::BlockEntityData,
+    ) -> Option<telos_voxel::block_entity::BlockEntityData> {
+        let (chunk_pos, local_idx) = split_block_pos(pos);
+        self.dirty_chunks.insert(chunk_pos);
+        let sc = self.chunks.get_mut(&chunk_pos)?;
+        sc.chunk.set_block_entity(local_idx, data)
+    }
+
+    /// Removes a block entity at `pos`, flagging the chunk dirty for persistence.
+    pub fn remove_block_entity(
+        &mut self,
+        pos: BlockPos,
+    ) -> Option<telos_voxel::block_entity::BlockEntityData> {
+        let (chunk_pos, local_idx) = split_block_pos(pos);
+        self.dirty_chunks.insert(chunk_pos);
+        let sc = self.chunks.get_mut(&chunk_pos)?;
+        sc.chunk.remove_block_entity(local_idx)
+    }
+
     /// Sets a block in the world, updating chunk storage, heightmaps, and lighting.
     ///
     /// Invalidates affected LOD pyramid levels and flags the chunk dirty for save.

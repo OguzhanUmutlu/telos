@@ -5,6 +5,7 @@
 //! instances for single-draw-call instanced rendering.
 
 pub mod chat;
+pub mod container;
 pub mod font;
 pub mod frame;
 pub mod hud;
@@ -17,6 +18,10 @@ pub mod settings;
 pub mod tree;
 
 pub use chat::{ChatEntry, ChatHudState, render_chat_hud};
+pub use container::{
+    CHEST_CONTAINER_SLOTS, DUAL_CONTAINER_SLOT_COUNT, chest_slot_at_pos, chest_slot_pos,
+    render_chest_container,
+};
 pub use font::{BitmapFont, GlyphMetrics};
 pub use frame::UiFrame;
 pub use hud::{HudEffectDisplay, HudState, UiLayers, render_hud};

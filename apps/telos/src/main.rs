@@ -33,10 +33,10 @@ use telos_net::{Connection, Lane, MemoryConnection, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
-    C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity, C2sInventoryClick, C2sLoginStart,
-    C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase,
-    InputFrame, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent,
-    S2cPlayerMovementAck, input_buttons,
+    C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity,
+    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck,
+    ChunkPayload, ConnectionPhase, InputFrame, NetworkEffect, ParticleEffectKind,
+    PlayerCommandKind, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck, input_buttons,
 };
 use telos_sim::particle::{ParticleGpu, ParticleSystem};
 use telos_sim::{
@@ -48,8 +48,9 @@ use telos_ui::menu::{
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
-    BitmapFont, ChatHudState, HudState, UiLayers, UiQuad, UiSlotItem, compute_gui_scale,
-    render_chat_hud, render_hud, render_inventory_screen, slot_at_pos,
+    BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, HudState, UiLayers, UiQuad, UiSlotItem,
+    chest_slot_at_pos, compute_gui_scale, render_chat_hud, render_chest_container, render_hud,
+    render_inventory_screen, slot_at_pos,
 };
 
 /// Top-level application screen state.
@@ -68,6 +69,23 @@ pub enum AppScreen {
     },
     /// Active 3D gameplay view.
     InGame,
+}
+
+/// Active container window state on the client (e.g. chest).
+#[derive(Debug, Clone)]
+pub struct ClientContainerState {
+    /// Server window ID.
+    pub window_id: u8,
+    /// Container display title (e.g. "Chest").
+    pub title: String,
+    /// Container block coordinate X.
+    pub x: i32,
+    /// Container block coordinate Y.
+    pub y: i32,
+    /// Container block coordinate Z.
+    pub z: i32,
+    /// Container item slot contents (27 slots for chest).
+    pub slots: [UiSlotItem; 27],
 }
 use telos_voxel::chunk::{Chunk, ChunkSnapshot};
 use telos_voxel::coords::LocalIdx;
@@ -492,7 +510,7 @@ fn block_state_to_particle_layer(state: telos_voxel::state::BlockStateId) -> (u3
         4 => (4, [60, 60, 60, 255]),                // bedrock
         5 => (5, [219, 207, 156, 255]),             // sand
         6 => (24, [64, 100, 200, 200]),             // water
-        7 | 11 => (6, [162, 130, 78, 255]),         // oak planks & stairs
+        7 | 11 | 63 => (6, [162, 130, 78, 255]),    // oak planks, stairs & chest
         8 => (7, [60, 140, 50, 255]),               // oak leaves
         9 => (8, [200, 220, 240, 180]),             // glass
         10 => (0, [120, 120, 120, 255]),            // stone slab
@@ -1317,6 +1335,8 @@ struct App {
     hud_state: HudState,
     inventory_sim: telos_sim::Inventory,
     inventory_open: bool,
+    container_state: Option<ClientContainerState>,
+    container_hovered_slot: Option<usize>,
     mouse_cursor_pos: [f32; 2],
     inventory_hovered_slot: Option<usize>,
     shift_held: bool,
@@ -1768,6 +1788,8 @@ impl App {
             hud_state: HudState::default(),
             inventory_sim: telos_sim::Inventory::default(),
             inventory_open: false,
+            container_state: None,
+            container_hovered_slot: None,
             mouse_cursor_pos: [0.0, 0.0],
             inventory_hovered_slot: None,
             shift_held: false,
@@ -2072,6 +2094,60 @@ impl App {
         }
     }
 
+    fn handle_container_swap_hotbar(&mut self, hotbar_idx: usize) {
+        if let Some(hovered) = self.container_hovered_slot {
+            let predicted_carried = self.inventory_sim.carried;
+            let click_msg = C2sMessage::InventoryClick(C2sInventoryClick {
+                slot: hovered as u16,
+                button: hotbar_idx as u8,
+                mode: 2, // SwapHotbar
+                predicted_carried_item: predicted_carried.item,
+                predicted_carried_count: predicted_carried.count,
+            });
+            let _ = self
+                .client_conn
+                .send(Lane::Control, Payload::Msg(click_msg));
+            self.inventory_sim.selected_slot = hotbar_idx;
+            if let Some(ref mut cont) = self.container_state {
+                let mut chest_inv = telos_sim::ChestInventory::default();
+                for (i, slot) in cont.slots.iter().enumerate() {
+                    chest_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                }
+                let _ = telos_sim::container_click(
+                    &mut chest_inv,
+                    &mut self.inventory_sim,
+                    hovered,
+                    telos_sim::ClickButton::Left,
+                    telos_sim::ClickMode::SwapHotbar,
+                );
+                for (i, slot) in chest_inv.slots.iter().enumerate() {
+                    cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                }
+            }
+            self.selected_block_state = BlockStateId::new(self.inventory_sim.selected_item().item);
+        }
+    }
+
+    fn close_active_container(&mut self) {
+        if let Some(cont) = self.container_state.take() {
+            let close_msg = C2sMessage::CloseContainer(C2sCloseContainer {
+                window_id: cont.window_id,
+            });
+            let _ = self
+                .client_conn
+                .send(Lane::Control, Payload::Msg(close_msg));
+            self.container_hovered_slot = None;
+            self.inventory_sim.return_carried();
+            if self.current_screen == AppScreen::InGame
+                && !self.is_paused
+                && !self.chat_state.is_open
+            {
+                self.controller.mouse_captured = true;
+                self.set_cursor_captured(true);
+            }
+        }
+    }
+
     fn apply_block_update(&mut self, pos: BlockPos, state_id: BlockStateId) {
         let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(pos);
         if let Some(snap) = self.chunks.get(&chunk_pos) {
@@ -2130,6 +2206,7 @@ impl App {
                 || path.contains("door")
                 || path.contains("fence")
                 || path.contains("stair")
+                || path.contains("chest")
             {
                 "wood"
             } else if path.contains("dirt") || path.contains("gravel") {
@@ -2560,6 +2637,59 @@ impl App {
                             self.particle_system.spawn_from_event(&ev, |id| {
                                 block_state_to_particle_layer(telos_voxel::state::BlockStateId(id))
                             });
+                        }
+                    }
+                    S2cMessage::OpenContainer(open) => {
+                        let mut slots = [UiSlotItem::EMPTY; 27];
+                        for (i, slot) in open.slots.iter().enumerate().take(27) {
+                            slots[i] = UiSlotItem::new(slot.item, slot.count);
+                        }
+                        self.container_state = Some(ClientContainerState {
+                            window_id: open.window_id,
+                            title: open.title.as_str().to_string(),
+                            x: open.x,
+                            y: open.y,
+                            z: open.z,
+                            slots,
+                        });
+                        self.inventory_open = false;
+                        self.controller.mouse_captured = false;
+                        self.set_cursor_captured(false);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                    }
+                    S2cMessage::CloseContainer(close) => {
+                        if self
+                            .container_state
+                            .as_ref()
+                            .is_some_and(|c| c.window_id == close.window_id)
+                        {
+                            self.container_state = None;
+                            self.container_hovered_slot = None;
+                            self.inventory_sim.return_carried();
+                            if self.current_screen == AppScreen::InGame
+                                && !self.is_paused
+                                && !self.chat_state.is_open
+                            {
+                                self.controller.mouse_captured = true;
+                                self.set_cursor_captured(true);
+                            }
+                        }
+                    }
+                    S2cMessage::BlockEvent(evt) if evt.action == 1 => {
+                        let sound_pos = glam::Vec3::new(
+                            evt.x as f32 + 0.5,
+                            evt.y as f32 + 0.5,
+                            evt.z as f32 + 0.5,
+                        );
+                        if evt.param == 1 {
+                            self.audio.play_chest_open(sound_pos);
+                        } else if evt.param == 0 {
+                            self.audio.play_chest_close(sound_pos);
                         }
                     }
                     _ => {}
@@ -3545,9 +3675,21 @@ impl App {
                     self.sim_time_acc -= 0.05;
                     self.tick_movement_prediction();
 
+                    if let Some(ref cont) = self.container_state {
+                        let chest_center = Vec3::new(
+                            cont.x as f32 + 0.5,
+                            cont.y as f32 + 0.5,
+                            cont.z as f32 + 0.5,
+                        );
+                        if (self.camera.position - chest_center).length_squared() > 5.0 * 5.0 {
+                            self.close_active_container();
+                        }
+                    }
+
                     if self.bow_charging {
                         if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW
                             && !self.inventory_open
+                            && self.container_state.is_none()
                             && !self.is_paused
                         {
                             self.bow_charge_ticks = self.bow_charge_ticks.saturating_add(1);
@@ -5432,7 +5574,43 @@ impl App {
                                 &mut ui_quads,
                             );
 
-                            if self.inventory_open {
+                            if let Some(ref cont) = self.container_state {
+                                let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
+                                ui_slots[..27].copy_from_slice(&cont.slots);
+                                for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate()
+                                {
+                                    ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                                }
+                                for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                                    ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                                }
+                                let ui_carried = UiSlotItem::new(
+                                    self.inventory_sim.carried.item,
+                                    self.inventory_sim.carried.count,
+                                );
+                                let item_lookup = |id: u32| {
+                                    if let Some(def) = self.registries.item_registry().get_by_id(id)
+                                    {
+                                        def.name.as_str()
+                                    } else {
+                                        telos_sim::item_name(id)
+                                    }
+                                };
+                                render_chest_container(
+                                    &ui_slots,
+                                    ui_carried,
+                                    self.container_hovered_slot,
+                                    swapchain_extent.width,
+                                    swapchain_extent.height,
+                                    gui_scale,
+                                    font,
+                                    &self.ui_layers,
+                                    &cont.title,
+                                    item_lookup,
+                                    self.mouse_cursor_pos,
+                                    &mut ui_quads,
+                                );
+                            } else if self.inventory_open {
                                 let mut ui_slots =
                                     [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
                                 for (i, slot) in self
@@ -5784,7 +5962,41 @@ impl App {
                         &mut ui_quads,
                     );
 
-                    if self.inventory_open {
+                    if let Some(ref cont) = self.container_state {
+                        let mut ui_slots = [UiSlotItem::EMPTY; DUAL_CONTAINER_SLOT_COUNT];
+                        ui_slots[..27].copy_from_slice(&cont.slots);
+                        for (i, slot) in self.inventory_sim.slots[9..36].iter().enumerate() {
+                            ui_slots[27 + i] = UiSlotItem::new(slot.item, slot.count);
+                        }
+                        for (i, slot) in self.inventory_sim.slots[0..9].iter().enumerate() {
+                            ui_slots[54 + i] = UiSlotItem::new(slot.item, slot.count);
+                        }
+                        let ui_carried = UiSlotItem::new(
+                            self.inventory_sim.carried.item,
+                            self.inventory_sim.carried.count,
+                        );
+                        let item_lookup = |id: u32| {
+                            if let Some(def) = self.registries.item_registry().get_by_id(id) {
+                                def.name.as_str()
+                            } else {
+                                telos_sim::item_name(id)
+                            }
+                        };
+                        render_chest_container(
+                            &ui_slots,
+                            ui_carried,
+                            self.container_hovered_slot,
+                            width,
+                            height,
+                            gui_scale,
+                            font,
+                            &self.ui_layers,
+                            &cont.title,
+                            item_lookup,
+                            self.mouse_cursor_pos,
+                            &mut ui_quads,
+                        );
+                    } else if self.inventory_open {
                         let mut ui_slots = [UiSlotItem::EMPTY; telos_ui::INVENTORY_SLOT_COUNT];
                         for (i, slot) in self
                             .inventory_sim
@@ -7663,6 +7875,7 @@ impl ApplicationHandler for App {
         if self.current_screen != AppScreen::InGame
             || self.is_paused
             || self.inventory_open
+            || self.container_state.is_some()
             || self.chat_state.is_open
             || !self.controller.mouse_captured
         {
@@ -7721,6 +7934,13 @@ impl ApplicationHandler for App {
                     AppScreen::InGame => {
                         if self.is_paused {
                             self.pause_menu.handle_mouse_move(mx, my);
+                        } else if self.container_state.is_some() {
+                            self.container_hovered_slot = chest_slot_at_pos(
+                                self.mouse_cursor_pos,
+                                win_size.width,
+                                win_size.height,
+                                gui_scale,
+                            );
                         } else if self.inventory_open {
                             self.inventory_hovered_slot = slot_at_pos(
                                 self.mouse_cursor_pos,
@@ -7950,6 +8170,58 @@ impl ApplicationHandler for App {
                 if self.chat_state.is_open {
                     return;
                 }
+                if let Some(ref mut cont) = self.container_state {
+                    let click_btn = match button {
+                        MouseButton::Left => 0u8,
+                        MouseButton::Right => 1u8,
+                        _ => 255u8,
+                    };
+                    if click_btn <= 1
+                        && let Some(hovered) = self.container_hovered_slot
+                    {
+                        let mode = u8::from(self.shift_held); // 1 = QuickMove, 0 = Pickup
+                        let predicted_carried = self.inventory_sim.carried;
+                        let click_msg = C2sMessage::InventoryClick(C2sInventoryClick {
+                            slot: hovered as u16,
+                            button: click_btn,
+                            mode,
+                            predicted_carried_item: predicted_carried.item,
+                            predicted_carried_count: predicted_carried.count,
+                        });
+                        let _ = self
+                            .client_conn
+                            .send(Lane::Control, Payload::Msg(click_msg));
+
+                        let btn_sim = if click_btn == 0 {
+                            telos_sim::ClickButton::Left
+                        } else {
+                            telos_sim::ClickButton::Right
+                        };
+                        let mode_sim = if mode == 1 {
+                            telos_sim::ClickMode::QuickMove
+                        } else {
+                            telos_sim::ClickMode::Pickup
+                        };
+
+                        let mut chest_inv = telos_sim::ChestInventory::default();
+                        for (i, slot) in cont.slots.iter().enumerate() {
+                            chest_inv.slots[i] = telos_sim::ItemStack::new(slot.item, slot.count);
+                        }
+                        let _ = telos_sim::container_click(
+                            &mut chest_inv,
+                            &mut self.inventory_sim,
+                            hovered,
+                            btn_sim,
+                            mode_sim,
+                        );
+                        for (i, slot) in chest_inv.slots.iter().enumerate() {
+                            cont.slots[i] = UiSlotItem::new(slot.item, slot.count);
+                        }
+                        self.selected_block_state =
+                            BlockStateId::new(self.inventory_sim.selected_item().item);
+                    }
+                    return;
+                }
                 if self.inventory_open {
                     let click_btn = match button {
                         MouseButton::Left => 0u8,
@@ -8089,6 +8361,20 @@ impl ApplicationHandler for App {
 
                             if let Some(hit) = self.targeted_block {
                                 let target_state = self.get_block_at(hit.pos);
+                                if self.block_registry.is_chest(target_state) && !self.shift_held {
+                                    self.action_sequence += 1;
+                                    let msg = C2sMessage::BlockAction(C2sBlockAction {
+                                        sequence: self.action_sequence,
+                                        action: BlockActionKind::Interact,
+                                        x: hit.pos.x(),
+                                        y: hit.pos.y(),
+                                        z: hit.pos.z(),
+                                        input_tick: self.frame_counter,
+                                    });
+                                    let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                    return;
+                                }
+
                                 let is_lever = self
                                     .block_registry
                                     .identifier(target_state)
@@ -8373,6 +8659,25 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                if self.container_state.is_some() {
+                    match code {
+                        KeyCode::KeyE | KeyCode::Escape if pressed => {
+                            self.close_active_container();
+                        }
+                        KeyCode::Digit1 if pressed => self.handle_container_swap_hotbar(0),
+                        KeyCode::Digit2 if pressed => self.handle_container_swap_hotbar(1),
+                        KeyCode::Digit3 if pressed => self.handle_container_swap_hotbar(2),
+                        KeyCode::Digit4 if pressed => self.handle_container_swap_hotbar(3),
+                        KeyCode::Digit5 if pressed => self.handle_container_swap_hotbar(4),
+                        KeyCode::Digit6 if pressed => self.handle_container_swap_hotbar(5),
+                        KeyCode::Digit7 if pressed => self.handle_container_swap_hotbar(6),
+                        KeyCode::Digit8 if pressed => self.handle_container_swap_hotbar(7),
+                        KeyCode::Digit9 if pressed => self.handle_container_swap_hotbar(8),
+                        _ => {}
+                    }
+                    return;
+                }
+
                 if self.inventory_open {
                     match code {
                         KeyCode::KeyE | KeyCode::Escape if pressed => {
@@ -8630,6 +8935,7 @@ impl ApplicationHandler for App {
                 } else if self.current_screen == AppScreen::InGame
                     && !self.is_paused
                     && !self.inventory_open
+                    && self.container_state.is_none()
                 {
                     if scroll > 0.0 {
                         let new_slot = (self.selected_hotbar_slot + 8) % 9;
@@ -8695,6 +9001,7 @@ impl ApplicationHandler for App {
                     self.controller.sprint = false;
                     if self.current_screen == AppScreen::InGame
                         && !self.inventory_open
+                        && self.container_state.is_none()
                         && !self.chat_state.is_open
                         && self.args.screenshot.is_none()
                     {

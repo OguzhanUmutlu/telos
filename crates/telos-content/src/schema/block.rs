@@ -80,6 +80,8 @@ pub enum BlockShapeDef {
     },
     /// Tier 1 small vertical post (logic inverter torch).
     Post,
+    /// Tier 1 chest container sub-box.
+    Chest,
 }
 
 fn default_true() -> bool {
@@ -165,6 +167,9 @@ pub struct BlockDef {
     /// Whether this block is actively powered.
     #[serde(default)]
     pub logic_powered: bool,
+    /// Whether this block has an associated block entity (e.g. chest container).
+    #[serde(default)]
+    pub has_block_entity: bool,
 }
 
 fn default_hardness() -> f32 {
@@ -191,6 +196,7 @@ impl Default for BlockDef {
             material_texture_index: None,
             logic_component: false,
             logic_powered: false,
+            has_block_entity: false,
         }
     }
 }
@@ -233,6 +239,10 @@ impl BlockDef {
 
         if self.logic_powered {
             flags |= StateFlags::LOGIC_POWERED;
+        }
+
+        if self.has_block_entity {
+            flags |= StateFlags::HAS_BLOCK_ENTITY;
         }
 
         flags
@@ -278,6 +288,7 @@ impl BlockDef {
             BlockShapeDef::FlatPlate => BlockShape::flat_plate(),
             BlockShapeDef::Lever { powered } => BlockShape::lever(*powered),
             BlockShapeDef::Post => BlockShape::post(),
+            BlockShapeDef::Chest => BlockShape::chest(),
         }
     }
 }

@@ -20,6 +20,7 @@ pub struct ChunkSnapshot {
     content_version: u64,
     face_version: [u64; 6],
     world_epoch: u64,
+    block_entities: Arc<crate::block_entity::BlockEntityTable>,
 }
 
 impl ChunkSnapshot {
@@ -42,7 +43,18 @@ impl ChunkSnapshot {
             content_version,
             face_version,
             world_epoch,
+            block_entities: Arc::new(crate::block_entity::BlockEntityTable::new()),
         }
+    }
+
+    /// Sets the block entities for this snapshot.
+    #[must_use]
+    pub fn with_block_entities(
+        mut self,
+        block_entities: Arc<crate::block_entity::BlockEntityTable>,
+    ) -> Self {
+        self.block_entities = block_entities;
+        self
     }
 
     /// Creates a snapshot representing a uniform chunk.
@@ -67,7 +79,14 @@ impl ChunkSnapshot {
             content_version: 0,
             face_version: [0; 6],
             world_epoch: 0,
+            block_entities: Arc::new(crate::block_entity::BlockEntityTable::new()),
         }
+    }
+
+    /// Block entities side table in this chunk.
+    #[must_use]
+    pub fn block_entities(&self) -> &crate::block_entity::BlockEntityTable {
+        &self.block_entities
     }
 
     /// Position of the chunk in world chunk grid.
@@ -124,6 +143,8 @@ pub struct Chunk {
     face_version: [u64; 6],
     world_epoch: u64,
     is_dirty: bool,
+    /// Side table containing block entity data for voxels in this chunk.
+    pub block_entities: crate::block_entity::BlockEntityTable,
 }
 
 impl Chunk {
@@ -146,6 +167,7 @@ impl Chunk {
             face_version: [0; 6],
             world_epoch: 0,
             is_dirty: false,
+            block_entities: crate::block_entity::BlockEntityTable::new(),
         }
     }
 
@@ -168,6 +190,7 @@ impl Chunk {
             face_version: [0; 6],
             world_epoch: 0,
             is_dirty: false,
+            block_entities: crate::block_entity::BlockEntityTable::new(),
         }
     }
 
@@ -245,6 +268,16 @@ impl Chunk {
             self.face_version[5] += 1;
         }
 
+        // Maintain block entities side table
+        let was_be = old_flags.contains(StateFlags::HAS_BLOCK_ENTITY);
+        let is_be = new_flags.contains(StateFlags::HAS_BLOCK_ENTITY);
+        if was_be && !is_be {
+            self.block_entities.remove(idx);
+        } else if !was_be && is_be {
+            self.block_entities
+                .insert(idx, crate::block_entity::BlockEntityData::new_chest());
+        }
+
         true
     }
 
@@ -259,7 +292,54 @@ impl Chunk {
             content_version: self.content_version,
             face_version: self.face_version,
             world_epoch: self.world_epoch,
+            block_entities: Arc::new(self.block_entities.clone()),
         })
+    }
+
+    /// Returns a reference to the chunk's block entities side table.
+    #[must_use]
+    pub fn block_entities(&self) -> &crate::block_entity::BlockEntityTable {
+        &self.block_entities
+    }
+
+    /// Returns a mutable reference to the chunk's block entities side table.
+    pub fn block_entities_mut(&mut self) -> &mut crate::block_entity::BlockEntityTable {
+        self.is_dirty = true;
+        &mut self.block_entities
+    }
+
+    /// Returns a reference to the block entity at `idx`, if present.
+    #[must_use]
+    pub fn get_block_entity(&self, idx: LocalIdx) -> Option<&crate::block_entity::BlockEntityData> {
+        self.block_entities.get(idx)
+    }
+
+    /// Returns a mutable reference to the block entity at `idx`, if present.
+    pub fn get_block_entity_mut(
+        &mut self,
+        idx: LocalIdx,
+    ) -> Option<&mut crate::block_entity::BlockEntityData> {
+        self.is_dirty = true;
+        self.block_entities.get_mut(idx)
+    }
+
+    /// Inserts or replaces the block entity at `idx`.
+    pub fn set_block_entity(
+        &mut self,
+        idx: LocalIdx,
+        data: crate::block_entity::BlockEntityData,
+    ) -> Option<crate::block_entity::BlockEntityData> {
+        self.is_dirty = true;
+        self.block_entities.insert(idx, data)
+    }
+
+    /// Removes and returns the block entity at `idx`, if present.
+    pub fn remove_block_entity(
+        &mut self,
+        idx: LocalIdx,
+    ) -> Option<crate::block_entity::BlockEntityData> {
+        self.is_dirty = true;
+        self.block_entities.remove(idx)
     }
 
     /// Accesses the chunk's lighting data if allocated.

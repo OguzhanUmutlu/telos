@@ -5,8 +5,8 @@ use crate::source::SoundBuffer;
 use crate::spatial::{Listener, calculate_spatial_gains};
 use crate::synth::{
     SYNTH_SAMPLE_RATE, synthesize_arrow_hit, synthesize_block_break, synthesize_block_place,
-    synthesize_bow_shoot, synthesize_entity_hurt, synthesize_footstep, synthesize_item_pickup,
-    synthesize_rain_loop, synthesize_thunder,
+    synthesize_bow_shoot, synthesize_chest_close, synthesize_chest_open, synthesize_entity_hurt,
+    synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop, synthesize_thunder,
 };
 use glam::Vec3;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
@@ -291,6 +291,20 @@ impl AudioEngine {
             SoundCategory::Blocks
         };
         self.play_sound_3d(category, &buffer, pos, 0.9, 1.0, 1.0, 24.0);
+    }
+
+    /// Dispatches a chest opening sound at the chest block position.
+    pub fn play_chest_open(&mut self, pos: Vec3) {
+        let samples = synthesize_chest_open();
+        let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
+        self.play_sound_3d(SoundCategory::Blocks, &buffer, pos, 0.9, 1.0, 1.0, 16.0);
+    }
+
+    /// Dispatches a chest closing sound at the chest block position.
+    pub fn play_chest_close(&mut self, pos: Vec3) {
+        let samples = synthesize_chest_close();
+        let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
+        self.play_sound_3d(SoundCategory::Blocks, &buffer, pos, 0.9, 1.0, 1.0, 16.0);
     }
 
     /// Loads and caches an in-memory OGG/WAV sound buffer.
