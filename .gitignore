@@ -27,3 +27,10 @@ tracy.log
 *~
 .DS_Store
 Thumbs.db
+
+# AI metadata and local analysis (hidden from git repository)
+/analysis
+/plans
+/.agents
+GEMINI.md
+todo.md
