@@ -9,8 +9,10 @@ repository.workspace = true
 description = "Core primitive types, coordinates, identifiers, and telemetry for voxel"
 
 [dependencies]
+blake3 = { workspace = true }
 dirs = { workspace = true }
 glam = { workspace = true }
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

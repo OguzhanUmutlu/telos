@@ -15,20 +15,22 @@ use telos_content::{
 };
 use telos_core::coords::{BlockPos, ChunkPos, Face};
 use telos_core::form::{FormResponseData, ModalFormData};
+use telos_core::profile::{IdentityCert, IdentityKeypair, PlayerUuid};
 use telos_mod::{JsPlugin, JsPluginEngine, ModConfig, ModManager, ModPermissions, ModResult};
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
-    AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
-    C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse,
-    C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomFuelWire,
-    CustomItemDefWire, CustomShapedRecipeWire, CustomShapelessRecipeWire, CustomSmeltingRecipeWire,
-    LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
-    S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove,
-    S2cEntityStatus, S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
-    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
+    AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
+    C2sCloseContainer, C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage,
+    C2sModalFormResponse, C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire,
+    CustomFuelWire, CustomItemDefWire, CustomShapedRecipeWire, CustomShapelessRecipeWire,
+    CustomSmeltingRecipeWire, Disconnect, DisconnectReason, LodPayload, NetworkEffect,
+    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty,
+    S2cContentManifest, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove, S2cEntityStatus,
+    S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
     S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRecipeManifest, S2cRegistryData,
     S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
     S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
@@ -59,6 +61,7 @@ use crate::config::ServerConfig;
 use crate::error::ServerError;
 use crate::multi_world::{MultiWorldManager, WorldError};
 use crate::session::{ActiveContainerSession, PlayerSession};
+use crate::usercache::{IdentityConflictError, UserCache};
 use crate::world::ServerWorld;
 
 #[inline]
@@ -168,6 +171,8 @@ pub struct Server {
     pub next_form_id: u32,
     /// Outstanding pending modal forms dispatched to clients.
     pub pending_forms: HashMap<(u64, u32), PendingForm>,
+    /// Persistent player identity and TOFU key pinning cache.
+    pub usercache: UserCache,
     /// Thread-safe signal to request server shutdown.
     shutdown_requested: Arc<AtomicBool>,
 }
@@ -386,6 +391,12 @@ impl Server {
             }
         }
 
+        let usercache = if let Some(ref save_dir) = config.save_directory {
+            UserCache::load_from_path(&save_dir.join("usercache.json")).unwrap_or_default()
+        } else {
+            UserCache::new()
+        };
+
         Self {
             config,
             worlds,
@@ -420,6 +431,7 @@ impl Server {
             arrow_origins: HashMap::new(),
             next_form_id: 1,
             pending_forms: HashMap::new(),
+            usercache,
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -2277,6 +2289,214 @@ impl Server {
         session_id
     }
 
+    /// Completes the player handshake into the Config phase and streams registry manifests.
+    #[allow(clippy::too_many_lines)]
+    fn complete_login_and_send_config(session: &mut PlayerSession, registries: &FrozenRegistries) {
+        session.phase = ConnectionPhase::Config;
+
+        // Transmit block registry table & hash
+        let mut block_entries = Vec::new();
+        for ident in registries.block_states().keys() {
+            if let Ok(s) = BoundedString::new(ident.to_string()) {
+                block_entries.push(s);
+            }
+        }
+        let block_msg = S2cMessage::RegistryData(S2cRegistryData {
+            registry_id: BoundedString::new("telos:block").unwrap(),
+            content_hash: *registries.content_hash(),
+            entries: BoundedVec::new(block_entries).unwrap_or_default(),
+        });
+        let _ = session
+            .connection
+            .send(Lane::Control, Payload::Msg(block_msg));
+
+        // Transmit item registry table & hash
+        let mut item_entries = Vec::new();
+        for (_id, ident, _def) in registries.item_registry().iter() {
+            if let Ok(s) = BoundedString::new(ident.to_string()) {
+                item_entries.push(s);
+            }
+        }
+        let item_msg = S2cMessage::RegistryData(S2cRegistryData {
+            registry_id: BoundedString::new("telos:item").unwrap(),
+            content_hash: *registries.content_hash(),
+            entries: BoundedVec::new(item_entries).unwrap_or_default(),
+        });
+        let _ = session
+            .connection
+            .send(Lane::Control, Payload::Msg(item_msg));
+
+        // If custom content exists, send S2cContentManifest before ConfigDone
+        let custom_blocks = registries.custom_blocks();
+        let custom_items = registries.custom_items();
+        if !custom_blocks.is_empty() || !custom_items.is_empty() {
+            let mut wire_blocks = Vec::new();
+            for (ident, def) in custom_blocks {
+                if let Some(state_id) = registries.get_block_state(ident) {
+                    let flags = registries.block_registry().flags(state_id);
+                    let shape_kind = def.shape.shape_kind_u8();
+                    let light_emission = registries.block_registry().light_emission(state_id);
+                    let texture_name = BoundedString::new(ident.path())
+                        .unwrap_or_else(|_| BoundedString::new("stone").unwrap());
+                    let base_color = def.effective_base_color(ident);
+                    if let Ok(id_str) = BoundedString::new(ident.to_string()) {
+                        wire_blocks.push(CustomBlockDefWire {
+                            identifier: id_str,
+                            state_id: state_id.as_u32(),
+                            flags: u32::from(flags.bits()),
+                            shape_kind,
+                            light_emission,
+                            hardness: def.hardness,
+                            blast_resistance: def.blast_resistance,
+                            texture_name,
+                            base_color,
+                        });
+                    }
+                }
+            }
+
+            let mut wire_items = Vec::new();
+            for (id, ident, def) in custom_items {
+                if let Ok(id_str) = BoundedString::new(ident.to_string()) {
+                    let name = BoundedString::new(&def.name)
+                        .unwrap_or_else(|_| BoundedString::new("Custom Item").unwrap());
+                    wire_items.push(CustomItemDefWire {
+                        identifier: id_str,
+                        item_id: id,
+                        name,
+                        max_stack_size: def.max_stack_size,
+                        item_type_kind: def.item_type.item_type_kind_u8(),
+                    });
+                }
+            }
+
+            if let (Ok(blocks_vec), Ok(items_vec)) =
+                (BoundedVec::new(wire_blocks), BoundedVec::new(wire_items))
+            {
+                let manifest_msg = S2cMessage::ContentManifest(S2cContentManifest {
+                    custom_blocks: blocks_vec,
+                    custom_items: items_vec,
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(manifest_msg));
+            }
+        }
+
+        // If custom recipes or fuels exist, send S2cRecipeManifest before ConfigDone
+        let custom_recipes = registries.custom_recipes();
+        let custom_fuels = registries.custom_fuels();
+        if !custom_recipes.is_empty() || !custom_fuels.is_empty() {
+            let mut shaped_wires = Vec::new();
+            let mut shapeless_wires = Vec::new();
+            let mut smelting_wires = Vec::new();
+            let mut fuel_wires = Vec::new();
+
+            for (_ident, r) in custom_recipes {
+                match r {
+                    RecipeDef::Shaped(s) => {
+                        #[allow(clippy::collapsible_if)]
+                        if let Ok((
+                            width,
+                            height,
+                            pattern,
+                            (result_item, result_count),
+                            mirrored,
+                            remainder,
+                        )) = s.resolve(registries.item_registry())
+                        {
+                            if let Ok(pattern) = BoundedVec::new(pattern) {
+                                shaped_wires.push(CustomShapedRecipeWire {
+                                    width: width as u8,
+                                    height: height as u8,
+                                    pattern,
+                                    result_item,
+                                    result_count,
+                                    mirrored,
+                                    remainder_item: remainder.unwrap_or(0),
+                                });
+                            }
+                        }
+                    }
+                    RecipeDef::Shapeless(s) => {
+                        #[allow(clippy::collapsible_if)]
+                        if let Ok((ingredients, (result_item, result_count), remainder)) =
+                            s.resolve(registries.item_registry())
+                        {
+                            if let Ok(ingredients) = BoundedVec::new(ingredients) {
+                                shapeless_wires.push(CustomShapelessRecipeWire {
+                                    ingredients,
+                                    result_item,
+                                    result_count,
+                                    remainder_item: remainder.unwrap_or(0),
+                                });
+                            }
+                        }
+                    }
+                    RecipeDef::Smelting(s) => {
+                        if let Ok((
+                            input_item,
+                            (output_item, output_count),
+                            cook_duration,
+                            experience,
+                        )) = s.resolve(registries.item_registry())
+                        {
+                            smelting_wires.push(CustomSmeltingRecipeWire {
+                                input_item,
+                                output_item,
+                                output_count,
+                                cook_duration,
+                                experience,
+                            });
+                        }
+                    }
+                    RecipeDef::Fuel(f) => {
+                        if let Ok((item_id, burn_duration_ticks)) =
+                            f.resolve(registries.item_registry())
+                        {
+                            fuel_wires.push(CustomFuelWire {
+                                item_id,
+                                burn_duration_ticks,
+                            });
+                        }
+                    }
+                }
+            }
+
+            for (_ident, f) in custom_fuels {
+                if let Ok((item_id, burn_duration_ticks)) = f.resolve(registries.item_registry()) {
+                    fuel_wires.push(CustomFuelWire {
+                        item_id,
+                        burn_duration_ticks,
+                    });
+                }
+            }
+
+            if let (Ok(sw), Ok(slw), Ok(smw), Ok(fw)) = (
+                BoundedVec::new(shaped_wires),
+                BoundedVec::new(shapeless_wires),
+                BoundedVec::new(smelting_wires),
+                BoundedVec::new(fuel_wires),
+            ) {
+                let recipe_manifest = S2cMessage::RecipeManifest(S2cRecipeManifest {
+                    shaped_recipes: sw,
+                    shapeless_recipes: slw,
+                    smelting_recipes: smw,
+                    fuels: fw,
+                });
+                let _ = session
+                    .connection
+                    .send(Lane::Control, Payload::Msg(recipe_manifest));
+            }
+        }
+
+        // Signal configuration complete
+        let _ = session.connection.send(
+            Lane::Control,
+            Payload::Msg(S2cMessage::ConfigDone(S2cConfigDone)),
+        );
+    }
+
     /// Current time of day in ticks `[0..24000)`.
     #[must_use]
     pub fn time_of_day(&self) -> u64 {
@@ -2341,247 +2561,259 @@ impl Server {
                             disconnected.push(*session_id);
                         }
                     }
-                    ConnectionPhase::Login => {
-                        if let C2sMessage::LoginStart(login) = msg {
-                            info!(
-                                session_id,
-                                username = login.username.as_str(),
-                                "Client login"
-                            );
-                            session.username = login.username.to_string();
-                            let success = S2cMessage::LoginSuccess(S2cLoginSuccess {
-                                player_uuid: [0x42; 16],
-                                username: login.username,
-                            });
-                            let _ = session
-                                .connection
-                                .send(Lane::Control, Payload::Msg(success));
-                            session.phase = ConnectionPhase::Config;
+                    ConnectionPhase::Login => match msg {
+                        C2sMessage::LoginStart(login) => match login.mode {
+                            AuthMode::Offline => {
+                                if self.config.online_mode {
+                                    let err = S2cMessage::Disconnect(Disconnect {
+                                        reason: DisconnectReason::AuthFailed,
+                                        message: BoundedString::new(
+                                            "Server requires online authentication".to_string(),
+                                        )
+                                        .unwrap_or_default(),
+                                    });
+                                    let _ =
+                                        session.connection.send(Lane::Control, Payload::Msg(err));
+                                    disconnected.push(*session_id);
+                                } else {
+                                    let uuid =
+                                        PlayerUuid::from_offline_name(login.username.as_str());
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map_or(0, |d| d.as_secs());
+                                    let verify_res = if self.config.enforce_tofu {
+                                        self.usercache.verify_or_bind(
+                                            login.username.as_str(),
+                                            uuid,
+                                            None,
+                                            now,
+                                        )
+                                    } else {
+                                        Ok(())
+                                    };
 
-                            // Transmit block registry table & hash
-                            let mut block_entries = Vec::new();
-                            for ident in self.registries.block_states().keys() {
-                                if let Ok(s) = BoundedString::new(ident.to_string()) {
-                                    block_entries.push(s);
-                                }
-                            }
-                            let block_msg = S2cMessage::RegistryData(S2cRegistryData {
-                                registry_id: BoundedString::new("telos:block").unwrap(),
-                                content_hash: *self.registries.content_hash(),
-                                entries: BoundedVec::new(block_entries).unwrap_or_default(),
-                            });
-                            let _ = session
-                                .connection
-                                .send(Lane::Control, Payload::Msg(block_msg));
-
-                            // Transmit item registry table & hash
-                            let mut item_entries = Vec::new();
-                            for (_id, ident, _def) in self.registries.item_registry().iter() {
-                                if let Ok(s) = BoundedString::new(ident.to_string()) {
-                                    item_entries.push(s);
-                                }
-                            }
-                            let item_msg = S2cMessage::RegistryData(S2cRegistryData {
-                                registry_id: BoundedString::new("telos:item").unwrap(),
-                                content_hash: *self.registries.content_hash(),
-                                entries: BoundedVec::new(item_entries).unwrap_or_default(),
-                            });
-                            let _ = session
-                                .connection
-                                .send(Lane::Control, Payload::Msg(item_msg));
-
-                            // If custom content exists, send S2cContentManifest before ConfigDone
-                            let custom_blocks = self.registries.custom_blocks();
-                            let custom_items = self.registries.custom_items();
-                            if !custom_blocks.is_empty() || !custom_items.is_empty() {
-                                let mut wire_blocks = Vec::new();
-                                for (ident, def) in custom_blocks {
-                                    if let Some(state_id) = self.registries.get_block_state(ident) {
-                                        let flags =
-                                            self.registries.block_registry().flags(state_id);
-                                        let shape_kind = def.shape.shape_kind_u8();
-                                        let light_emission = self
-                                            .registries
-                                            .block_registry()
-                                            .light_emission(state_id);
-                                        let texture_name = BoundedString::new(ident.path())
-                                            .unwrap_or_else(|_| {
-                                                BoundedString::new("stone").unwrap()
+                                    match verify_res {
+                                        Ok(()) => {
+                                            info!(
+                                                session_id,
+                                                username = login.username.as_str(),
+                                                "Client login accepted (offline)"
+                                            );
+                                            session.username = login.username.to_string();
+                                            session.player_uuid = uuid.to_bytes();
+                                            session.public_key = None;
+                                            let success =
+                                                S2cMessage::LoginSuccess(S2cLoginSuccess {
+                                                    player_uuid: uuid.to_bytes(),
+                                                    username: login.username,
+                                                });
+                                            let _ = session
+                                                .connection
+                                                .send(Lane::Control, Payload::Msg(success));
+                                            Self::complete_login_and_send_config(
+                                                session,
+                                                &self.registries,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            let reason_msg = match e {
+                                                        IdentityConflictError::OfflineLoginForRegisteredKey { .. } => {
+                                                            "Username is reserved for authenticated cryptographic players".to_string()
+                                                        }
+                                                        IdentityConflictError::KeyMismatch { .. } => {
+                                                            "Username is already bound to a different public key".to_string()
+                                                        }
+                                                    };
+                                            let err = S2cMessage::Disconnect(Disconnect {
+                                                reason: DisconnectReason::AuthFailed,
+                                                message: BoundedString::new(reason_msg)
+                                                    .unwrap_or_default(),
                                             });
-                                        let base_color = def.effective_base_color(ident);
-                                        if let Ok(id_str) = BoundedString::new(ident.to_string()) {
-                                            wire_blocks.push(CustomBlockDefWire {
-                                                identifier: id_str,
-                                                state_id: state_id.as_u32(),
-                                                flags: u32::from(flags.bits()),
-                                                shape_kind,
-                                                light_emission,
-                                                hardness: def.hardness,
-                                                blast_resistance: def.blast_resistance,
-                                                texture_name,
-                                                base_color,
-                                            });
+                                            let _ = session
+                                                .connection
+                                                .send(Lane::Control, Payload::Msg(err));
+                                            disconnected.push(*session_id);
                                         }
                                     }
                                 }
-
-                                let mut wire_items = Vec::new();
-                                for (id, ident, def) in custom_items {
-                                    if let Ok(id_str) = BoundedString::new(ident.to_string()) {
-                                        let name =
-                                            BoundedString::new(&def.name).unwrap_or_else(|_| {
-                                                BoundedString::new("Custom Item").unwrap()
-                                            });
-                                        wire_items.push(CustomItemDefWire {
-                                            identifier: id_str,
-                                            item_id: id,
-                                            name,
-                                            max_stack_size: def.max_stack_size,
-                                            item_type_kind: def.item_type.item_type_kind_u8(),
-                                        });
-                                    }
-                                }
-
-                                if let (Ok(blocks_vec), Ok(items_vec)) =
-                                    (BoundedVec::new(wire_blocks), BoundedVec::new(wire_items))
+                            }
+                            AuthMode::Keyed => {
+                                let rng = ring::rand::SystemRandom::new();
+                                let mut challenge_nonce = [0u8; 32];
+                                if ring::rand::SecureRandom::fill(&rng, &mut challenge_nonce)
+                                    .is_err()
                                 {
-                                    let manifest_msg =
-                                        S2cMessage::ContentManifest(S2cContentManifest {
-                                            custom_blocks: blocks_vec,
-                                            custom_items: items_vec,
-                                        });
+                                    let err = S2cMessage::Disconnect(Disconnect {
+                                        reason: DisconnectReason::AuthFailed,
+                                        message: BoundedString::new(
+                                            "Entropy failure generating challenge nonce"
+                                                .to_string(),
+                                        )
+                                        .unwrap_or_default(),
+                                    });
+                                    let _ =
+                                        session.connection.send(Lane::Control, Payload::Msg(err));
+                                    disconnected.push(*session_id);
+                                } else {
+                                    session.pending_challenge = Some(challenge_nonce);
+                                    session.pending_username = Some(login.username.to_string());
+                                    let challenge = S2cMessage::LoginChallenge(S2cLoginChallenge {
+                                        challenge_nonce,
+                                        server_id: BoundedString::new("telos-server".to_string())
+                                            .unwrap_or_default(),
+                                    });
                                     let _ = session
                                         .connection
-                                        .send(Lane::Control, Payload::Msg(manifest_msg));
+                                        .send(Lane::Control, Payload::Msg(challenge));
                                 }
                             }
+                        },
+                        C2sMessage::LoginProof(proof) => {
+                            let challenge_opt = session.pending_challenge.take();
+                            let user_opt = session.pending_username.take();
+                            if let (Some(nonce), Some(username)) = (challenge_opt, user_opt) {
+                                let mut payload = Vec::with_capacity(15 + 32 + username.len());
+                                payload.extend_from_slice(b"telos-login-v1:");
+                                payload.extend_from_slice(&nonce);
+                                payload.extend_from_slice(username.as_bytes());
 
-                            // If custom recipes or fuels exist, send S2cRecipeManifest before ConfigDone
-                            let custom_recipes = self.registries.custom_recipes();
-                            let custom_fuels = self.registries.custom_fuels();
-                            if !custom_recipes.is_empty() || !custom_fuels.is_empty() {
-                                let mut shaped_wires = Vec::new();
-                                let mut shapeless_wires = Vec::new();
-                                let mut smelting_wires = Vec::new();
-                                let mut fuel_wires = Vec::new();
-
-                                for (_ident, r) in custom_recipes {
-                                    match r {
-                                        RecipeDef::Shaped(s) => {
-                                            #[allow(clippy::collapsible_if)]
-                                            if let Ok((
-                                                width,
-                                                height,
-                                                pattern,
-                                                (result_item, result_count),
-                                                mirrored,
-                                                remainder,
-                                            )) = s.resolve(self.registries.item_registry())
-                                            {
-                                                if let Ok(pattern) = BoundedVec::new(pattern) {
-                                                    shaped_wires.push(CustomShapedRecipeWire {
-                                                        width: width as u8,
-                                                        height: height as u8,
-                                                        pattern,
-                                                        result_item,
-                                                        result_count,
-                                                        mirrored,
-                                                        remainder_item: remainder.unwrap_or(0),
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        RecipeDef::Shapeless(s) => {
-                                            #[allow(clippy::collapsible_if)]
-                                            if let Ok((
-                                                ingredients,
-                                                (result_item, result_count),
-                                                remainder,
-                                            )) = s.resolve(self.registries.item_registry())
-                                            {
-                                                if let Ok(ingredients) =
-                                                    BoundedVec::new(ingredients)
-                                                {
-                                                    shapeless_wires.push(
-                                                        CustomShapelessRecipeWire {
-                                                            ingredients,
-                                                            result_item,
-                                                            result_count,
-                                                            remainder_item: remainder.unwrap_or(0),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        RecipeDef::Smelting(s) => {
-                                            if let Ok((
-                                                input_item,
-                                                (output_item, output_count),
-                                                cook_duration,
-                                                experience,
-                                            )) = s.resolve(self.registries.item_registry())
-                                            {
-                                                smelting_wires.push(CustomSmeltingRecipeWire {
-                                                    input_item,
-                                                    output_item,
-                                                    output_count,
-                                                    cook_duration,
-                                                    experience,
-                                                });
-                                            }
-                                        }
-                                        RecipeDef::Fuel(f) => {
-                                            if let Ok((item_id, burn_duration_ticks)) =
-                                                f.resolve(self.registries.item_registry())
-                                            {
-                                                fuel_wires.push(CustomFuelWire {
-                                                    item_id,
-                                                    burn_duration_ticks,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-
-                                for (_ident, f) in custom_fuels {
-                                    if let Ok((item_id, burn_duration_ticks)) =
-                                        f.resolve(self.registries.item_registry())
-                                    {
-                                        fuel_wires.push(CustomFuelWire {
-                                            item_id,
-                                            burn_duration_ticks,
-                                        });
-                                    }
-                                }
-
-                                if let (Ok(sw), Ok(slw), Ok(smw), Ok(fw)) = (
-                                    BoundedVec::new(shaped_wires),
-                                    BoundedVec::new(shapeless_wires),
-                                    BoundedVec::new(smelting_wires),
-                                    BoundedVec::new(fuel_wires),
+                                if IdentityKeypair::verify(
+                                    &proof.public_key,
+                                    &payload,
+                                    &proof.signature,
                                 ) {
-                                    let recipe_manifest =
-                                        S2cMessage::RecipeManifest(S2cRecipeManifest {
-                                            shaped_recipes: sw,
-                                            shapeless_recipes: slw,
-                                            smelting_recipes: smw,
-                                            fuels: fw,
-                                        });
-                                    let _ = session
-                                        .connection
-                                        .send(Lane::Control, Payload::Msg(recipe_manifest));
-                                }
-                            }
+                                    let cert_valid =
+                                        if self.config.trusted_authority_keys.is_empty() {
+                                            true
+                                        } else if let Some(ref cert_bytes) = proof.certificate_data
+                                        {
+                                            if let Ok(cert) =
+                                                serde_json::from_slice::<IdentityCert>(cert_bytes)
+                                            {
+                                                let now = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .map_or(0, |d| d.as_secs());
+                                                self.config.trusted_authority_keys.iter().any(
+                                                    |auth_key| {
+                                                        cert.issuer_public_key == *auth_key
+                                                            && cert.public_key == proof.public_key
+                                                            && cert
+                                                                .username
+                                                                .eq_ignore_ascii_case(&username)
+                                                            && cert.verify(auth_key)
+                                                            && !cert.is_expired(now)
+                                                    },
+                                                )
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            false
+                                        };
 
-                            // Signal configuration complete
-                            let _ = session.connection.send(
-                                Lane::Control,
-                                Payload::Msg(S2cMessage::ConfigDone(S2cConfigDone)),
-                            );
-                        } else if let C2sMessage::Disconnect(_) = msg {
+                                    if cert_valid {
+                                        let uuid = PlayerUuid::from_public_key(&proof.public_key);
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map_or(0, |d| d.as_secs());
+                                        let verify_res = if self.config.enforce_tofu {
+                                            self.usercache.verify_or_bind(
+                                                &username,
+                                                uuid,
+                                                Some(proof.public_key),
+                                                now,
+                                            )
+                                        } else {
+                                            Ok(())
+                                        };
+
+                                        match verify_res {
+                                            Ok(()) => {
+                                                info!(
+                                                    session_id,
+                                                    username = %username,
+                                                    "Client login verified (cryptographic)"
+                                                );
+                                                session.username.clone_from(&username);
+                                                session.player_uuid = uuid.to_bytes();
+                                                session.public_key = Some(proof.public_key);
+                                                let success =
+                                                    S2cMessage::LoginSuccess(S2cLoginSuccess {
+                                                        player_uuid: uuid.to_bytes(),
+                                                        username: BoundedString::new(username)
+                                                            .unwrap_or_default(),
+                                                    });
+                                                let _ = session
+                                                    .connection
+                                                    .send(Lane::Control, Payload::Msg(success));
+                                                Self::complete_login_and_send_config(
+                                                    session,
+                                                    &self.registries,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                let reason_msg = match e {
+                                                            IdentityConflictError::KeyMismatch { .. } => {
+                                                                "Username is already bound to a different public key".to_string()
+                                                            }
+                                                            IdentityConflictError::OfflineLoginForRegisteredKey { .. } => {
+                                                                "Username is reserved for authenticated cryptographic players".to_string()
+                                                            }
+                                                        };
+                                                let err = S2cMessage::Disconnect(Disconnect {
+                                                    reason: DisconnectReason::AuthFailed,
+                                                    message: BoundedString::new(reason_msg)
+                                                        .unwrap_or_default(),
+                                                });
+                                                let _ = session
+                                                    .connection
+                                                    .send(Lane::Control, Payload::Msg(err));
+                                                disconnected.push(*session_id);
+                                            }
+                                        }
+                                    } else {
+                                        let err = S2cMessage::Disconnect(Disconnect {
+                                            reason: DisconnectReason::AuthFailed,
+                                            message: BoundedString::new(
+                                                "Untrusted or missing identity certificate"
+                                                    .to_string(),
+                                            )
+                                            .unwrap_or_default(),
+                                        });
+                                        let _ = session
+                                            .connection
+                                            .send(Lane::Control, Payload::Msg(err));
+                                        disconnected.push(*session_id);
+                                    }
+                                } else {
+                                    let err = S2cMessage::Disconnect(Disconnect {
+                                        reason: DisconnectReason::AuthFailed,
+                                        message: BoundedString::new(
+                                            "Invalid cryptographic login signature".to_string(),
+                                        )
+                                        .unwrap_or_default(),
+                                    });
+                                    let _ =
+                                        session.connection.send(Lane::Control, Payload::Msg(err));
+                                    disconnected.push(*session_id);
+                                }
+                            } else {
+                                let err = S2cMessage::Disconnect(Disconnect {
+                                    reason: DisconnectReason::ProtocolViolation,
+                                    message: BoundedString::new(
+                                        "Login proof received without active challenge".to_string(),
+                                    )
+                                    .unwrap_or_default(),
+                                });
+                                let _ = session.connection.send(Lane::Control, Payload::Msg(err));
+                                disconnected.push(*session_id);
+                            }
+                        }
+                        C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
                         }
-                    }
+                        _ => {}
+                    },
                     ConnectionPhase::Config => {
                         match msg {
                             C2sMessage::ClientSettings(settings) => {
@@ -5912,6 +6144,9 @@ impl Server {
     /// Saves all dirty chunks to `.tlr` region files and syncs data to disk across all worlds.
     pub fn save_and_flush(&mut self) -> Result<usize, telos_storage::StorageError> {
         if let Some(save_dir) = &self.config.save_directory {
+            let _ = self
+                .usercache
+                .save_to_path(&save_dir.join("usercache.json"));
             for session in self.sessions.values() {
                 let _ = telos_storage::save_player_advancements(
                     save_dir,
@@ -5927,6 +6162,9 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(save_dir) = &self.config.save_directory {
+            let _ = self
+                .usercache
+                .save_to_path(&save_dir.join("usercache.json"));
             for session in self.sessions.values() {
                 let _ = telos_storage::save_player_advancements(
                     save_dir,

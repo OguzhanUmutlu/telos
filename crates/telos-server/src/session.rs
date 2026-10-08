@@ -109,6 +109,14 @@ pub struct PlayerSession {
     pub active_anvil: telos_sim::AnvilInventory,
     /// Player advancement progress state.
     pub advancements: telos_sim::PlayerAdvancements,
+    /// Persistent 16-byte UUID for the player.
+    pub player_uuid: [u8; 16],
+    /// Cryptographic Ed25519 public key if authenticated.
+    pub public_key: Option<[u8; 32]>,
+    /// Pending login challenge nonce awaiting `C2sLoginProof`.
+    pub pending_challenge: Option<[u8; 32]>,
+    /// Pending username awaiting cryptographic verification.
+    pub pending_username: Option<String>,
 }
 
 /// Tracks an open container window for a player session.
@@ -206,6 +214,10 @@ impl PlayerSession {
             active_crafting_table: telos_sim::CraftingTableInventory::new(),
             active_anvil: telos_sim::AnvilInventory::new(),
             advancements: telos_sim::PlayerAdvancements::default(),
+            player_uuid: [0u8; 16],
+            public_key: None,
+            pending_challenge: None,
+            pending_username: None,
         }
     }
 

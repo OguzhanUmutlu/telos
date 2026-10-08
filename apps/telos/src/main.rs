@@ -25,7 +25,8 @@ use telos_assets::{AnimatedTextureInfo, ResourcePackStack, TextureArrayBuilder};
 use telos_content::FrozenRegistries;
 use telos_core::{
     AppDirs, BlockPos, FixedTimestep, LanguageCatalog, RaycastHit, TelemetryConfig,
-    coords::ChunkPos, detect_system_locale, init_telemetry, raycast_voxels,
+    coords::ChunkPos, detect_system_locale, init_telemetry, profile::PlayerCredentials,
+    raycast_voxels,
 };
 use telos_gpu::{
     ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
@@ -37,10 +38,10 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity,
-    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
-    C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase, InputFrame, NetworkEffect,
-    ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck,
-    input_buttons,
+    C2sInventoryClick, C2sLoginProof, C2sLoginStart, C2sMessage, C2sModalFormResponse,
+    C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase, InputFrame,
+    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent,
+    S2cPlayerMovementAck, input_buttons,
 };
 use telos_sim::particle::{ParticleGpu, ParticleSystem};
 use telos_sim::{
@@ -1562,6 +1563,10 @@ struct App {
     active_backend: telos_gpu::rhi::RenderBackendType,
     gl_context: Option<telos_gpu::opengl::GlContext>,
     gl_renderer: Option<opengl_renderer::OpenGlRenderer>,
+
+    // Cryptographic player profile & credentials (Phase 71)
+    credentials: PlayerCredentials,
+    player_uuid: [u8; 16],
 }
 
 impl App {
@@ -1632,6 +1637,11 @@ impl App {
 
         let settings_path = app_dirs.config_dir().join("settings.toml");
         let mut game_settings = GameSettings::load_or_create(&settings_path);
+
+        let creds_path = app_dirs.config_dir().join("credentials.json");
+        let credentials = PlayerCredentials::load_or_create_at(&creds_path, "Player")
+            .unwrap_or_else(|_| PlayerCredentials::new("Player").expect("Player credentials"));
+        let player_uuid = credentials.uuid().to_bytes();
 
         let worlds_dir = if std::path::Path::new("worlds").is_dir() {
             PathBuf::from("worlds")
@@ -2047,6 +2057,8 @@ impl App {
             active_backend: telos_gpu::rhi::RenderBackendType::Vulkan,
             gl_context: None,
             gl_renderer: None,
+            credentials,
+            player_uuid,
         }
     }
 
@@ -2743,23 +2755,51 @@ impl App {
                             protocol = reply.protocol,
                             "Server accepted Hello, logging in..."
                         );
+                        let username = self.credentials.username.clone();
                         let login = C2sMessage::LoginStart(C2sLoginStart {
-                            username: BoundedString::new("Player").unwrap(),
-                            mode: AuthMode::Offline,
+                            username: BoundedString::new(username)
+                                .unwrap_or_else(|_| BoundedString::new("Player").unwrap()),
+                            mode: AuthMode::Keyed,
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(login));
                         self.client_phase = ConnectionPhase::Login;
                     }
                 }
-                ConnectionPhase::Login => {
-                    if let S2cMessage::LoginSuccess(succ) = msg {
+                ConnectionPhase::Login => match msg {
+                    S2cMessage::LoginChallenge(challenge) => {
+                        info!(
+                            "Received cryptographic login challenge from server, generating proof..."
+                        );
+                        let mut payload =
+                            Vec::with_capacity(15 + 32 + self.credentials.username.len());
+                        payload.extend_from_slice(b"telos-login-v1:");
+                        payload.extend_from_slice(&challenge.challenge_nonce);
+                        payload.extend_from_slice(self.credentials.username.as_bytes());
+
+                        match self.credentials.keypair().map(|kp| kp.sign(&payload)) {
+                            Ok(sig) => {
+                                let proof = C2sMessage::LoginProof(C2sLoginProof {
+                                    public_key: self.credentials.public_key(),
+                                    signature: sig.to_bytes(),
+                                    certificate_data: None,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(proof));
+                            }
+                            Err(err) => {
+                                tracing::error!(error = ?err, "Failed to derive keypair for login");
+                            }
+                        }
+                    }
+                    S2cMessage::LoginSuccess(succ) => {
                         info!(
                             username = succ.username.as_str(),
                             "Login successful, entering configuration phase..."
                         );
+                        self.player_uuid = succ.player_uuid;
                         self.client_phase = ConnectionPhase::Config;
                     }
-                }
+                    _ => {}
+                },
                 ConnectionPhase::Config => match msg {
                     S2cMessage::RegistryData(data) => {
                         info!(

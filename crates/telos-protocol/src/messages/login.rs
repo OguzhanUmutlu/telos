@@ -103,3 +103,101 @@ impl S2cLoginSuccess {
         })
     }
 }
+
+/// Server issues cryptographic challenge nonce to client requesting Keyed authentication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cLoginChallenge {
+    /// 32-byte cryptographically random challenge nonce.
+    pub challenge_nonce: [u8; 32],
+    /// Server identifier string.
+    pub server_id: BoundedString<64>,
+}
+
+impl S2cLoginChallenge {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.challenge_nonce);
+        self.server_id.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 32 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mut challenge_nonce = [0u8; 32];
+        challenge_nonce.copy_from_slice(&cursor[..32]);
+        *cursor = &cursor[32..];
+
+        let server_id = BoundedString::<64>::decode(cursor)?;
+        Ok(Self {
+            challenge_nonce,
+            server_id,
+        })
+    }
+}
+
+/// Client responds to login challenge with Ed25519 public key and signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct C2sLoginProof {
+    /// Client's 32-byte Ed25519 public key.
+    pub public_key: [u8; 32],
+    /// 64-byte Ed25519 signature over challenge nonce and username.
+    pub signature: [u8; 64],
+    /// Optional serialized Account Authority certificate data.
+    pub certificate_data: Option<Vec<u8>>,
+}
+
+impl C2sLoginProof {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.public_key);
+        buf.extend_from_slice(&self.signature);
+        match &self.certificate_data {
+            Some(cert) => {
+                encode_varint(cert.len() as u32 + 1, buf);
+                buf.extend_from_slice(cert);
+            }
+            None => {
+                encode_varint(0, buf);
+            }
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 96 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mut public_key = [0u8; 32];
+        public_key.copy_from_slice(&cursor[..32]);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&cursor[32..96]);
+        *cursor = &cursor[96..];
+
+        let cert_code = decode_varint(cursor)?;
+        let certificate_data = if cert_code == 0 {
+            None
+        } else {
+            let len = (cert_code - 1) as usize;
+            if len > 2048 {
+                return Err(ProtocolError::InvalidValue {
+                    field: "certificate_data",
+                    reason: "Certificate data exceeds 2048 bytes".to_string(),
+                });
+            }
+            if cursor.len() < len {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+            let data = cursor[..len].to_vec();
+            *cursor = &cursor[len..];
+            Some(data)
+        };
+
+        Ok(Self {
+            public_key,
+            signature,
+            certificate_data,
+        })
+    }
+}

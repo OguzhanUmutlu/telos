@@ -3483,10 +3483,12 @@ dependencies = [
 name = "telos-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "criterion",
  "dirs",
  "glam",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",
@@ -3617,7 +3619,9 @@ dependencies = [
  "glam",
  "hashbrown 0.15.5",
  "proptest",
+ "ring",
  "serde",
+ "serde_json",
  "telos-content",
  "telos-core",
  "telos-lod",

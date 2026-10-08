@@ -96,6 +96,12 @@ impl<const MAX: usize> fmt::Display for BoundedString<MAX> {
     }
 }
 
+impl<const MAX: usize> Default for BoundedString<MAX> {
+    fn default() -> Self {
+        Self(String::new())
+    }
+}
+
 /// A heap vector guaranteed to never exceed `MAX` elements.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BoundedVec<T, const MAX: usize>(Vec<T>);

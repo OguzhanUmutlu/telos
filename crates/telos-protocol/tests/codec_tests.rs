@@ -17,15 +17,16 @@ use telos_protocol::messages::config::{
 use telos_protocol::messages::{
     AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
     C2sClientSettings, C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive,
-    C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
-    C2sPlayerPosition, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomItemDefWire,
-    Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
-    S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
-    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
-    S2cConfigDone, S2cContainerProperty, S2cContentManifest, S2cEntityEffect, S2cGameMode,
-    S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess,
-    S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest,
-    S2cRegistryData, S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    C2sKnownRegistries, C2sLoginProof, C2sLoginStart, C2sMessage, C2sModalFormResponse,
+    C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase, CustomBlockDefWire,
+    CustomItemDefWire, Disconnect, DisconnectReason, LodPayload, ParticleEffectKind,
+    PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
+    S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cContentManifest,
+    S2cEntityEffect, S2cGameMode, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
+    S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest, S2cRegistryData, S2cRemoveEntityEffect,
+    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -135,6 +136,11 @@ fn test_c2s_messages_roundtrip() {
             username: BoundedString::new("Steve").unwrap(),
             mode: AuthMode::Offline,
         }),
+        C2sMessage::LoginProof(C2sLoginProof {
+            public_key: [0x55u8; 32],
+            signature: [0xaau8; 64],
+            certificate_data: Some(vec![1, 2, 3, 4]),
+        }),
         C2sMessage::KnownRegistries(C2sKnownRegistries {
             known_hashes: BoundedVec::new(vec![[7u8; 16], [8u8; 16]]).unwrap(),
         }),
@@ -208,6 +214,10 @@ fn test_s2c_messages_roundtrip() {
         S2cMessage::LoginSuccess(S2cLoginSuccess {
             player_uuid: [2u8; 16],
             username: BoundedString::new("Alex").unwrap(),
+        }),
+        S2cMessage::LoginChallenge(S2cLoginChallenge {
+            challenge_nonce: [0x33u8; 32],
+            server_id: BoundedString::new("test-server").unwrap(),
         }),
         S2cMessage::RegistryData(S2cRegistryData {
             registry_id: BoundedString::new("telos:item").unwrap(),

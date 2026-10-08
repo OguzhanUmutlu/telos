@@ -13,6 +13,7 @@ pub mod priority;
 pub mod server;
 pub mod session;
 pub mod storage;
+pub mod usercache;
 pub mod world;
 
 pub use builder::ServerBuilder;
@@ -24,4 +25,5 @@ pub use server::Server;
 pub use session::{ActiveContainerSession, PlayerSession};
 pub use storage::WorldStorage;
 pub use telos_worldgen::GeneratorKind;
+pub use usercache::{IdentityConflictError, UserCache, UserCacheEntry};
 pub use world::{ServerChunk, ServerWorld};

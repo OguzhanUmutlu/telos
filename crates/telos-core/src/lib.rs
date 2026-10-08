@@ -8,6 +8,7 @@ pub mod dirs;
 pub mod form;
 pub mod i18n;
 pub mod ident;
+pub mod profile;
 pub mod raycast;
 pub mod telemetry;
 pub mod time;
@@ -31,6 +32,11 @@ pub use coords::{
 };
 pub use dirs::{APP_NAME, AppDirs};
 pub use ident::{DEFAULT_NAMESPACE, Identifier, ParseIdentError};
+pub use profile::{
+    AccountAuthority, AccountError, CredentialsError, IdentityCert, IdentityKeypair, KeypairError,
+    ParseUuidError, PlayerCredentials, PlayerProfile, PlayerSkinData, PlayerUuid,
+    RegisteredAccountRecord, Signature,
+};
 pub use raycast::{RaycastHit, raycast_voxels};
 pub use telemetry::{TelemetryConfig, init_telemetry};
 pub use time::{

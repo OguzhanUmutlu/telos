@@ -13,7 +13,7 @@ pub use config::{
 };
 pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
-pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
+pub use login::{AuthMode, C2sLoginProof, C2sLoginStart, S2cLoginChallenge, S2cLoginSuccess};
 pub use play::{
     AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
     C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse,
@@ -89,6 +89,8 @@ pub enum C2sMessage {
     Hello(C2sHello),
     /// Login phase authentication request.
     LoginStart(C2sLoginStart),
+    /// Login phase response to challenge with cryptographic signature.
+    LoginProof(C2sLoginProof),
     /// Config phase client announcement of known registry hashes.
     KnownRegistries(C2sKnownRegistries),
     /// Config phase client render and simulation preferences.
@@ -131,7 +133,7 @@ impl C2sMessage {
     pub fn phase(&self) -> Option<ConnectionPhase> {
         match self {
             Self::Hello(_) => Some(ConnectionPhase::Hello),
-            Self::LoginStart(_) => Some(ConnectionPhase::Login),
+            Self::LoginStart(_) | Self::LoginProof(_) => Some(ConnectionPhase::Login),
             Self::KnownRegistries(_) | Self::ClientSettings(_) | Self::ConfigAck(_) => {
                 Some(ConnectionPhase::Config)
             }
@@ -159,7 +161,7 @@ impl C2sMessage {
             | Self::LoginStart(_)
             | Self::KnownRegistries(_)
             | Self::KeepAlive(_) => 0,
-            Self::ClientSettings(_) | Self::ChatMessage(_) => 1,
+            Self::LoginProof(_) | Self::ClientSettings(_) | Self::ChatMessage(_) => 1,
             Self::ConfigAck(_) | Self::PlayerPosition(_) => 2,
             Self::BlockAction(_) => 3,
             Self::InventoryClick(_) => 4,
@@ -179,6 +181,7 @@ impl C2sMessage {
         match self {
             Self::Hello(m) => m.encode(buf),
             Self::LoginStart(m) => m.encode(buf),
+            Self::LoginProof(m) => m.encode(buf),
             Self::KnownRegistries(m) => m.encode(buf),
             Self::ClientSettings(m) => m.encode(buf),
             Self::ConfigAck(m) => m.encode(buf),
@@ -206,6 +209,8 @@ pub enum S2cMessage {
     HelloReply(S2cHelloReply),
     /// Login phase authentication confirmation.
     LoginSuccess(S2cLoginSuccess),
+    /// Login phase cryptographic authentication challenge.
+    LoginChallenge(S2cLoginChallenge),
     /// Config phase registry entry definitions.
     RegistryData(S2cRegistryData),
     /// Config phase server signaling configuration complete.
@@ -297,7 +302,7 @@ impl S2cMessage {
     pub fn phase(&self) -> Option<ConnectionPhase> {
         match self {
             Self::HelloReply(_) => Some(ConnectionPhase::Hello),
-            Self::LoginSuccess(_) => Some(ConnectionPhase::Login),
+            Self::LoginSuccess(_) | Self::LoginChallenge(_) => Some(ConnectionPhase::Login),
             Self::RegistryData(_)
             | Self::ConfigDone(_)
             | Self::ContentManifest(_)
@@ -349,7 +354,7 @@ impl S2cMessage {
             | Self::LoginSuccess(_)
             | Self::RegistryData(_)
             | Self::KeepAlive(_) => 0,
-            Self::ConfigDone(_) | Self::ChatMessage(_) => 1,
+            Self::LoginChallenge(_) | Self::ConfigDone(_) | Self::ChatMessage(_) => 1,
             Self::ContentManifest(_) | Self::JoinGame(_) => 2,
             Self::RecipeManifest(_) | Self::ChunkData(_) => 3,
             Self::UniformChunk(_) => 4,
@@ -392,6 +397,7 @@ impl S2cMessage {
         match self {
             Self::HelloReply(m) => m.encode(buf),
             Self::LoginSuccess(m) => m.encode(buf),
+            Self::LoginChallenge(m) => m.encode(buf),
             Self::RegistryData(m) => m.encode(buf),
             Self::ConfigDone(m) => m.encode(buf),
             Self::ContentManifest(m) => m.encode(buf),

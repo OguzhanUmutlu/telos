@@ -7,7 +7,7 @@ use crate::messages::config::{
 };
 use crate::messages::disconnect::Disconnect;
 use crate::messages::hello::{C2sHello, S2cHelloReply};
-use crate::messages::login::{C2sLoginStart, S2cLoginSuccess};
+use crate::messages::login::{C2sLoginProof, C2sLoginStart, S2cLoginChallenge, S2cLoginSuccess};
 use crate::messages::play::{
     C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest, C2sInteractEntity,
     C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse, C2sPlayerCommand, C2sPlayerInput,
@@ -255,6 +255,7 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
             },
             ConnectionPhase::Login => match msg_id {
                 0 => C2sMessage::LoginStart(C2sLoginStart::decode(&mut frame_cur)?),
+                1 => C2sMessage::LoginProof(C2sLoginProof::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Login", id }),
             },
             ConnectionPhase::Config => match msg_id {
@@ -354,6 +355,7 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
             },
             ConnectionPhase::Login => match msg_id {
                 0 => S2cMessage::LoginSuccess(S2cLoginSuccess::decode(&mut frame_cur)?),
+                1 => S2cMessage::LoginChallenge(S2cLoginChallenge::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Login", id }),
             },
             ConnectionPhase::Config => match msg_id {

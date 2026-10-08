@@ -82,6 +82,7 @@ const fn default_region_compression_level() -> u32 {
 
 /// Configuration parameters for server tick rate, view distance, network, and dimensions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerConfig {
     /// Bind address and port for client connections (default: "0.0.0.0:25565").
     #[serde(default = "default_bind_address")]
@@ -138,6 +139,15 @@ pub struct ServerConfig {
     /// Configured dimensions / worlds (default: one standard world "overworld").
     #[serde(default = "default_worlds")]
     pub worlds: Vec<WorldConfig>,
+    /// Require cryptographic online authentication (rejects offline logins if true, default: false).
+    #[serde(default)]
+    pub online_mode: bool,
+    /// Enforce Trust-On-First-Use key binding cache (default: true).
+    #[serde(default = "default_true")]
+    pub enforce_tofu: bool,
+    /// Trusted Account Authority Ed25519 public keys for certificate verification (default: empty).
+    #[serde(default)]
+    pub trusted_authority_keys: Vec<[u8; 32]>,
 }
 
 impl Default for ServerConfig {
@@ -161,6 +171,9 @@ impl Default for ServerConfig {
             region_compression_level: default_region_compression_level(),
             data_pack_directories: Vec::new(),
             worlds: default_worlds(),
+            online_mode: false,
+            enforce_tofu: true,
+            trusted_authority_keys: Vec::new(),
         }
     }
 }
