@@ -19,6 +19,7 @@ tracing = { workspace = true }
 hashbrown = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

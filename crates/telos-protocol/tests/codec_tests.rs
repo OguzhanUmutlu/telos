@@ -18,7 +18,7 @@ use telos_protocol::messages::{
     ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload, ParticleEffectKind,
     PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cContainerProperty, S2cGameMode, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
     S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
     S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
@@ -931,6 +931,29 @@ fn test_modal_form_wire_roundtrips() {
         assert_eq!(r.parse_custom_response().unwrap(), custom_resp);
     } else {
         panic!("expected custom resp");
+    }
+}
+
+#[test]
+fn test_game_mode_wire_roundtrip() {
+    for mode in 0..=3 {
+        let msg = S2cMessage::GameMode(S2cGameMode::new(mode, 0b0011_1111, 20.0, 4.5, 6.0));
+        let mut buf = Vec::new();
+        encode_s2c(&msg, &mut buf);
+        let mut cursor = &buf[..];
+        let decoded = decode_s2c(ConnectionPhase::Play, &mut cursor).expect("decode S2cGameMode");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+
+        if let S2cMessage::GameMode(g) = decoded {
+            assert_eq!(g.game_mode, mode);
+            assert_eq!(g.flags, 0b0011_1111);
+            assert!((g.fly_speed - 20.0).abs() < 1e-5);
+            assert!((g.walk_speed - 4.5).abs() < 1e-5);
+            assert!((g.reach_distance - 6.0).abs() < 1e-5);
+        } else {
+            panic!("expected GameMode");
+        }
     }
 }
 

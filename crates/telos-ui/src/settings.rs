@@ -2,6 +2,7 @@
 //!
 //! Manages video, audio, controls, and gameplay preferences serialized to `settings.toml`.
 
+use crate::keybinds::KeybindSettings;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -115,6 +116,9 @@ pub struct ControlSettings {
     pub mouse_sensitivity: f32,
     /// Invert pitch look axis.
     pub invert_mouse_y: bool,
+    /// Player keyboard keybind mappings.
+    #[serde(default)]
+    pub keybinds: KeybindSettings,
 }
 
 impl Default for ControlSettings {
@@ -122,6 +126,7 @@ impl Default for ControlSettings {
         Self {
             mouse_sensitivity: 1.0,
             invert_mouse_y: false,
+            keybinds: KeybindSettings::default(),
         }
     }
 }
@@ -243,6 +248,7 @@ mod tests {
             controls: ControlSettings {
                 mouse_sensitivity: 10.0,
                 invert_mouse_y: true,
+                keybinds: KeybindSettings::default(),
             },
             gameplay: GameplaySettings::default(),
         };

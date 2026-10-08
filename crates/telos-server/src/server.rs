@@ -23,11 +23,12 @@ use telos_protocol::messages::{
     ChunkPayload, ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind,
     PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply,
-    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload,
-    S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
-    S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cGameMode,
+    S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -37,8 +38,8 @@ use telos_sim::{
     ARMOR_SLOTS, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_PICKUP_RADIUS,
     AiState, ArrowEntity, ArrowStepOutcome, AttackCooldown, AttributeKind, Attributes,
     BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
-    CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience, Health,
-    Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
+    CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience, GameMode,
+    Health, Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
     ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack, Mob, MobBundle, MoveMode, NetEntity,
     PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position, PotionType, Rotation, SimParams,
     SimulationFrozen, StatusEffectKind, StatusEffects, TargetablePlayer, Velocity, WeatherKind,
@@ -440,6 +441,30 @@ impl Server {
         }
     }
 
+    /// Sets the game mode and capabilities of a player session and notifies the client.
+    pub fn apply_game_mode(&mut self, session_id: u64, mode: GameMode) {
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.game_mode = mode;
+            session.capabilities = mode.default_capabilities();
+            session.move_mode = match mode {
+                GameMode::Creative | GameMode::Spectator => MoveMode::NoClipFly,
+                GameMode::Survival | GameMode::Adventure => MoveMode::Walk,
+            };
+            session.move_state.flying = session.capabilities.flying;
+            let s2c_msg = S2cMessage::GameMode(S2cGameMode {
+                game_mode: mode.id(),
+                flags: session.capabilities.flags(),
+                fly_speed: session.capabilities.fly_speed,
+                walk_speed: session.capabilities.walk_speed,
+                reach_distance: session.capabilities.reach_distance,
+            });
+            let _ = session
+                .connection
+                .send(Lane::Control, Payload::Msg(s2c_msg));
+            info!(session_id, ?mode, "Applied game mode to session");
+        }
+    }
+
     /// Spawns a dropped item entity in the specified world at `pos` with initial `vel`.
     pub fn spawn_item_entity(
         &mut self,
@@ -837,7 +862,7 @@ impl Server {
         let player_candidates: Vec<(u64, bevy_ecs::entity::Entity, DVec3)> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.move_mode == MoveMode::Walk)
+            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.game_mode != GameMode::Spectator)
             .filter_map(|(&sid, s)| s.ecs_entity.map(|e| (sid, e, s.position)))
             .collect();
 
@@ -1213,7 +1238,7 @@ impl Server {
         let player_candidates: Vec<(u64, bevy_ecs::entity::Entity, DVec3)> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.move_mode == MoveMode::Walk)
+            .filter(|(_, s)| s.phase == ConnectionPhase::Play && s.game_mode != GameMode::Spectator)
             .filter_map(|(&sid, s)| s.ecs_entity.map(|e| (sid, e, s.position)))
             .collect();
 
@@ -2129,6 +2154,16 @@ impl Server {
                                 });
                                 let _ = session.connection.send(Lane::Control, Payload::Msg(join));
 
+                                let gm_msg = S2cMessage::GameMode(S2cGameMode {
+                                    game_mode: session.game_mode.id(),
+                                    flags: session.capabilities.flags(),
+                                    fly_speed: session.capabilities.fly_speed,
+                                    walk_speed: session.capabilities.walk_speed,
+                                    reach_distance: session.capabilities.reach_distance,
+                                });
+                                let _ =
+                                    session.connection.send(Lane::Control, Payload::Msg(gm_msg));
+
                                 let time_msg = S2cMessage::UpdateTime(S2cUpdateTime {
                                     world_age: self.tick_count,
                                     time_of_day: self.time_of_day,
@@ -2351,7 +2386,9 @@ impl Server {
                                 pos.pitch,
                                 pos.on_ground,
                             );
-                            if session.move_mode == MoveMode::NoClipFly || session.move_state.flying
+                            if session.capabilities.invincible
+                                || session.move_mode == MoveMode::NoClipFly
+                                || session.move_state.flying
                             {
                                 session.fall_distance = 0.0;
                             } else if pos.on_ground {
@@ -2538,14 +2575,8 @@ impl Server {
                     self.clear_mobs();
                 }
                 PlayerCommandKind::SetGameMode(mode) => {
-                    if let Some(session) = self.sessions.get_mut(&session_id) {
-                        session.move_mode = if mode == 1 {
-                            telos_sim::MoveMode::NoClipFly
-                        } else {
-                            telos_sim::MoveMode::Walk
-                        };
-                        info!(mode, "Updated player session game mode");
-                    }
+                    let game_mode = GameMode::from_id(mode).unwrap_or(GameMode::Survival);
+                    self.apply_game_mode(session_id, game_mode);
                 }
                 PlayerCommandKind::ApplyEffect {
                     effect_id,
@@ -2643,15 +2674,15 @@ impl Server {
                         continue;
                     }
 
-                    let (selected_slot, world_name, pitch, move_mode) = match self
+                    let (selected_slot, world_name, pitch, game_mode) = match self
                         .sessions
                         .get(&session_id)
                     {
-                        Some(s) => (s.selected_slot, s.world_name.clone(), s.pitch, s.move_mode),
+                        Some(s) => (s.selected_slot, s.world_name.clone(), s.pitch, s.game_mode),
                         None => continue,
                     };
 
-                    let is_creative = move_mode == MoveMode::NoClipFly;
+                    let is_creative = game_mode == GameMode::Creative;
                     let mut can_shoot = false;
                     let mut arrow_slot_to_consume: Option<usize> = None;
 
@@ -3248,6 +3279,49 @@ impl Server {
                         {
                             stack.enchantments.set_enchantment(k, level);
                         }
+                    } else if text.starts_with("/gamemode") {
+                        let parts: Vec<&str> = text.split_whitespace().collect();
+                        if let Some(&mode_str) = parts.get(1) {
+                            if let Some(mode) = GameMode::from_name(mode_str) {
+                                let target_session_id = if let Some(&target_name) = parts.get(2) {
+                                    if target_name == "@s"
+                                        || target_name == "@p"
+                                        || target_name == "self"
+                                    {
+                                        Some(session_id)
+                                    } else {
+                                        self.sessions.iter().find_map(|(&id, s)| {
+                                            if s.username.eq_ignore_ascii_case(target_name) {
+                                                Some(id)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    }
+                                } else {
+                                    Some(session_id)
+                                };
+
+                                if let Some(target_id) = target_session_id {
+                                    self.apply_game_mode(target_id, mode);
+                                    output.success = true;
+                                    output.message =
+                                        format!("Set game mode to {} Mode", mode.name());
+                                } else {
+                                    output.success = false;
+                                    output.message = format!("Player not found: {}", parts[2]);
+                                }
+                            } else {
+                                output.success = false;
+                                output.message = format!(
+                                    "Unknown game mode '{mode_str}'. Valid modes: survival, creative, adventure, spectator (0-3)"
+                                );
+                            }
+                        } else {
+                            output.success = false;
+                            output.message =
+                                "Usage: /gamemode <survival|creative|adventure|spectator|0-3> [player]".to_string();
+                        }
                     }
                 }
 
@@ -3547,7 +3621,14 @@ impl Server {
         // 4. Process block actions (authoritative validation & simulation)
         let mut dropped_items_to_spawn = Vec::new();
         for (session_id, action) in block_actions {
-            let (session_pos, session_entity_id, session_move_mode, session_world_name) = {
+            let (
+                session_pos,
+                session_entity_id,
+                _session_move_mode,
+                session_world_name,
+                session_can_build,
+                session_game_mode,
+            ) = {
                 let Some(session) = self.sessions.get(&session_id) else {
                     continue;
                 };
@@ -3556,6 +3637,8 @@ impl Server {
                     session.entity_id,
                     session.move_mode,
                     session.world_name.clone(),
+                    session.capabilities.can_build,
+                    session.game_mode,
                 )
             };
 
@@ -3601,6 +3684,26 @@ impl Server {
             let old_state = world.get_block(target_pos);
 
             if is_in_reach && is_in_bounds {
+                if !session_can_build
+                    && matches!(
+                        action.action,
+                        BlockActionKind::Break | BlockActionKind::Place { .. }
+                    )
+                {
+                    // Block editing forbidden by capabilities (Adventure / Spectator)
+                    let rollback = S2cMessage::BlockUpdate(S2cBlockUpdate {
+                        x: target_pos.x(),
+                        y: target_pos.y(),
+                        z: target_pos.z(),
+                        state_id: old_state,
+                        version: 0,
+                    });
+                    if let Some(s) = self.sessions.get_mut(&session_id) {
+                        let _ = s.connection.send(Lane::Control, Payload::Msg(rollback));
+                    }
+                    continue;
+                }
+
                 if matches!(action.action, BlockActionKind::Break)
                     && !self.js_plugins.dispatch_block_break(
                         session_entity_id,
@@ -3823,7 +3926,7 @@ impl Server {
                                     }
                                 }
 
-                                if session_move_mode == MoveMode::Walk
+                                if session_game_mode == GameMode::Survival
                                     && let Some(drop_stack) = block_to_drop_item(old_state.0)
                                 {
                                     let spawn_pos = DVec3::new(
@@ -3983,7 +4086,10 @@ impl Server {
                 session.pitch = session.move_state.pitch;
                 session.on_ground = session.move_state.on_ground;
 
-                if session.move_mode == MoveMode::NoClipFly || session.move_state.flying {
+                if session.capabilities.invincible
+                    || session.move_mode == MoveMode::NoClipFly
+                    || session.move_state.flying
+                {
                     session.fall_distance = 0.0;
                 } else if session.on_ground {
                     if !was_ground && session.fall_distance > 3.0 {
@@ -4118,7 +4224,8 @@ impl Server {
             }
             let dist = session.position.distance(session.prev_position);
             session.prev_position = session.position;
-            if dist > 0.001
+            if !session.capabilities.invincible
+                && dist > 0.001
                 && let Some(entity) = session.ecs_entity
                 && let Some(mut hunger) = self.ecs_world.get_mut::<Hunger>(entity)
             {
@@ -4134,7 +4241,9 @@ impl Server {
             .map(|s| TargetablePlayer {
                 net_id: s.entity_id,
                 pos: s.position,
-                targetable: s.move_mode == MoveMode::Walk && !s.move_state.flying,
+                targetable: !s.capabilities.invincible
+                    && s.game_mode != GameMode::Spectator
+                    && !s.move_state.flying,
             })
             .collect();
         self.ecs_world
@@ -4207,7 +4316,8 @@ impl Server {
                     if target_session.phase != ConnectionPhase::Play {
                         continue;
                     }
-                    if target_session.move_mode != MoveMode::Walk
+                    if target_session.capabilities.invincible
+                        || target_session.game_mode == GameMode::Spectator
                         || target_session.move_state.flying
                     {
                         continue;
@@ -4231,6 +4341,9 @@ impl Server {
             let Some(target_session) = self.sessions.get_mut(&target_session_id) else {
                 continue;
             };
+            if target_session.capabilities.invincible {
+                continue;
+            }
             let player_net_id = target_session.entity_id;
             let target_ecs = target_session.ecs_entity;
             let player_pos = target_session.position;

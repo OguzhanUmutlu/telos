@@ -259,3 +259,59 @@ fn test_world_create_wizard_i18n_translation() {
     assert_eq!(wizard.buttons[1].label, "Crear un mundo nuevo");
     assert_eq!(wizard.buttons[2].label, "Cancelar");
 }
+
+#[test]
+fn test_settings_screen_controls_rebinding_flow() {
+    use telos_core::i18n::LanguageCatalog;
+    use telos_ui::keybinds::{InputKey, KeyAction};
+    use telos_ui::menu::settings_screen::{SettingsScreen, SettingsTab};
+
+    let catalog = LanguageCatalog::with_default_embedded();
+    let settings = GameSettings::default();
+    let mut screen = SettingsScreen::new(settings);
+
+    screen.update_layout_i18n(800.0, 600.0, &catalog);
+
+    // Switch to Controls tab (button ID 103)
+    let controls_tab_btn = screen.tab_buttons[2].clone();
+    screen.handle_mouse_click_i18n(
+        controls_tab_btn.x + 5.0,
+        controls_tab_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert_eq!(screen.active_tab, SettingsTab::Controls);
+    assert!(!screen.keybind_buttons.is_empty());
+
+    // Click Forward keybind button
+    let (action, fwd_btn) = screen.keybind_buttons[0].clone();
+    assert_eq!(action, KeyAction::Forward);
+    screen.handle_mouse_click_i18n(fwd_btn.x + 5.0, fwd_btn.y + 5.0, 800.0, 600.0, &catalog);
+    assert!(screen.is_rebinding());
+    assert_eq!(screen.listening_action, Some(KeyAction::Forward));
+
+    // Rebind to ArrowUp
+    let changed = screen.handle_key_input(InputKey::ArrowUp);
+    assert!(changed);
+    assert!(!screen.is_rebinding());
+    assert_eq!(
+        screen.settings.controls.keybinds.get(KeyAction::Forward),
+        InputKey::ArrowUp
+    );
+
+    // Reset defaults button
+    screen.update_layout_i18n(800.0, 600.0, &catalog);
+    let reset_btn = screen.reset_keybinds_button.clone();
+    screen.handle_mouse_click_i18n(reset_btn.x + 5.0, reset_btn.y + 5.0, 800.0, 600.0, &catalog);
+    assert_eq!(
+        screen.settings.controls.keybinds.get(KeyAction::Forward),
+        InputKey::KeyW
+    );
+
+    // Test mouse wheel scroll
+    screen.handle_mouse_wheel(2.0);
+    assert_eq!(screen.scroll_y, 0.0); // Clamped at 0
+    screen.handle_mouse_wheel(-2.0);
+    assert!(screen.scroll_y > 0.0);
+}

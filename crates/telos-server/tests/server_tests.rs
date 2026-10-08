@@ -161,6 +161,7 @@ fn test_server_handshake_and_chunk_streaming() {
             S2cMessage::UpdateStats(_)
             | S2cMessage::InventoryBulk(_)
             | S2cMessage::UpdateWeather(_)
+            | S2cMessage::GameMode(_)
             | S2cMessage::PlayerMovementAck(_) => {}
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }
@@ -1921,4 +1922,85 @@ fn test_server_fluid_flow_ticking() {
         down_fluid.falling,
         "Downward fluid column should be marked falling"
     );
+}
+
+#[test]
+fn test_server_game_mode_transitions_and_capabilities() {
+    let mut server = Server::new(42, ServerConfig::default());
+    let (server_conn, client_conn) = MemoryConnection::pair_default();
+    let session_id = server.add_connection(Box::new(server_conn));
+    assert_eq!(session_id, 1);
+
+    login_test_client(&mut server, &client_conn, "Steve");
+
+    // 1. Initial game mode on join is Survival (0)
+    let s = server.get_session(session_id).expect("session exists");
+    assert_eq!(s.game_mode, telos_sim::GameMode::Survival);
+    assert!(!s.capabilities.allow_flight);
+    assert!(s.capabilities.can_build);
+
+    // 2. Change game mode to Creative via command
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/gamemode creative").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    // Check server session state
+    let s = server.get_session(session_id).expect("session exists");
+    assert_eq!(s.game_mode, telos_sim::GameMode::Creative);
+    assert!(s.capabilities.allow_flight);
+    assert!(s.capabilities.invincible);
+    assert!(s.capabilities.instabreak);
+    assert!(s.capabilities.can_build);
+
+    // Check client received S2cGameMode packet
+    let mut got_creative_packet = false;
+    while let Ok(Some(incoming)) = client_conn.try_recv() {
+        if let S2cMessage::GameMode(gm) = incoming.into_msg().unwrap() {
+            assert_eq!(gm.game_mode, 1);
+            assert_ne!(gm.flags & telos_sim::capabilities::CAP_FLAG_ALLOW_FLIGHT, 0);
+            assert_ne!(gm.flags & telos_sim::capabilities::CAP_FLAG_INVINCIBLE, 0);
+            got_creative_packet = true;
+        }
+    }
+    assert!(
+        got_creative_packet,
+        "Client should receive S2cGameMode for Creative"
+    );
+
+    // 3. Switch to Adventure (2)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/gamemode adventure").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let s = server.get_session(session_id).expect("session exists");
+    assert_eq!(s.game_mode, telos_sim::GameMode::Adventure);
+    assert!(!s.capabilities.can_build);
+
+    // 4. Switch to Spectator (3)
+    client_conn
+        .send(
+            Lane::Control,
+            Payload::Msg(C2sMessage::ChatMessage(C2sChatMessage {
+                message: BoundedString::new("/gamemode 3").unwrap(),
+            })),
+        )
+        .unwrap();
+    server.tick();
+
+    let s = server.get_session(session_id).expect("session exists");
+    assert_eq!(s.game_mode, telos_sim::GameMode::Spectator);
+    assert!(s.capabilities.noclip);
+    assert!(s.capabilities.flying);
 }

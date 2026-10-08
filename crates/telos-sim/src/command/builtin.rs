@@ -1,5 +1,6 @@
 //! Standard built-in engine commands (/help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say).
 
+use crate::capabilities::GameMode;
 use crate::command::tree::{ArgumentType, CommandDispatcher, CommandNode, CommandOutput};
 
 /// Registers all standard built-in commands into the dispatcher.
@@ -15,6 +16,7 @@ pub fn register_builtins(dispatcher: &mut CommandDispatcher) {
     register_say(dispatcher);
     register_effect(dispatcher);
     register_enchant(dispatcher);
+    register_gamemode(dispatcher);
 }
 
 fn register_help(dispatcher: &mut CommandDispatcher) {
@@ -22,7 +24,7 @@ fn register_help(dispatcher: &mut CommandDispatcher) {
         .with_tooltip("Shows list of available commands or help on a specific command")
         .executes(|_| {
             CommandOutput::success(
-                "Available commands: /help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say, /effect, /enchant"
+                "Available commands: /help, /time, /weather, /tp, /give, /spawnmob, /kill, /clear, /say, /effect, /enchant, /gamemode"
             )
         })
         .then(
@@ -41,6 +43,7 @@ fn register_help(dispatcher: &mut CommandDispatcher) {
                         "say" => CommandOutput::success("/say <message>"),
                         "effect" => CommandOutput::success("/effect <give|clear> [target] [effect] [seconds] [amplifier]"),
                         "enchant" => CommandOutput::success("/enchant <target> <enchantment> [level]"),
+                        "gamemode" => CommandOutput::success("/gamemode <survival|creative|adventure|spectator> [target]"),
                         _ => CommandOutput::failure(format!("Unknown command: '{cmd}'")),
                     }
                 }),
@@ -393,4 +396,39 @@ fn register_enchant(dispatcher: &mut CommandDispatcher) {
         );
 
     dispatcher.register(enchant_node);
+}
+
+fn register_gamemode(dispatcher: &mut CommandDispatcher) {
+    let mode_node = CommandNode::literal("gamemode")
+        .with_tooltip("Sets a player's game mode (survival, creative, adventure, spectator)")
+        .then(
+            CommandNode::argument("mode", ArgumentType::Word)
+                .with_tooltip("Game mode (survival, creative, adventure, spectator, or 0..=3)")
+                .executes(|ctx| {
+                    let mode_str = ctx.get_string("mode").unwrap_or("survival");
+                    if let Some(mode) = GameMode::from_name(mode_str) {
+                        CommandOutput::success(format!("Set own game mode to {} Mode", mode.name()))
+                    } else {
+                        CommandOutput::failure(format!("Unknown game mode: '{mode_str}'"))
+                    }
+                })
+                .then(
+                    CommandNode::argument("target", ArgumentType::Entity)
+                        .with_tooltip("Target player")
+                        .executes(|ctx| {
+                            let mode_str = ctx.get_string("mode").unwrap_or("survival");
+                            let target = ctx.get_string("target").unwrap_or("@s");
+                            if let Some(mode) = GameMode::from_name(mode_str) {
+                                CommandOutput::success(format!(
+                                    "Set {target}'s game mode to {} Mode",
+                                    mode.name()
+                                ))
+                            } else {
+                                CommandOutput::failure(format!("Unknown game mode: '{mode_str}'"))
+                            }
+                        }),
+                ),
+        );
+
+    dispatcher.register(mode_node);
 }

@@ -97,6 +97,10 @@ pub struct PlayerSession {
     pub selected_slot: u8,
     /// Name of the world/dimension this session currently resides in.
     pub world_name: String,
+    /// Active game mode (Survival, Creative, Adventure, Spectator).
+    pub game_mode: telos_sim::GameMode,
+    /// Player game mode capabilities (flight, invincibility, build permission, etc.).
+    pub capabilities: telos_sim::PlayerCapabilities,
     /// Currently open container session (if any).
     pub active_container: Option<ActiveContainerSession>,
 }
@@ -188,6 +192,8 @@ impl PlayerSession {
             teleport_id_counter: 0,
             awaiting_teleport: None,
             move_mode: MoveMode::Walk,
+            game_mode: telos_sim::GameMode::Survival,
+            capabilities: telos_sim::PlayerCapabilities::survival(),
             selected_slot: 0,
             world_name: "overworld".to_string(),
             active_container: None,

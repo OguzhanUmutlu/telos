@@ -19,7 +19,7 @@ pub use play::{
     NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent,
     S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
     S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cGameMode, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
     S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
     S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
     S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
@@ -266,6 +266,8 @@ pub enum S2cMessage {
     ContainerProperty(S2cContainerProperty),
     /// Play phase request to display server-driven modal form dialog.
     ModalFormRequest(S2cModalFormRequest),
+    /// Play phase player game mode and capability synchronization.
+    GameMode(S2cGameMode),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -309,7 +311,8 @@ impl S2cMessage {
             | Self::CloseContainer(_)
             | Self::BlockEvent(_)
             | Self::ContainerProperty(_)
-            | Self::ModalFormRequest(_) => Some(ConnectionPhase::Play),
+            | Self::ModalFormRequest(_)
+            | Self::GameMode(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -351,6 +354,7 @@ impl S2cMessage {
             Self::BlockEvent(_) => 27,
             Self::ContainerProperty(_) => 28,
             Self::ModalFormRequest(_) => 29,
+            Self::GameMode(_) => 30,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -392,6 +396,7 @@ impl S2cMessage {
             Self::BlockEvent(m) => m.encode(buf),
             Self::ContainerProperty(m) => m.encode(buf),
             Self::ModalFormRequest(m) => m.encode(buf),
+            Self::GameMode(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

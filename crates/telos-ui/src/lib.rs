@@ -10,6 +10,7 @@ pub mod font;
 pub mod frame;
 pub mod hud;
 pub mod inventory;
+pub mod keybinds;
 pub mod menu;
 pub mod quad;
 pub mod scale;
@@ -30,6 +31,7 @@ pub use inventory::{
     CONTAINER_HEIGHT, CONTAINER_WIDTH, INVENTORY_SLOT_COUNT, UiSlotItem, item_icon_uv,
     render_inventory_screen, slot_at_pos, slot_pos,
 };
+pub use keybinds::{InputKey, KeyAction, KeyCategory, KeybindSettings};
 pub use menu::{
     CustomWidgetState, MainMenuAction, MainMenuScreen, MenuButton, MenuSlider, MenuTextInput,
     ModalFormAction, ModalFormScreen, PauseMenuAction, PauseMenuScreen, SettingsScreen,

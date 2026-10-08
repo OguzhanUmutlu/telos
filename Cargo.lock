@@ -3640,6 +3640,7 @@ dependencies = [
  "glam",
  "hashbrown 0.15.5",
  "proptest",
+ "serde",
  "telos-core",
  "telos-protocol",
  "telos-voxel",

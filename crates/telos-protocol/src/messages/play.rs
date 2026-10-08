@@ -3069,6 +3069,72 @@ impl C2sModalFormResponse {
     }
 }
 
+/// Server synchronizes player game mode and capability flags to the client.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct S2cGameMode {
+    /// Active game mode ID (0: Survival, 1: Creative, 2: Adventure, 3: Spectator).
+    pub game_mode: u8,
+    /// Capability flags (invincible, flying, `allow_flight`, instabreak, `can_build`, noclip).
+    pub flags: u8,
+    /// Base flying speed in blocks/second.
+    pub fly_speed: f32,
+    /// Base walking speed in blocks/second.
+    pub walk_speed: f32,
+    /// Block interaction reach distance in blocks.
+    pub reach_distance: f32,
+}
+
+impl Eq for S2cGameMode {}
+
+impl S2cGameMode {
+    /// Creates a new game mode packet with explicit capabilities.
+    #[must_use]
+    pub const fn new(
+        game_mode: u8,
+        flags: u8,
+        fly_speed: f32,
+        walk_speed: f32,
+        reach_distance: f32,
+    ) -> Self {
+        Self {
+            game_mode,
+            flags,
+            fly_speed,
+            walk_speed,
+            reach_distance,
+        }
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.game_mode);
+        buf.push(self.flags);
+        buf.extend_from_slice(&self.fly_speed.to_le_bytes());
+        buf.extend_from_slice(&self.walk_speed.to_le_bytes());
+        buf.extend_from_slice(&self.reach_distance.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 14 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let game_mode = cursor[0];
+        let flags = cursor[1];
+        let fly_speed = f32::from_le_bytes([cursor[2], cursor[3], cursor[4], cursor[5]]);
+        let walk_speed = f32::from_le_bytes([cursor[6], cursor[7], cursor[8], cursor[9]]);
+        let reach_distance = f32::from_le_bytes([cursor[10], cursor[11], cursor[12], cursor[13]]);
+        *cursor = &cursor[14..];
+        Ok(Self {
+            game_mode,
+            flags,
+            fly_speed,
+            walk_speed,
+            reach_distance,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

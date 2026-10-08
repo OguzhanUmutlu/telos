@@ -7,6 +7,7 @@
 
 pub mod attributes;
 pub mod bundles;
+pub mod capabilities;
 pub mod command;
 pub mod crafting;
 pub mod effect;
@@ -34,6 +35,10 @@ pub use attributes::{
     calculate_damage_mitigation,
 };
 pub use bundles::PlayerBundle;
+pub use capabilities::{
+    CAP_FLAG_ALLOW_FLIGHT, CAP_FLAG_CAN_BUILD, CAP_FLAG_FLYING, CAP_FLAG_INSTABREAK,
+    CAP_FLAG_INVINCIBLE, CAP_FLAG_NOCLIP, GameMode, PlayerCapabilities,
+};
 pub use command::{
     CommandContext, CommandDispatcher, CommandNode, CommandOutput, CommandSuggestions,
     register_builtins,

@@ -26,26 +26,7 @@ pub const FLY_SPRINT_SPEED: f32 = 35.0;
 /// Maximum step-up height for walking over slabs and stairs without jumping.
 pub const STEP_HEIGHT: f64 = 0.6;
 
-/// Player game mode controlling physics rules and flight capabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GameMode {
-    /// Survival mode: strict swept AABB collision, gravity, fall damage, and no flight.
-    Survival,
-    /// Creative mode: god mode, flight toggle, instant block breaking, and creative flight.
-    #[default]
-    Creative,
-}
-
-impl GameMode {
-    /// Returns the user-facing display name.
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Survival => "Survival",
-            Self::Creative => "Creative",
-        }
-    }
-}
+pub use telos_sim::capabilities::{GameMode, PlayerCapabilities};
 
 /// Axis-aligned bounding box in world space with double precision coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,6 +123,8 @@ pub struct PlayerPhysicsController {
     pub vel: Vec3,
     /// Active game mode.
     pub game_mode: GameMode,
+    /// Active game mode capabilities (flight permissions, invincibility, instabreak, `can_build`, noclip).
+    pub capabilities: PlayerCapabilities,
     /// Whether player is currently in flying mode.
     pub flying: bool,
     /// Whether player has firm contact with solid ground.
@@ -172,11 +155,13 @@ impl PlayerPhysicsController {
     /// Creates a new physics controller at `pos` with the given `game_mode`.
     #[must_use]
     pub fn new(pos: DVec3, game_mode: GameMode) -> Self {
-        let flying = game_mode == GameMode::Creative;
+        let capabilities = PlayerCapabilities::from_game_mode(game_mode);
+        let flying = capabilities.flying;
         Self {
             pos,
             vel: Vec3::ZERO,
             game_mode,
+            capabilities,
             flying,
             on_ground: false,
             space_tap_timer: 0.0,
@@ -222,18 +207,25 @@ impl PlayerPhysicsController {
         );
     }
 
-    /// Toggles between Survival and Creative game modes.
+    /// Cycles to the next game mode in sequence: Survival -> Creative -> Adventure -> Spectator -> Survival.
     pub fn toggle_game_mode(&mut self) -> GameMode {
-        match self.game_mode {
-            GameMode::Survival => {
-                self.game_mode = GameMode::Creative;
-            }
-            GameMode::Creative => {
-                self.game_mode = GameMode::Survival;
-                self.flying = false;
-            }
-        }
+        let next = self.game_mode.next();
+        self.set_game_mode(next);
         self.game_mode
+    }
+
+    /// Updates the controller to a new game mode and applies default capabilities.
+    pub fn set_game_mode(&mut self, mode: GameMode) {
+        self.game_mode = mode;
+        self.capabilities.apply_game_mode(mode);
+        self.flying = self.capabilities.flying;
+    }
+
+    /// Applies authoritative capabilities received from the server.
+    pub fn set_capabilities(&mut self, capabilities: PlayerCapabilities) {
+        self.game_mode = capabilities.game_mode;
+        self.capabilities = capabilities;
+        self.flying = capabilities.flying;
     }
 
     /// Advances the physics simulation by `dt` seconds using swept AABB voxel collision.
@@ -251,10 +243,11 @@ impl PlayerPhysicsController {
     {
         let dt = dt.clamp(0.001, 0.05);
 
-        // 1. Double-tap Space detection for flight toggle in Creative mode
+        // 1. Double-tap Space detection for flight toggle when allowed
         if input.jump && !self.space_was_down {
-            if self.game_mode == GameMode::Creative && self.space_tap_timer > 0.0 {
+            if self.capabilities.allow_flight && self.space_tap_timer > 0.0 {
                 self.flying = !self.flying;
+                self.capabilities.flying = self.flying;
                 self.space_tap_timer = 0.0;
                 if self.flying {
                     self.vel.y = 0.0;
@@ -266,9 +259,10 @@ impl PlayerPhysicsController {
         self.space_was_down = input.jump;
         self.space_tap_timer = (self.space_tap_timer - dt).max(0.0);
 
-        // Survival mode never permits flight
-        if self.game_mode == GameMode::Survival {
+        // Cancel flight if capabilities do not allow flight
+        if !self.capabilities.allow_flight {
             self.flying = false;
+            self.capabilities.flying = false;
         }
 
         let yaw_rad = yaw_deg.to_radians();
@@ -292,12 +286,17 @@ impl PlayerPhysicsController {
             wish_dir = wish_dir.normalize();
         }
 
-        if self.flying {
-            // Creative flight dynamics
-            let fly_speed = if input.sprint {
-                FLY_SPRINT_SPEED
+        if self.flying || self.capabilities.noclip {
+            // Creative flight / Spectator noclip dynamics
+            let base_speed = if self.capabilities.noclip {
+                self.capabilities.fly_speed * 1.5
             } else {
-                FLY_SPEED
+                self.capabilities.fly_speed
+            };
+            let fly_speed = if input.sprint {
+                base_speed * 2.5
+            } else {
+                base_speed
             };
             let mut target_vel = wish_dir * fly_speed;
 
@@ -322,13 +321,13 @@ impl PlayerPhysicsController {
             self.pos += self.vel.as_dvec3() * f64::from(dt);
             self.on_ground = false;
         } else {
-            // Walking / survival dynamics
+            // Walking dynamics (Survival, Adventure)
             let base_speed = if input.sprint {
                 SPRINT_SPEED
             } else if input.sneak {
                 SNEAK_SPEED
             } else {
-                WALK_SPEED
+                self.capabilities.walk_speed
             };
             let move_speed = base_speed * self.speed_multiplier.max(0.1);
 
@@ -781,5 +780,63 @@ mod tests {
             controller.pos.y
         );
         assert!(controller.on_ground);
+    }
+
+    #[test]
+    fn test_game_mode_cycle_and_capabilities() {
+        let mut controller =
+            PlayerPhysicsController::new(DVec3::new(0.0, 64.0, 0.0), GameMode::Survival);
+        assert_eq!(controller.game_mode, GameMode::Survival);
+        assert!(!controller.capabilities.allow_flight);
+        assert!(controller.capabilities.can_build);
+
+        // Cycle to Creative
+        assert_eq!(controller.toggle_game_mode(), GameMode::Creative);
+        assert!(controller.capabilities.allow_flight);
+        assert!(controller.capabilities.invincible);
+        assert!(controller.capabilities.can_build);
+
+        // Cycle to Adventure
+        assert_eq!(controller.toggle_game_mode(), GameMode::Adventure);
+        assert!(!controller.capabilities.allow_flight);
+        assert!(!controller.capabilities.can_build);
+
+        // Cycle to Spectator
+        assert_eq!(controller.toggle_game_mode(), GameMode::Spectator);
+        assert!(controller.capabilities.allow_flight);
+        assert!(controller.capabilities.noclip);
+        assert!(controller.flying);
+
+        // Cycle back to Survival
+        assert_eq!(controller.toggle_game_mode(), GameMode::Survival);
+        assert!(!controller.capabilities.allow_flight);
+        assert!(!controller.flying);
+    }
+
+    #[test]
+    fn test_spectator_noclip_traversal() {
+        let mut controller =
+            PlayerPhysicsController::new(DVec3::new(0.0, 64.0, 0.0), GameMode::Spectator);
+        assert!(controller.capabilities.noclip);
+
+        // Solid wall at X = 1
+        let colliders = |bx: i32, by: i32, bz: i32, out: &mut Vec<Aabb>| {
+            if bx == 1 {
+                out.push(Aabb::from_block(bx, by, bz));
+            }
+        };
+
+        let input = PlayerInputState {
+            forward: true,
+            ..Default::default()
+        };
+
+        // Move forward across the solid wall
+        for _ in 0..10 {
+            controller.update(0.05, 0.0, &input, colliders);
+        }
+
+        // Spectator should have phased through the wall at X = 1
+        assert!(controller.pos.x > 2.0);
     }
 }

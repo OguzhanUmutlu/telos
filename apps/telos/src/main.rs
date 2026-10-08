@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::physics::{Aabb, GameMode, PlayerInputState, PlayerPhysicsController};
+use crate::physics::{
+    Aabb, GameMode, PlayerCapabilities, PlayerInputState, PlayerPhysicsController,
+};
 use anyhow::Result;
 use camera::{Camera, FlyController};
 use clap::Parser;
@@ -55,6 +57,7 @@ use telos_ui::{
     render_chat_hud, render_chest_container, render_furnace_container, render_hud,
     render_inventory_screen, slot_at_pos, snap_to_physical,
 };
+use telos_ui::{InputKey, KeyAction};
 
 /// Top-level application screen state.
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +186,81 @@ struct Args {
     /// Rendering backend selection ('vulkan', 'opengl', or 'auto').
     #[arg(long, default_value = "auto")]
     backend: String,
+}
+
+fn key_code_to_input_key(code: KeyCode) -> InputKey {
+    match code {
+        KeyCode::KeyA => InputKey::KeyA,
+        KeyCode::KeyB => InputKey::KeyB,
+        KeyCode::KeyC => InputKey::KeyC,
+        KeyCode::KeyD => InputKey::KeyD,
+        KeyCode::KeyE => InputKey::KeyE,
+        KeyCode::KeyF => InputKey::KeyF,
+        KeyCode::KeyG => InputKey::KeyG,
+        KeyCode::KeyH => InputKey::KeyH,
+        KeyCode::KeyI => InputKey::KeyI,
+        KeyCode::KeyJ => InputKey::KeyJ,
+        KeyCode::KeyK => InputKey::KeyK,
+        KeyCode::KeyL => InputKey::KeyL,
+        KeyCode::KeyM => InputKey::KeyM,
+        KeyCode::KeyN => InputKey::KeyN,
+        KeyCode::KeyO => InputKey::KeyO,
+        KeyCode::KeyP => InputKey::KeyP,
+        KeyCode::KeyQ => InputKey::KeyQ,
+        KeyCode::KeyR => InputKey::KeyR,
+        KeyCode::KeyS => InputKey::KeyS,
+        KeyCode::KeyT => InputKey::KeyT,
+        KeyCode::KeyU => InputKey::KeyU,
+        KeyCode::KeyV => InputKey::KeyV,
+        KeyCode::KeyW => InputKey::KeyW,
+        KeyCode::KeyX => InputKey::KeyX,
+        KeyCode::KeyY => InputKey::KeyY,
+        KeyCode::KeyZ => InputKey::KeyZ,
+        KeyCode::Digit0 => InputKey::Digit0,
+        KeyCode::Digit1 => InputKey::Digit1,
+        KeyCode::Digit2 => InputKey::Digit2,
+        KeyCode::Digit3 => InputKey::Digit3,
+        KeyCode::Digit4 => InputKey::Digit4,
+        KeyCode::Digit5 => InputKey::Digit5,
+        KeyCode::Digit6 => InputKey::Digit6,
+        KeyCode::Digit7 => InputKey::Digit7,
+        KeyCode::Digit8 => InputKey::Digit8,
+        KeyCode::Digit9 => InputKey::Digit9,
+        KeyCode::Space => InputKey::Space,
+        KeyCode::ShiftLeft => InputKey::ShiftLeft,
+        KeyCode::ShiftRight => InputKey::ShiftRight,
+        KeyCode::ControlLeft => InputKey::ControlLeft,
+        KeyCode::ControlRight => InputKey::ControlRight,
+        KeyCode::AltLeft => InputKey::AltLeft,
+        KeyCode::AltRight => InputKey::AltRight,
+        KeyCode::Escape => InputKey::Escape,
+        KeyCode::Enter => InputKey::Enter,
+        KeyCode::Tab => InputKey::Tab,
+        KeyCode::Backspace => InputKey::Backspace,
+        KeyCode::ArrowUp => InputKey::ArrowUp,
+        KeyCode::ArrowDown => InputKey::ArrowDown,
+        KeyCode::ArrowLeft => InputKey::ArrowLeft,
+        KeyCode::ArrowRight => InputKey::ArrowRight,
+        KeyCode::Slash => InputKey::Slash,
+        KeyCode::Backslash => InputKey::Backslash,
+        KeyCode::Minus => InputKey::Minus,
+        KeyCode::Equal => InputKey::Equal,
+        KeyCode::Semicolon => InputKey::Semicolon,
+        KeyCode::Quote => InputKey::Quote,
+        KeyCode::F1 => InputKey::F1,
+        KeyCode::F2 => InputKey::F2,
+        KeyCode::F3 => InputKey::F3,
+        KeyCode::F4 => InputKey::F4,
+        KeyCode::F5 => InputKey::F5,
+        KeyCode::F6 => InputKey::F6,
+        KeyCode::F7 => InputKey::F7,
+        KeyCode::F8 => InputKey::F8,
+        KeyCode::F9 => InputKey::F9,
+        KeyCode::F10 => InputKey::F10,
+        KeyCode::F11 => InputKey::F11,
+        KeyCode::F12 => InputKey::F12,
+        _ => InputKey::None,
+    }
 }
 
 #[repr(C)]
@@ -2809,6 +2887,19 @@ impl App {
                                 .send(Lane::Control, Payload::Msg(cancel_msg));
                         }
                     },
+                    S2cMessage::GameMode(gm_msg) => {
+                        let caps = PlayerCapabilities::from_wire(
+                            gm_msg.game_mode,
+                            gm_msg.flags,
+                            gm_msg.fly_speed,
+                            gm_msg.walk_speed,
+                            gm_msg.reach_distance,
+                        );
+                        self.physics.set_capabilities(caps);
+                        let mode_key = self.physics.game_mode.translation_key();
+                        self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
+                        self.hud_state.is_flying = self.physics.flying;
+                    }
                     _ => {}
                 },
             }
@@ -3144,15 +3235,10 @@ impl App {
             hotbar: self.selected_hotbar_slot as u8,
         };
 
-        let mode = match self.physics.game_mode {
-            GameMode::Survival => MoveMode::Walk,
-            GameMode::Creative => {
-                if self.physics.flying {
-                    MoveMode::NoClipFly
-                } else {
-                    MoveMode::Walk
-                }
-            }
+        let mode = if self.physics.flying || self.physics.capabilities.noclip {
+            MoveMode::NoClipFly
+        } else {
+            MoveMode::Walk
         };
 
         self.prediction.push_and_predict(frame, mode, 0.05);
@@ -3198,15 +3284,10 @@ impl App {
             });
             let _ = self.client_conn.send(Lane::Control, Payload::Msg(tp_ack));
         } else {
-            let mode = match self.physics.game_mode {
-                GameMode::Survival => MoveMode::Walk,
-                GameMode::Creative => {
-                    if self.physics.flying {
-                        MoveMode::NoClipFly
-                    } else {
-                        MoveMode::Walk
-                    }
-                }
+            let mode = if self.physics.flying || self.physics.capabilities.noclip {
+                MoveMode::NoClipFly
+            } else {
+                MoveMode::Walk
             };
             if let Some(reconciliation) = self.prediction.reconcile(&ack, mode, 0.05) {
                 self.smoothing
@@ -3778,10 +3859,7 @@ impl App {
                     },
                 );
                 self.camera.position = self.physics.eye_pos();
-                let mode_key = match self.physics.game_mode {
-                    GameMode::Survival => "gameMode.survival",
-                    GameMode::Creative => "gameMode.creative",
-                };
+                let mode_key = self.physics.game_mode.translation_key();
                 self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
                 self.hud_state.is_flying = self.physics.flying;
 
@@ -3954,7 +4032,7 @@ impl App {
         // Voxel DDA Raycast for block aiming & selection
         let origin = self.camera.position;
         let forward = self.camera.forward();
-        let max_reach = 5.0;
+        let max_reach = self.physics.capabilities.reach_distance;
         let is_solid = |pos: BlockPos| -> bool {
             let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(pos);
             if let Some(snap) = self.chunks.get(&chunk_pos) {
@@ -3967,7 +4045,11 @@ impl App {
                 false
             }
         };
-        self.targeted_block = raycast_voxels(origin, forward, max_reach, is_solid);
+        self.targeted_block = if max_reach > 0.0 {
+            raycast_voxels(origin, forward, max_reach, is_solid)
+        } else {
+            None
+        };
 
         self.total_frames += 1;
         self.frame_counter += 1;
@@ -8617,6 +8699,15 @@ impl ApplicationHandler for App {
                     }
                     AppScreen::Settings { return_to_pause } => {
                         let to_pause = *return_to_pause;
+                        if button == MouseButton::Right && self.settings_screen.is_rebinding() {
+                            self.settings_screen.cancel_rebinding();
+                            self.settings_screen.update_layout_i18n(
+                                width_gui,
+                                height_gui,
+                                &self.catalog,
+                            );
+                            return;
+                        }
                         if button == MouseButton::Left {
                             let old_lang = self.settings_screen.settings.gameplay.language.clone();
                             let done = self.settings_screen.handle_mouse_click_i18n(
@@ -8857,6 +8948,10 @@ impl ApplicationHandler for App {
                                 return;
                             }
 
+                            if !self.physics.capabilities.can_build {
+                                return;
+                            }
+
                             if let Some(hit) = self.targeted_block {
                                 self.action_sequence += 1;
                                 let msg = C2sMessage::BlockAction(C2sBlockAction {
@@ -8972,6 +9067,10 @@ impl ApplicationHandler for App {
                                         hit.pos.z() as f32 + 0.5,
                                     );
                                     self.audio.play_procedural_place(hit_pos_f, 1.25);
+                                    return;
+                                }
+
+                                if !self.physics.capabilities.can_build {
                                     return;
                                 }
 
@@ -9125,32 +9224,59 @@ impl ApplicationHandler for App {
                     }
                     AppScreen::Settings { return_to_pause } => {
                         let to_pause = *return_to_pause;
-                        if pressed && code == KeyCode::Escape {
-                            self.game_settings = self.settings_screen.settings.clone();
-                            self.catalog
-                                .set_active_locale(&self.game_settings.gameplay.language);
-                            let _ = self.game_settings.save(&self.settings_path);
-                            if to_pause {
-                                self.current_screen = AppScreen::InGame;
-                                self.is_paused = true;
-                                #[allow(clippy::cast_possible_truncation)]
-                                let settings_msg = C2sMessage::ClientSettings(C2sClientSettings {
-                                    view_distance: self.game_settings.video.view_distance as u16,
-                                    simulation_distance: self
-                                        .game_settings
-                                        .video
-                                        .simulation_distance
-                                        as u16,
-                                    locale: BoundedString::new(
-                                        &self.game_settings.gameplay.language,
-                                    )
-                                    .unwrap_or_else(|_| BoundedString::new("en_US").unwrap()),
-                                });
-                                let _ = self
-                                    .client_conn
-                                    .send(Lane::Control, Payload::Msg(settings_msg));
-                            } else {
-                                self.current_screen = AppScreen::MainMenu;
+                        if pressed {
+                            if self.settings_screen.is_rebinding() {
+                                let key = key_code_to_input_key(code);
+                                if code == KeyCode::Escape || key == InputKey::Escape {
+                                    self.settings_screen.cancel_rebinding();
+                                } else if key != InputKey::None {
+                                    self.settings_screen.handle_key_input(key);
+                                    self.game_settings = self.settings_screen.settings.clone();
+                                    let _ = self.game_settings.save(&self.settings_path);
+                                }
+                                let win_size = self.window_size();
+                                let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                                let width_gui = win_size.width as f32 / gui_scale as f32;
+                                let height_gui = win_size.height as f32 / gui_scale as f32;
+                                self.settings_screen.update_layout_i18n(
+                                    width_gui,
+                                    height_gui,
+                                    &self.catalog,
+                                );
+                                return;
+                            }
+
+                            if code == KeyCode::Escape {
+                                self.game_settings = self.settings_screen.settings.clone();
+                                self.catalog
+                                    .set_active_locale(&self.game_settings.gameplay.language);
+                                let _ = self.game_settings.save(&self.settings_path);
+                                if to_pause {
+                                    self.current_screen = AppScreen::InGame;
+                                    self.is_paused = true;
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let settings_msg =
+                                        C2sMessage::ClientSettings(C2sClientSettings {
+                                            view_distance: self.game_settings.video.view_distance
+                                                as u16,
+                                            simulation_distance: self
+                                                .game_settings
+                                                .video
+                                                .simulation_distance
+                                                as u16,
+                                            locale: BoundedString::new(
+                                                &self.game_settings.gameplay.language,
+                                            )
+                                            .unwrap_or_else(|_| {
+                                                BoundedString::new("en_US").unwrap()
+                                            }),
+                                        });
+                                    let _ = self
+                                        .client_conn
+                                        .send(Lane::Control, Payload::Msg(settings_msg));
+                                } else {
+                                    self.current_screen = AppScreen::MainMenu;
+                                }
                             }
                         }
                         return;
@@ -9259,67 +9385,118 @@ impl ApplicationHandler for App {
                 }
 
                 if self.container_state.is_some() {
-                    match code {
-                        KeyCode::KeyE | KeyCode::Escape if pressed => {
-                            self.close_active_container();
+                    let key = key_code_to_input_key(code);
+                    let kb = &self.game_settings.controls.keybinds;
+                    if pressed && (code == KeyCode::Escape || kb.matches(KeyAction::Inventory, key))
+                    {
+                        self.close_active_container();
+                        return;
+                    }
+                    if pressed {
+                        if kb.matches(KeyAction::Hotbar1, key) || code == KeyCode::Digit1 {
+                            self.handle_container_swap_hotbar(0);
+                        } else if kb.matches(KeyAction::Hotbar2, key) || code == KeyCode::Digit2 {
+                            self.handle_container_swap_hotbar(1);
+                        } else if kb.matches(KeyAction::Hotbar3, key) || code == KeyCode::Digit3 {
+                            self.handle_container_swap_hotbar(2);
+                        } else if kb.matches(KeyAction::Hotbar4, key) || code == KeyCode::Digit4 {
+                            self.handle_container_swap_hotbar(3);
+                        } else if kb.matches(KeyAction::Hotbar5, key) || code == KeyCode::Digit5 {
+                            self.handle_container_swap_hotbar(4);
+                        } else if kb.matches(KeyAction::Hotbar6, key) || code == KeyCode::Digit6 {
+                            self.handle_container_swap_hotbar(5);
+                        } else if kb.matches(KeyAction::Hotbar7, key) || code == KeyCode::Digit7 {
+                            self.handle_container_swap_hotbar(6);
+                        } else if kb.matches(KeyAction::Hotbar8, key) || code == KeyCode::Digit8 {
+                            self.handle_container_swap_hotbar(7);
+                        } else if kb.matches(KeyAction::Hotbar9, key) || code == KeyCode::Digit9 {
+                            self.handle_container_swap_hotbar(8);
                         }
-                        KeyCode::Digit1 if pressed => self.handle_container_swap_hotbar(0),
-                        KeyCode::Digit2 if pressed => self.handle_container_swap_hotbar(1),
-                        KeyCode::Digit3 if pressed => self.handle_container_swap_hotbar(2),
-                        KeyCode::Digit4 if pressed => self.handle_container_swap_hotbar(3),
-                        KeyCode::Digit5 if pressed => self.handle_container_swap_hotbar(4),
-                        KeyCode::Digit6 if pressed => self.handle_container_swap_hotbar(5),
-                        KeyCode::Digit7 if pressed => self.handle_container_swap_hotbar(6),
-                        KeyCode::Digit8 if pressed => self.handle_container_swap_hotbar(7),
-                        KeyCode::Digit9 if pressed => self.handle_container_swap_hotbar(8),
-                        _ => {}
                     }
                     return;
                 }
 
                 if self.inventory_open {
-                    match code {
-                        KeyCode::KeyE | KeyCode::Escape if pressed => {
-                            self.inventory_open = false;
-                            self.controller.mouse_captured = true;
-                            self.set_cursor_captured(true);
-                            self.inventory_hovered_slot = None;
-                        }
-                        KeyCode::Digit1 if pressed => self.handle_inventory_swap_hotbar(0),
-                        KeyCode::Digit2 if pressed => self.handle_inventory_swap_hotbar(1),
-                        KeyCode::Digit3 if pressed => self.handle_inventory_swap_hotbar(2),
-                        KeyCode::Digit4 if pressed => self.handle_inventory_swap_hotbar(3),
-                        KeyCode::Digit5 if pressed => self.handle_inventory_swap_hotbar(4),
-                        KeyCode::Digit6 if pressed => self.handle_inventory_swap_hotbar(5),
-                        KeyCode::Digit7 if pressed => self.handle_inventory_swap_hotbar(6),
-                        KeyCode::Digit8 if pressed => self.handle_inventory_swap_hotbar(7),
-                        KeyCode::Digit9 if pressed => self.handle_inventory_swap_hotbar(8),
-                        KeyCode::KeyQ if pressed => {
-                            if let Some(hovered) = self.inventory_hovered_slot {
-                                if hovered < 9 {
-                                    self.selected_hotbar_slot = hovered;
-                                }
-                                let entire_stack = self.controller.sprint;
-                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                                    command: PlayerCommandKind::DropItem { entire_stack },
-                                });
-                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                    let key = key_code_to_input_key(code);
+                    let kb = &self.game_settings.controls.keybinds;
+                    if pressed && (code == KeyCode::Escape || kb.matches(KeyAction::Inventory, key))
+                    {
+                        self.inventory_open = false;
+                        self.controller.mouse_captured = true;
+                        self.set_cursor_captured(true);
+                        self.inventory_hovered_slot = None;
+                        return;
+                    }
+                    if pressed && kb.matches(KeyAction::Drop, key) {
+                        if let Some(hovered) = self.inventory_hovered_slot {
+                            if hovered < 9 {
+                                self.selected_hotbar_slot = hovered;
                             }
+                            let entire_stack = self.controller.sprint;
+                            let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                command: PlayerCommandKind::DropItem { entire_stack },
+                            });
+                            let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                         }
-                        _ => {}
+                        return;
+                    }
+                    if pressed {
+                        if kb.matches(KeyAction::Hotbar1, key) || code == KeyCode::Digit1 {
+                            self.handle_inventory_swap_hotbar(0);
+                        } else if kb.matches(KeyAction::Hotbar2, key) || code == KeyCode::Digit2 {
+                            self.handle_inventory_swap_hotbar(1);
+                        } else if kb.matches(KeyAction::Hotbar3, key) || code == KeyCode::Digit3 {
+                            self.handle_inventory_swap_hotbar(2);
+                        } else if kb.matches(KeyAction::Hotbar4, key) || code == KeyCode::Digit4 {
+                            self.handle_inventory_swap_hotbar(3);
+                        } else if kb.matches(KeyAction::Hotbar5, key) || code == KeyCode::Digit5 {
+                            self.handle_inventory_swap_hotbar(4);
+                        } else if kb.matches(KeyAction::Hotbar6, key) || code == KeyCode::Digit6 {
+                            self.handle_inventory_swap_hotbar(5);
+                        } else if kb.matches(KeyAction::Hotbar7, key) || code == KeyCode::Digit7 {
+                            self.handle_inventory_swap_hotbar(6);
+                        } else if kb.matches(KeyAction::Hotbar8, key) || code == KeyCode::Digit8 {
+                            self.handle_inventory_swap_hotbar(7);
+                        } else if kb.matches(KeyAction::Hotbar9, key) || code == KeyCode::Digit9 {
+                            self.handle_inventory_swap_hotbar(8);
+                        }
                     }
                     return;
                 }
 
-                match code {
-                    KeyCode::KeyQ if pressed => {
+                let key = key_code_to_input_key(code);
+                let kb = &self.game_settings.controls.keybinds;
+
+                if kb.matches(KeyAction::Forward, key) {
+                    self.controller.forward = pressed;
+                }
+                if kb.matches(KeyAction::Backward, key) {
+                    self.controller.backward = pressed;
+                }
+                if kb.matches(KeyAction::Left, key) {
+                    self.controller.left = pressed;
+                }
+                if kb.matches(KeyAction::Right, key) {
+                    self.controller.right = pressed;
+                }
+                if kb.matches(KeyAction::Jump, key) {
+                    self.controller.up = pressed;
+                }
+                if kb.matches(KeyAction::Sneak, key) {
+                    self.controller.down = pressed;
+                }
+                if kb.matches(KeyAction::Sprint, key) {
+                    self.controller.sprint = pressed;
+                }
+
+                if pressed {
+                    if kb.matches(KeyAction::Drop, key) {
                         let entire_stack = self.controller.sprint;
                         let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
                             command: PlayerCommandKind::DropItem { entire_stack },
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                    }
-                    KeyCode::KeyE if pressed => {
+                    } else if kb.matches(KeyAction::Inventory, key) {
                         self.inventory_open = true;
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -9337,8 +9514,7 @@ impl ApplicationHandler for App {
                             win_size.height,
                             gui_scale,
                         );
-                    }
-                    KeyCode::KeyT if pressed => {
+                    } else if kb.matches(KeyAction::Chat, key) {
                         self.chat_state.open(None);
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -9348,8 +9524,7 @@ impl ApplicationHandler for App {
                         self.controller.right = false;
                         self.controller.up = false;
                         self.controller.down = false;
-                    }
-                    KeyCode::Slash if pressed => {
+                    } else if kb.matches(KeyAction::Command, key) {
                         self.chat_state.open(Some("/"));
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -9360,43 +9535,34 @@ impl ApplicationHandler for App {
                         self.controller.up = false;
                         self.controller.down = false;
                         self.request_command_suggestions();
-                    }
-                    KeyCode::KeyW => self.controller.forward = pressed,
-                    KeyCode::KeyS => self.controller.backward = pressed,
-                    KeyCode::KeyA => self.controller.left = pressed,
-                    KeyCode::KeyD => self.controller.right = pressed,
-                    KeyCode::Space => self.controller.up = pressed,
-                    KeyCode::ShiftLeft | KeyCode::ShiftRight => self.controller.down = pressed,
-                    KeyCode::ControlLeft | KeyCode::ControlRight => {
-                        self.controller.sprint = pressed;
-                    }
-                    KeyCode::Digit1 if pressed => self.select_hotbar_slot(0),
-                    KeyCode::Digit2 if pressed => self.select_hotbar_slot(1),
-                    KeyCode::Digit3 if pressed => self.select_hotbar_slot(2),
-                    KeyCode::Digit4 if pressed => self.select_hotbar_slot(3),
-                    KeyCode::Digit5 if pressed => self.select_hotbar_slot(4),
-                    KeyCode::Digit6 if pressed => self.select_hotbar_slot(5),
-                    KeyCode::Digit7 if pressed => self.select_hotbar_slot(6),
-                    KeyCode::Digit8 if pressed => self.select_hotbar_slot(7),
-                    KeyCode::Digit9 if pressed => self.select_hotbar_slot(8),
-                    KeyCode::F2 if pressed => {
+                    } else if kb.matches(KeyAction::Hotbar1, key) || code == KeyCode::Digit1 {
+                        self.select_hotbar_slot(0);
+                    } else if kb.matches(KeyAction::Hotbar2, key) || code == KeyCode::Digit2 {
+                        self.select_hotbar_slot(1);
+                    } else if kb.matches(KeyAction::Hotbar3, key) || code == KeyCode::Digit3 {
+                        self.select_hotbar_slot(2);
+                    } else if kb.matches(KeyAction::Hotbar4, key) || code == KeyCode::Digit4 {
+                        self.select_hotbar_slot(3);
+                    } else if kb.matches(KeyAction::Hotbar5, key) || code == KeyCode::Digit5 {
+                        self.select_hotbar_slot(4);
+                    } else if kb.matches(KeyAction::Hotbar6, key) || code == KeyCode::Digit6 {
+                        self.select_hotbar_slot(5);
+                    } else if kb.matches(KeyAction::Hotbar7, key) || code == KeyCode::Digit7 {
+                        self.select_hotbar_slot(6);
+                    } else if kb.matches(KeyAction::Hotbar8, key) || code == KeyCode::Digit8 {
+                        self.select_hotbar_slot(7);
+                    } else if kb.matches(KeyAction::Hotbar9, key) || code == KeyCode::Digit9 {
+                        self.select_hotbar_slot(8);
+                    } else if kb.matches(KeyAction::Screenshot, key) {
                         self.manual_screenshot_requested = true;
                         info!("Screenshot requested (F2)");
-                    }
-                    KeyCode::F3 if pressed => {
+                    } else if kb.matches(KeyAction::ToggleF3, key) {
                         self.hud_state.f3_open = !self.hud_state.f3_open;
                         info!(f3_open = self.hud_state.f3_open, "Toggled F3 debug overlay");
-                    }
-                    KeyCode::F4 if pressed => {
+                    } else if kb.matches(KeyAction::ToggleGameMode, key) {
                         let next_mode = self.physics.toggle_game_mode();
-                        let mode_u8 = match next_mode {
-                            GameMode::Survival => 0u8,
-                            GameMode::Creative => 1u8,
-                        };
-                        let mode_key = match next_mode {
-                            GameMode::Survival => "gameMode.survival",
-                            GameMode::Creative => "gameMode.creative",
-                        };
+                        let mode_u8 = next_mode.id();
+                        let mode_key = next_mode.translation_key();
                         self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
                         self.hud_state.is_flying = self.physics.flying;
                         let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
@@ -9404,8 +9570,7 @@ impl ApplicationHandler for App {
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                         info!(?next_mode, "Toggled game mode (F4)");
-                    }
-                    KeyCode::F5 if pressed => {
+                    } else if kb.matches(KeyAction::ReloadShaders, key) {
                         if let (Some(gpu_context), Some(pp)) =
                             (&self.gpu_context, &mut self.postprocess)
                         {
@@ -9431,95 +9596,99 @@ impl ApplicationHandler for App {
                                 tracing::warn!("Shaders directory not found for hot-reload");
                             }
                         }
+                    } else {
+                        match code {
+                            KeyCode::F7 => {
+                                let next_kind = if self.weather_rain_level < 0.1
+                                    && self.weather_thunder_level < 0.1
+                                {
+                                    1u8 // Rain
+                                } else if self.weather_thunder_level < 0.1 {
+                                    2u8 // Thunder
+                                } else {
+                                    0u8 // Clear
+                                };
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::SetWeather(next_kind),
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!(next_weather = next_kind, "Sent toggle weather command");
+                            }
+                            KeyCode::F8 => {
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::TriggerLightning,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!("Sent trigger lightning command");
+                            }
+                            KeyCode::F9 => {
+                                let mob_type = self.mob_spawn_type_cycle;
+                                self.mob_spawn_type_cycle = match self.mob_spawn_type_cycle {
+                                    1 => 2, // Zombie -> Pig
+                                    2 => 3, // Pig -> Cow
+                                    _ => 1, // Cow -> Zombie
+                                };
+                                let origin = self.camera.position;
+                                let forward = self.camera.forward();
+                                let spawn_pos = origin + forward * 3.0;
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::SpawnMob {
+                                        mob_type,
+                                        x: f64::from(spawn_pos.x),
+                                        y: f64::from(spawn_pos.y),
+                                        z: f64::from(spawn_pos.z),
+                                    },
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!(
+                                    mob_type,
+                                    next_cycle = self.mob_spawn_type_cycle,
+                                    "Sent spawn mob command (F9)"
+                                );
+                            }
+                            KeyCode::F10 => {
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::ClearMobs,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!("Sent clear mobs command (F10)");
+                            }
+                            KeyCode::KeyK => {
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::Damage(2.0),
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!("Sent test damage command (2.0 HP)");
+                            }
+                            KeyCode::KeyJ => {
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::AddXp(50),
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!("Sent test add XP command (50 XP)");
+                            }
+                            KeyCode::KeyL => {
+                                let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::SetFood(6),
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                                info!("Sent test set food command (6 food)");
+                            }
+                            KeyCode::Escape => {
+                                self.is_paused = true;
+                                self.controller.mouse_captured = false;
+                                self.set_cursor_captured(false);
+                                self.controller.forward = false;
+                                self.controller.backward = false;
+                                self.controller.left = false;
+                                self.controller.right = false;
+                                self.controller.up = false;
+                                self.controller.down = false;
+                                self.controller.sprint = false;
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::F7 if pressed => {
-                        let next_kind =
-                            if self.weather_rain_level < 0.1 && self.weather_thunder_level < 0.1 {
-                                1u8 // Rain
-                            } else if self.weather_thunder_level < 0.1 {
-                                2u8 // Thunder
-                            } else {
-                                0u8 // Clear
-                            };
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::SetWeather(next_kind),
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!(next_weather = next_kind, "Sent toggle weather command");
-                    }
-                    KeyCode::F8 if pressed => {
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::TriggerLightning,
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!("Sent trigger lightning command");
-                    }
-                    KeyCode::F9 if pressed => {
-                        let mob_type = self.mob_spawn_type_cycle;
-                        self.mob_spawn_type_cycle = match self.mob_spawn_type_cycle {
-                            1 => 2, // Zombie -> Pig
-                            2 => 3, // Pig -> Cow
-                            _ => 1, // Cow -> Zombie
-                        };
-                        let origin = self.camera.position;
-                        let forward = self.camera.forward();
-                        let spawn_pos = origin + forward * 3.0;
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::SpawnMob {
-                                mob_type,
-                                x: f64::from(spawn_pos.x),
-                                y: f64::from(spawn_pos.y),
-                                z: f64::from(spawn_pos.z),
-                            },
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!(
-                            mob_type,
-                            next_cycle = self.mob_spawn_type_cycle,
-                            "Sent spawn mob command (F9)"
-                        );
-                    }
-                    KeyCode::F10 if pressed => {
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::ClearMobs,
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!("Sent clear mobs command (F10)");
-                    }
-                    KeyCode::KeyK if pressed => {
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::Damage(2.0),
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!("Sent test damage command (2.0 HP)");
-                    }
-                    KeyCode::KeyJ if pressed => {
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::AddXp(50),
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!("Sent test add XP command (50 XP)");
-                    }
-                    KeyCode::KeyL if pressed => {
-                        let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
-                            command: PlayerCommandKind::SetFood(6),
-                        });
-                        let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
-                        info!("Sent test set food command (6 food)");
-                    }
-                    KeyCode::Escape if pressed => {
-                        self.is_paused = true;
-                        self.controller.mouse_captured = false;
-                        self.set_cursor_captured(false);
-                        self.controller.forward = false;
-                        self.controller.backward = false;
-                        self.controller.left = false;
-                        self.controller.right = false;
-                        self.controller.up = false;
-                        self.controller.down = false;
-                        self.controller.sprint = false;
-                    }
-                    _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -9530,6 +9699,16 @@ impl ApplicationHandler for App {
                 };
                 if let Some(form) = &mut self.active_modal_form {
                     form.handle_scroll(scroll);
+                    return;
+                }
+                if matches!(self.current_screen, AppScreen::Settings { .. }) {
+                    let win_size = self.window_size();
+                    let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                    let width_gui = win_size.width as f32 / gui_scale as f32;
+                    let height_gui = win_size.height as f32 / gui_scale as f32;
+                    self.settings_screen.handle_mouse_wheel(scroll);
+                    self.settings_screen
+                        .update_layout_i18n(width_gui, height_gui, &self.catalog);
                     return;
                 }
                 if self.current_screen == AppScreen::WorldSelect {
