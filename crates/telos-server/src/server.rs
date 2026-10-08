@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use telos_content::{
     FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order,
+    schema::RecipeDef,
 };
 use telos_core::coords::{BlockPos, ChunkPos, Face};
 use telos_core::form::{FormResponseData, ModalFormData};
@@ -20,15 +21,16 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
     C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse,
-    C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomItemDefWire,
+    C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire, CustomFuelWire,
+    CustomItemDefWire, CustomShapedRecipeWire, CustomShapelessRecipeWire, CustomSmeltingRecipeWire,
     LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
     S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
     S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
     S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
     S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
-    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cParticleEvent, S2cPlayerMovementAck, S2cRecipeManifest, S2cRegistryData, S2cSpawnArrow,
+    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
     S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
@@ -304,6 +306,76 @@ impl Server {
 
         let event_queue = EventQueue::default();
 
+        let mut smelting_recipes = telos_sim::SmeltingRegistry::standard();
+        let mut fuel_registry = telos_sim::FuelRegistry::standard();
+        let mut recipe_registry = telos_sim::RecipeRegistry::standard();
+
+        for (_ident, recipe_def) in registries.custom_recipes() {
+            match recipe_def {
+                RecipeDef::Shaped(s) => {
+                    if let Ok((
+                        width,
+                        height,
+                        pattern,
+                        (result_item, result_count),
+                        mirrored,
+                        remainder,
+                    )) = s.resolve(registries.item_registry())
+                    {
+                        let mut shaped = telos_sim::ShapedRecipe::new_mirrored(
+                            width,
+                            height,
+                            pattern,
+                            telos_sim::ItemStack::new(result_item, result_count),
+                            mirrored,
+                        );
+                        shaped.remainder_item = remainder;
+                        recipe_registry.register_shaped(shaped);
+                    }
+                }
+                RecipeDef::Shapeless(s) => {
+                    if let Ok((ingredients, (result_item, result_count), remainder)) =
+                        s.resolve(registries.item_registry())
+                    {
+                        let mut shapeless = telos_sim::ShapelessRecipe::new(
+                            ingredients,
+                            telos_sim::ItemStack::new(result_item, result_count),
+                        );
+                        shapeless.remainder_item = remainder;
+                        recipe_registry.register_shapeless(shapeless);
+                    }
+                }
+                RecipeDef::Smelting(s) => {
+                    if let Ok((
+                        input_item,
+                        (output_item, output_count),
+                        cook_duration,
+                        experience,
+                    )) = s.resolve(registries.item_registry())
+                    {
+                        smelting_recipes.register(telos_sim::SmeltingRecipe {
+                            input_item,
+                            output_item,
+                            output_count,
+                            cook_duration,
+                            experience,
+                        });
+                    }
+                }
+                RecipeDef::Fuel(f) => {
+                    if let Ok((item_id, duration)) = f.resolve(registries.item_registry()) {
+                        fuel_registry.register(item_id, duration);
+                    }
+                }
+            }
+        }
+
+        for (_ident, fuel_def) in registries.custom_fuels() {
+            if let Ok((item_id, duration)) = fuel_def.resolve(registries.item_registry()) {
+                fuel_registry.register(item_id, duration);
+            }
+        }
+
         Self {
             config,
             worlds,
@@ -331,9 +403,9 @@ impl Server {
             event_queue,
             listener: None,
             lan_emitter,
-            smelting_recipes: telos_sim::SmeltingRegistry::standard(),
-            fuel_registry: telos_sim::FuelRegistry::standard(),
-            recipe_registry: telos_sim::RecipeRegistry::standard(),
+            smelting_recipes,
+            fuel_registry,
+            recipe_registry,
             advancement_registry: Arc::new(telos_sim::AdvancementRegistry::standard()),
             arrow_origins: HashMap::new(),
             next_form_id: 1,
@@ -2131,6 +2203,24 @@ impl Server {
         self.sessions.get_mut(&id)
     }
 
+    /// Returns a reference to the inventory component of the player in `session_id`.
+    #[must_use]
+    pub fn player_inventory(&self, session_id: u64) -> Option<&Inventory> {
+        let session = self.sessions.get(&session_id)?;
+        let entity = session.ecs_entity?;
+        self.ecs_world.get::<Inventory>(entity)
+    }
+
+    /// Returns a mutable reference to the inventory component of the player in `session_id`.
+    pub fn player_inventory_mut(
+        &mut self,
+        session_id: u64,
+    ) -> Option<bevy_ecs::world::Mut<'_, Inventory>> {
+        let session = self.sessions.get(&session_id)?;
+        let entity = session.ecs_entity?;
+        self.ecs_world.get_mut::<Inventory>(entity)
+    }
+
     /// Registers a new incoming connection and returns its unique `session_id`.
     pub fn add_connection(&mut self, conn: Box<dyn Connection<S2cMessage, C2sMessage>>) -> u64 {
         let session_id = self.next_session_id;
@@ -2330,6 +2420,123 @@ impl Server {
                                     let _ = session
                                         .connection
                                         .send(Lane::Control, Payload::Msg(manifest_msg));
+                                }
+                            }
+
+                            // If custom recipes or fuels exist, send S2cRecipeManifest before ConfigDone
+                            let custom_recipes = self.registries.custom_recipes();
+                            let custom_fuels = self.registries.custom_fuels();
+                            if !custom_recipes.is_empty() || !custom_fuels.is_empty() {
+                                let mut shaped_wires = Vec::new();
+                                let mut shapeless_wires = Vec::new();
+                                let mut smelting_wires = Vec::new();
+                                let mut fuel_wires = Vec::new();
+
+                                for (_ident, r) in custom_recipes {
+                                    match r {
+                                        RecipeDef::Shaped(s) => {
+                                            #[allow(clippy::collapsible_if)]
+                                            if let Ok((
+                                                width,
+                                                height,
+                                                pattern,
+                                                (result_item, result_count),
+                                                mirrored,
+                                                remainder,
+                                            )) = s.resolve(self.registries.item_registry())
+                                            {
+                                                if let Ok(pattern) = BoundedVec::new(pattern) {
+                                                    shaped_wires.push(CustomShapedRecipeWire {
+                                                        width: width as u8,
+                                                        height: height as u8,
+                                                        pattern,
+                                                        result_item,
+                                                        result_count,
+                                                        mirrored,
+                                                        remainder_item: remainder.unwrap_or(0),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        RecipeDef::Shapeless(s) => {
+                                            #[allow(clippy::collapsible_if)]
+                                            if let Ok((
+                                                ingredients,
+                                                (result_item, result_count),
+                                                remainder,
+                                            )) = s.resolve(self.registries.item_registry())
+                                            {
+                                                if let Ok(ingredients) =
+                                                    BoundedVec::new(ingredients)
+                                                {
+                                                    shapeless_wires.push(
+                                                        CustomShapelessRecipeWire {
+                                                            ingredients,
+                                                            result_item,
+                                                            result_count,
+                                                            remainder_item: remainder.unwrap_or(0),
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        RecipeDef::Smelting(s) => {
+                                            if let Ok((
+                                                input_item,
+                                                (output_item, output_count),
+                                                cook_duration,
+                                                experience,
+                                            )) = s.resolve(self.registries.item_registry())
+                                            {
+                                                smelting_wires.push(CustomSmeltingRecipeWire {
+                                                    input_item,
+                                                    output_item,
+                                                    output_count,
+                                                    cook_duration,
+                                                    experience,
+                                                });
+                                            }
+                                        }
+                                        RecipeDef::Fuel(f) => {
+                                            if let Ok((item_id, burn_duration_ticks)) =
+                                                f.resolve(self.registries.item_registry())
+                                            {
+                                                fuel_wires.push(CustomFuelWire {
+                                                    item_id,
+                                                    burn_duration_ticks,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+
+                                for (_ident, f) in custom_fuels {
+                                    if let Ok((item_id, burn_duration_ticks)) =
+                                        f.resolve(self.registries.item_registry())
+                                    {
+                                        fuel_wires.push(CustomFuelWire {
+                                            item_id,
+                                            burn_duration_ticks,
+                                        });
+                                    }
+                                }
+
+                                if let (Ok(sw), Ok(slw), Ok(smw), Ok(fw)) = (
+                                    BoundedVec::new(shaped_wires),
+                                    BoundedVec::new(shapeless_wires),
+                                    BoundedVec::new(smelting_wires),
+                                    BoundedVec::new(fuel_wires),
+                                ) {
+                                    let recipe_manifest =
+                                        S2cMessage::RecipeManifest(S2cRecipeManifest {
+                                            shaped_recipes: sw,
+                                            shapeless_recipes: slw,
+                                            smelting_recipes: smw,
+                                            fuels: fw,
+                                        });
+                                    let _ = session
+                                        .connection
+                                        .send(Lane::Control, Payload::Msg(recipe_manifest));
                                 }
                             }
 
@@ -3857,7 +4064,15 @@ impl Server {
                         }
                     }
                 }
-            } else if telos_sim::inventory_click(&mut inv, slot_idx, button, mode).is_ok() {
+            } else if telos_sim::inventory_click_with_registry(
+                &mut inv,
+                slot_idx,
+                button,
+                mode,
+                &self.recipe_registry,
+            )
+            .is_ok()
+            {
                 let mut slot_vec = Vec::with_capacity(inv.slots.len());
                 for slot in &inv.slots {
                     slot_vec.push(SlotData {

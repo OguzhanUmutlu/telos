@@ -2248,7 +2248,7 @@ impl App {
                 .client_conn
                 .send(Lane::Control, Payload::Msg(click_msg));
             self.inventory_sim.selected_slot = hotbar_idx;
-            let _ = telos_sim::inventory_click(
+            let _ = telos_sim::inventory_click_with_registry(
                 &mut self.inventory_sim,
                 hovered,
                 if hotbar_idx == 0 {
@@ -2257,6 +2257,7 @@ impl App {
                     telos_sim::ClickButton::Left
                 },
                 telos_sim::ClickMode::SwapHotbar,
+                &self.recipe_registry,
             );
             self.selected_block_state = BlockStateId::new(self.inventory_sim.selected_item().item);
         }
@@ -2546,6 +2547,51 @@ impl App {
                                 name = wire_item.name.as_str(),
                                 "Registered server custom item"
                             );
+                        }
+                    }
+                    S2cMessage::RecipeManifest(manifest) => {
+                        info!(
+                            shaped = manifest.shaped_recipes.len(),
+                            shapeless = manifest.shapeless_recipes.len(),
+                            smelting = manifest.smelting_recipes.len(),
+                            fuels = manifest.fuels.len(),
+                            "Received server recipe manifest, registering dynamic recipes..."
+                        );
+                        for r in manifest.shaped_recipes.iter() {
+                            let mut shaped = telos_sim::ShapedRecipe::new_mirrored(
+                                r.width as usize,
+                                r.height as usize,
+                                r.pattern.to_vec(),
+                                telos_sim::ItemStack::new(r.result_item, r.result_count),
+                                r.mirrored,
+                            );
+                            if r.remainder_item > 0 {
+                                shaped.remainder_item = Some(r.remainder_item);
+                            }
+                            self.recipe_registry.register_shaped(shaped);
+                        }
+                        for r in manifest.shapeless_recipes.iter() {
+                            let mut shapeless = telos_sim::ShapelessRecipe::new(
+                                r.ingredients.to_vec(),
+                                telos_sim::ItemStack::new(r.result_item, r.result_count),
+                            );
+                            if r.remainder_item > 0 {
+                                shapeless.remainder_item = Some(r.remainder_item);
+                            }
+                            self.recipe_registry.register_shapeless(shapeless);
+                        }
+                        for r in manifest.smelting_recipes.iter() {
+                            self.smelting_registry.register(telos_sim::SmeltingRecipe {
+                                input_item: r.input_item,
+                                output_item: r.output_item,
+                                output_count: r.output_count,
+                                cook_duration: r.cook_duration,
+                                experience: r.experience,
+                            });
+                        }
+                        for f in manifest.fuels.iter() {
+                            self.fuel_registry
+                                .register(f.item_id, f.burn_duration_ticks);
                         }
                     }
                     S2cMessage::ConfigDone(_) => {
@@ -9229,11 +9275,12 @@ impl ApplicationHandler for App {
                         } else {
                             telos_sim::ClickMode::Pickup
                         };
-                        let _ = telos_sim::inventory_click(
+                        let _ = telos_sim::inventory_click_with_registry(
                             &mut self.inventory_sim,
                             hovered,
                             btn_sim,
                             mode_sim,
+                            &self.recipe_registry,
                         );
                         self.selected_block_state =
                             BlockStateId::new(self.inventory_sim.selected_item().item);

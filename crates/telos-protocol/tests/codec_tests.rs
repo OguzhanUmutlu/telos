@@ -11,6 +11,9 @@ use telos_protocol::codec::{
     MAX_FRAME_SIZE, PacketHeader, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
 };
 use telos_protocol::error::ProtocolError;
+use telos_protocol::messages::config::{
+    CustomFuelWire, CustomShapedRecipeWire, CustomShapelessRecipeWire, CustomSmeltingRecipeWire,
+};
 use telos_protocol::messages::{
     AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
     C2sClientSettings, C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive,
@@ -21,8 +24,8 @@ use telos_protocol::messages::{
     S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
     S2cConfigDone, S2cContainerProperty, S2cContentManifest, S2cGameMode, S2cHelloReply,
     S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow,
-    S2cSpawnItem, S2cUniformChunk, SlotData,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest, S2cRegistryData,
+    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -1043,6 +1046,72 @@ fn test_content_manifest_wire_roundtrip() {
         assert_eq!(m.custom_items[1].max_stack_size, 1);
     } else {
         panic!("expected ContentManifest");
+    }
+}
+
+#[test]
+fn test_s2c_recipe_manifest_roundtrip() {
+    let shaped = vec![CustomShapedRecipeWire {
+        width: 3,
+        height: 3,
+        pattern: BoundedVec::new(vec![101, 101, 101, 0, 5, 0, 0, 5, 0]).unwrap(),
+        result_item: 102,
+        result_count: 1,
+        mirrored: true,
+        remainder_item: 0,
+    }];
+
+    let shapeless = vec![CustomShapelessRecipeWire {
+        ingredients: BoundedVec::new(vec![101, 201]).unwrap(),
+        result_item: 202,
+        result_count: 4,
+        remainder_item: 0,
+    }];
+
+    let smelting = vec![CustomSmeltingRecipeWire {
+        input_item: 101,
+        output_item: 103,
+        output_count: 1,
+        cook_duration: 160,
+        experience: 0.7,
+    }];
+
+    let fuels = vec![CustomFuelWire {
+        item_id: 301,
+        burn_duration_ticks: 2400,
+    }];
+
+    let manifest = S2cRecipeManifest {
+        shaped_recipes: BoundedVec::new(shaped).unwrap(),
+        shapeless_recipes: BoundedVec::new(shapeless).unwrap(),
+        smelting_recipes: BoundedVec::new(smelting).unwrap(),
+        fuels: BoundedVec::new(fuels).unwrap(),
+    };
+
+    let msg = S2cMessage::RecipeManifest(manifest.clone());
+    let mut buf = Vec::new();
+    encode_s2c(&msg, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded =
+        decode_s2c(ConnectionPhase::Config, &mut cursor).expect("decode S2cRecipeManifest");
+    assert_eq!(msg, decoded);
+    assert!(cursor.is_empty());
+
+    if let S2cMessage::RecipeManifest(m) = decoded {
+        assert_eq!(m.shaped_recipes.len(), 1);
+        assert_eq!(m.shaped_recipes[0].width, 3);
+        assert_eq!(m.shaped_recipes[0].result_item, 102);
+        assert!(m.shaped_recipes[0].mirrored);
+        assert_eq!(m.shapeless_recipes.len(), 1);
+        assert_eq!(m.shapeless_recipes[0].result_count, 4);
+        assert_eq!(m.smelting_recipes.len(), 1);
+        assert_eq!(m.smelting_recipes[0].cook_duration, 160);
+        assert!((m.smelting_recipes[0].experience - 0.7).abs() < 1e-6);
+        assert_eq!(m.fuels.len(), 1);
+        assert_eq!(m.fuels[0].burn_duration_ticks, 2400);
+    } else {
+        panic!("expected RecipeManifest");
     }
 }
 

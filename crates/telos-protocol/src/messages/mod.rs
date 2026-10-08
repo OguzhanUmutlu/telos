@@ -7,8 +7,9 @@ pub mod login;
 pub mod play;
 
 pub use config::{
-    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, CustomBlockDefWire, CustomItemDefWire,
-    S2cConfigDone, S2cContentManifest, S2cRegistryData,
+    C2sClientSettings, C2sConfigAck, C2sKnownRegistries, CustomBlockDefWire, CustomFuelWire,
+    CustomItemDefWire, CustomShapedRecipeWire, CustomShapelessRecipeWire, CustomSmeltingRecipeWire,
+    S2cConfigDone, S2cContentManifest, S2cRecipeManifest, S2cRegistryData,
 };
 pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
@@ -209,6 +210,8 @@ pub enum S2cMessage {
     ConfigDone(S2cConfigDone),
     /// Config phase server synchronizing full custom block and item definitions.
     ContentManifest(S2cContentManifest),
+    /// Config phase server synchronizing dynamic data pack recipes and fuels.
+    RecipeManifest(S2cRecipeManifest),
     /// Play phase heartbeat ping/pong challenge.
     KeepAlive(S2cKeepAlive),
     /// Play phase chat message or system alert broadcast.
@@ -289,9 +292,10 @@ impl S2cMessage {
         match self {
             Self::HelloReply(_) => Some(ConnectionPhase::Hello),
             Self::LoginSuccess(_) => Some(ConnectionPhase::Login),
-            Self::RegistryData(_) | Self::ConfigDone(_) | Self::ContentManifest(_) => {
-                Some(ConnectionPhase::Config)
-            }
+            Self::RegistryData(_)
+            | Self::ConfigDone(_)
+            | Self::ContentManifest(_)
+            | Self::RecipeManifest(_) => Some(ConnectionPhase::Config),
             Self::KeepAlive(_)
             | Self::ChatMessage(_)
             | Self::JoinGame(_)
@@ -339,7 +343,7 @@ impl S2cMessage {
             | Self::KeepAlive(_) => 0,
             Self::ConfigDone(_) | Self::ChatMessage(_) => 1,
             Self::ContentManifest(_) | Self::JoinGame(_) => 2,
-            Self::ChunkData(_) => 3,
+            Self::RecipeManifest(_) | Self::ChunkData(_) => 3,
             Self::UniformChunk(_) => 4,
             Self::ChunkUnload(_) => 5,
             Self::LodNodeData(_) => 6,
@@ -381,6 +385,7 @@ impl S2cMessage {
             Self::RegistryData(m) => m.encode(buf),
             Self::ConfigDone(m) => m.encode(buf),
             Self::ContentManifest(m) => m.encode(buf),
+            Self::RecipeManifest(m) => m.encode(buf),
             Self::KeepAlive(m) => m.encode(buf),
             Self::ChatMessage(m) => m.encode(buf),
             Self::JoinGame(m) => m.encode(buf),

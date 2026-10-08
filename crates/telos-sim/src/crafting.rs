@@ -305,6 +305,12 @@ impl RecipeRegistry {
         self.find_match(inputs, 3, 3)
     }
 
+    /// Returns a slice of all registered crafting recipes.
+    #[must_use]
+    pub fn recipes(&self) -> &[CraftingRecipe] {
+        &self.recipes
+    }
+
     /// Creates a standard registry populated with default survival recipes.
     #[must_use]
     #[allow(clippy::too_many_lines)]
@@ -882,9 +888,16 @@ fn handle_crafting_table_drop(
 /// Evaluates a 2x2 crafting input grid and returns the matching recipe output, if any.
 #[must_use]
 pub fn find_recipe_2x2(inputs: &[ItemStack; 4]) -> Option<ItemStack> {
-    RecipeRegistry::standard()
-        .find_match_2x2(inputs)
-        .map(CraftingRecipe::result)
+    find_recipe_2x2_with_registry(inputs, &RecipeRegistry::standard())
+}
+
+/// Evaluates a 2x2 crafting input grid using the provided recipe registry.
+#[must_use]
+pub fn find_recipe_2x2_with_registry(
+    inputs: &[ItemStack; 4],
+    registry: &RecipeRegistry,
+) -> Option<ItemStack> {
+    registry.find_match_2x2(inputs).map(CraftingRecipe::result)
 }
 
 /// A legacy 2x2 crafting recipe definition kept for backwards compatibility.
@@ -1064,5 +1077,70 @@ mod tests {
             .map(|s| s.count)
             .sum();
         assert_eq!(total_sticks, 40); // 4 from first craft + 36 from shift craft
+    }
+
+    #[test]
+    fn test_custom_recipe_and_remainder_in_crafting_table_and_inventory() {
+        let mut reg = RecipeRegistry::new();
+
+        // 1. Register a custom shaped recipe: 2x2 of Custom Item 200 -> Custom Item 201 (count 1), with remainder 202
+        let mut shaped = ShapedRecipe::new(2, 2, vec![200, 200, 200, 200], ItemStack::new(201, 1));
+        shaped.remainder_item = Some(202);
+        reg.register_shaped(shaped);
+
+        // 2. Register a custom shapeless recipe: Item 300 + Item 301 -> Item 302 (count 2)
+        reg.register_shapeless(ShapelessRecipe::new(vec![300, 301], ItemStack::new(302, 2)));
+
+        // Test 2x2 player inventory matching
+        let mut inv = Inventory::default();
+        inv.slots[40] = ItemStack::new(300, 1);
+        inv.slots[41] = ItemStack::new(301, 1);
+        inv.update_crafting_with_registry(&reg);
+        assert_eq!(
+            inv.slots[crate::inventory::CRAFTING_RESULT_SLOT],
+            ItemStack::new(302, 2)
+        );
+
+        // Click result slot in 2x2
+        crate::inventory::inventory_click_with_registry(
+            &mut inv,
+            crate::inventory::CRAFTING_RESULT_SLOT,
+            ClickButton::Left,
+            ClickMode::Pickup,
+            &reg,
+        )
+        .unwrap();
+
+        assert_eq!(inv.carried, ItemStack::new(302, 2));
+        assert!(inv.slots[40].is_empty());
+        assert!(inv.slots[41].is_empty());
+        assert!(inv.slots[crate::inventory::CRAFTING_RESULT_SLOT].is_empty());
+
+        // Test 2x2 shaped recipe with remainder item
+        inv.carried = ItemStack::EMPTY;
+        inv.slots[40] = ItemStack::new(200, 1);
+        inv.slots[41] = ItemStack::new(200, 1);
+        inv.slots[42] = ItemStack::new(200, 1);
+        inv.slots[43] = ItemStack::new(200, 1);
+        inv.update_crafting_with_registry(&reg);
+        assert_eq!(
+            inv.slots[crate::inventory::CRAFTING_RESULT_SLOT],
+            ItemStack::new(201, 1)
+        );
+
+        crate::inventory::inventory_click_with_registry(
+            &mut inv,
+            crate::inventory::CRAFTING_RESULT_SLOT,
+            ClickButton::Left,
+            ClickMode::Pickup,
+            &reg,
+        )
+        .unwrap();
+
+        assert_eq!(inv.carried, ItemStack::new(201, 1));
+        // All 4 slots should now contain remainder item 202!
+        for slot_idx in 40..44 {
+            assert_eq!(inv.slots[slot_idx], ItemStack::new(202, 1));
+        }
     }
 }

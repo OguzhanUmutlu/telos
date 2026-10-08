@@ -315,3 +315,234 @@ impl S2cContentManifest {
         })
     }
 }
+
+/// Wire representation of a custom shaped recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomShapedRecipeWire {
+    /// Width of the pattern in grid columns (1..=3).
+    pub width: u8,
+    /// Height of the pattern in grid rows (1..=3).
+    pub height: u8,
+    /// Pattern item IDs of size `width * height`, where 0 indicates an empty slot.
+    pub pattern: BoundedVec<u32, 9>,
+    /// Result item ID.
+    pub result_item: u32,
+    /// Result item count.
+    pub result_count: u16,
+    /// Whether horizontal mirroring is permitted.
+    pub mirrored: bool,
+    /// Optional remainder item ID returned upon crafting (0 if none).
+    pub remainder_item: u32,
+}
+
+impl CustomShapedRecipeWire {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(self.width);
+        buf.push(self.height);
+        self.pattern.encode_with(buf, |item, b| {
+            encode_varint(*item, b);
+        });
+        encode_varint(self.result_item, buf);
+        encode_varint(u32::from(self.result_count), buf);
+        buf.push(u8::from(self.mirrored));
+        encode_varint(self.remainder_item, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let width = cursor[0];
+        *cursor = &cursor[1..];
+
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let height = cursor[0];
+        *cursor = &cursor[1..];
+
+        let pattern = BoundedVec::decode_with(cursor, decode_varint)?;
+        let result_item = decode_varint(cursor)?;
+        let result_count = decode_varint(cursor)? as u16;
+
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mirrored = cursor[0] != 0;
+        *cursor = &cursor[1..];
+
+        let remainder_item = decode_varint(cursor)?;
+
+        Ok(Self {
+            width,
+            height,
+            pattern,
+            result_item,
+            result_count,
+            mirrored,
+            remainder_item,
+        })
+    }
+}
+
+/// Wire representation of a custom shapeless recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomShapelessRecipeWire {
+    /// Required ingredient item IDs (multiset, 1..=9).
+    pub ingredients: BoundedVec<u32, 9>,
+    /// Result item ID.
+    pub result_item: u32,
+    /// Result item count.
+    pub result_count: u16,
+    /// Optional remainder item ID returned upon crafting (0 if none).
+    pub remainder_item: u32,
+}
+
+impl CustomShapelessRecipeWire {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.ingredients.encode_with(buf, |item, b| {
+            encode_varint(*item, b);
+        });
+        encode_varint(self.result_item, buf);
+        encode_varint(u32::from(self.result_count), buf);
+        encode_varint(self.remainder_item, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let ingredients = BoundedVec::decode_with(cursor, decode_varint)?;
+        let result_item = decode_varint(cursor)?;
+        let result_count = decode_varint(cursor)? as u16;
+        let remainder_item = decode_varint(cursor)?;
+
+        Ok(Self {
+            ingredients,
+            result_item,
+            result_count,
+            remainder_item,
+        })
+    }
+}
+
+/// Wire representation of a custom furnace smelting recipe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomSmeltingRecipeWire {
+    /// Input item ID.
+    pub input_item: u32,
+    /// Output item ID.
+    pub output_item: u32,
+    /// Number of output items produced per cook.
+    pub output_count: u16,
+    /// Cook duration in simulation ticks.
+    pub cook_duration: u16,
+    /// Experience reward earned.
+    pub experience: f32,
+}
+
+impl CustomSmeltingRecipeWire {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.input_item, buf);
+        encode_varint(self.output_item, buf);
+        encode_varint(u32::from(self.output_count), buf);
+        encode_varint(u32::from(self.cook_duration), buf);
+        buf.extend_from_slice(&self.experience.to_le_bytes());
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let input_item = decode_varint(cursor)?;
+        let output_item = decode_varint(cursor)?;
+        let output_count = decode_varint(cursor)? as u16;
+        let cook_duration = decode_varint(cursor)? as u16;
+
+        if cursor.len() < 4 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let experience = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        *cursor = &cursor[4..];
+
+        Ok(Self {
+            input_item,
+            output_item,
+            output_count,
+            cook_duration,
+            experience,
+        })
+    }
+}
+
+/// Wire representation of a combustible furnace fuel definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomFuelWire {
+    /// Combustible item ID.
+    pub item_id: u32,
+    /// Burn duration in simulation ticks.
+    pub burn_duration_ticks: u16,
+}
+
+impl CustomFuelWire {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.item_id, buf);
+        encode_varint(u32::from(self.burn_duration_ticks), buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let item_id = decode_varint(cursor)?;
+        let burn_duration_ticks = decode_varint(cursor)? as u16;
+        Ok(Self {
+            item_id,
+            burn_duration_ticks,
+        })
+    }
+}
+
+/// Server synchronizes dynamic data pack recipes and fuels with the client during the configuration phase.
+#[derive(Debug, Clone, PartialEq)]
+pub struct S2cRecipeManifest {
+    /// List of server-defined shaped crafting recipes.
+    pub shaped_recipes: BoundedVec<CustomShapedRecipeWire, 256>,
+    /// List of server-defined shapeless crafting recipes.
+    pub shapeless_recipes: BoundedVec<CustomShapelessRecipeWire, 256>,
+    /// List of server-defined furnace smelting recipes.
+    pub smelting_recipes: BoundedVec<CustomSmeltingRecipeWire, 256>,
+    /// List of server-defined combustible fuels.
+    pub fuels: BoundedVec<CustomFuelWire, 256>,
+}
+
+impl S2cRecipeManifest {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.shaped_recipes.encode_with(buf, |r, b| {
+            r.encode(b);
+        });
+        self.shapeless_recipes.encode_with(buf, |r, b| {
+            r.encode(b);
+        });
+        self.smelting_recipes.encode_with(buf, |r, b| {
+            r.encode(b);
+        });
+        self.fuels.encode_with(buf, |f, b| {
+            f.encode(b);
+        });
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let shaped_recipes = BoundedVec::decode_with(cursor, CustomShapedRecipeWire::decode)?;
+        let shapeless_recipes = BoundedVec::decode_with(cursor, CustomShapelessRecipeWire::decode)?;
+        let smelting_recipes = BoundedVec::decode_with(cursor, CustomSmeltingRecipeWire::decode)?;
+        let fuels = BoundedVec::decode_with(cursor, CustomFuelWire::decode)?;
+        Ok(Self {
+            shaped_recipes,
+            shapeless_recipes,
+            smelting_recipes,
+            fuels,
+        })
+    }
+}

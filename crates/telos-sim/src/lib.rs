@@ -53,6 +53,7 @@ pub use crafting::{
     CONTAINER_CRAFTING_STORAGE_SLOTS, CRAFTING_TABLE_CONTAINER_SLOTS, CraftingRecipe,
     CraftingTableInventory, DUAL_CRAFTING_TABLE_SLOT_COUNT, Recipe2x2, RecipeRegistry,
     ShapedRecipe, ShapelessRecipe, crafting_table_container_click, find_recipe_2x2,
+    find_recipe_2x2_with_registry,
 };
 pub use effect::{EffectInstance, StatusEffectKind, StatusEffects, status_effect_system};
 pub use enchantment::{
@@ -89,9 +90,9 @@ pub use inventory::{
     ITEM_STONE_HOE, ITEM_STONE_PICKAXE, ITEM_STONE_SHOVEL, ITEM_STONE_SWORD, ITEM_WOODEN_AXE,
     ITEM_WOODEN_HOE, ITEM_WOODEN_PICKAXE, ITEM_WOODEN_SHOVEL, ITEM_WOODEN_SWORD, Inventory,
     InventoryError, ItemStack, MAX_STACK_SIZE, OFFHAND_SLOT, PLAYER_INVENTORY_SLOTS, STORAGE_SLOTS,
-    block_to_drop_item, container_click, inventory_click, is_armor, is_arrow, is_boots, is_bow,
-    is_chest, is_chestplate, is_furnace, is_helmet, is_leggings, is_slot_valid_for_item, item_name,
-    matching_armor_slot,
+    block_to_drop_item, container_click, inventory_click, inventory_click_with_registry, is_armor,
+    is_arrow, is_boots, is_bow, is_chest, is_chestplate, is_furnace, is_helmet, is_leggings,
+    is_slot_valid_for_item, item_name, matching_armor_slot,
 };
 pub use logic::{
     LogicChunk, LogicComponent, LogicEngine, LogicKind, MAX_SIGNAL_DISTANCE, ScheduledLogicTick,

@@ -1,6 +1,6 @@
 //! Inventory container, item stacks, and deterministic click interaction logic.
 
-use crate::crafting::find_recipe_2x2;
+use crate::crafting::{RecipeRegistry, find_recipe_2x2_with_registry};
 use crate::enchantment::CompactEnchantments;
 use bevy_ecs::component::Component;
 use std::ops::Range;
@@ -448,15 +448,21 @@ impl Inventory {
         self.slots.get_mut(slot)
     }
 
-    /// Updates the crafting result slot (44) based on crafting input slots (40..44).
+    /// Updates the crafting result slot (44) based on crafting input slots (40..44) using standard recipes.
     pub fn update_crafting(&mut self) {
+        self.update_crafting_with_registry(&RecipeRegistry::standard());
+    }
+
+    /// Updates the crafting result slot (44) based on crafting input slots (40..44) using the provided recipe registry.
+    pub fn update_crafting_with_registry(&mut self, registry: &RecipeRegistry) {
         let inputs = [
             self.slots[40],
             self.slots[41],
             self.slots[42],
             self.slots[43],
         ];
-        self.slots[CRAFTING_RESULT_SLOT] = find_recipe_2x2(&inputs).unwrap_or(ItemStack::EMPTY);
+        self.slots[CRAFTING_RESULT_SLOT] =
+            find_recipe_2x2_with_registry(&inputs, registry).unwrap_or(ItemStack::EMPTY);
     }
 
     /// Inserts as much of `stack` as possible into the specified slot range.
@@ -517,6 +523,11 @@ impl Inventory {
     ///
     /// Clears the crafting result slot (44).
     pub fn return_crafting_items(&mut self) {
+        self.return_crafting_items_with_registry(&RecipeRegistry::standard());
+    }
+
+    /// Returns any items remaining in crafting inputs (40..44) into storage or hotbar using the provided registry.
+    pub fn return_crafting_items_with_registry(&mut self, registry: &RecipeRegistry) {
         for i in CRAFTING_INPUT_SLOTS {
             if !self.slots[i].is_empty() {
                 let mut stack = self.slots[i];
@@ -524,7 +535,7 @@ impl Inventory {
                 self.slots[i] = stack; // If full, whatever remains stays
             }
         }
-        self.update_crafting();
+        self.update_crafting_with_registry(registry);
     }
 
     /// Returns carried cursor stack into storage or hotbar.
@@ -543,15 +554,26 @@ impl Inventory {
     }
 }
 
-/// Executes a deterministic inventory click on an inventory container.
+/// Executes a deterministic inventory click on an inventory container using standard recipes.
 ///
 /// Modifies the target slot and the `carried` cursor stack according to standard rules.
-#[allow(clippy::too_many_lines)]
 pub fn inventory_click(
     inv: &mut Inventory,
     slot_idx: usize,
     button: ClickButton,
     mode: ClickMode,
+) -> Result<(), InventoryError> {
+    inventory_click_with_registry(inv, slot_idx, button, mode, &RecipeRegistry::standard())
+}
+
+/// Executes a deterministic inventory click on an inventory container using the provided recipe registry.
+#[allow(clippy::too_many_lines)]
+pub fn inventory_click_with_registry(
+    inv: &mut Inventory,
+    slot_idx: usize,
+    button: ClickButton,
+    mode: ClickMode,
+    registry: &RecipeRegistry,
 ) -> Result<(), InventoryError> {
     if slot_idx >= PLAYER_INVENTORY_SLOTS {
         return Err(InventoryError::SlotOutOfBounds(slot_idx));
@@ -559,7 +581,7 @@ pub fn inventory_click(
 
     // Special handling: Crafting Result Slot (44)
     if slot_idx == CRAFTING_RESULT_SLOT {
-        handle_crafting_result_click(inv, button, mode);
+        handle_crafting_result_click(inv, button, mode, registry);
         return Ok(());
     }
 
@@ -572,14 +594,19 @@ pub fn inventory_click(
 
     // Re-evaluate crafting if any crafting input slot changed
     if CRAFTING_INPUT_SLOTS.contains(&slot_idx) {
-        inv.update_crafting();
+        inv.update_crafting_with_registry(registry);
     }
 
     Ok(())
 }
 
 /// Handles clicking on the crafting result slot (44).
-fn handle_crafting_result_click(inv: &mut Inventory, _button: ClickButton, mode: ClickMode) {
+fn handle_crafting_result_click(
+    inv: &mut Inventory,
+    _button: ClickButton,
+    mode: ClickMode,
+    registry: &RecipeRegistry,
+) {
     let result = inv.slots[CRAFTING_RESULT_SLOT];
     if result.is_empty() {
         return;
@@ -598,14 +625,22 @@ fn handle_crafting_result_click(inv: &mut Inventory, _button: ClickButton, mode:
                 return; // Cannot take result
             }
 
+            let inputs = [inv.slots[40], inv.slots[41], inv.slots[42], inv.slots[43]];
+            let remainder = registry
+                .find_match_2x2(&inputs)
+                .and_then(crate::crafting::CraftingRecipe::remainder_item);
+
             // Deduct 1 item from each non-empty crafting input slot
             for i in CRAFTING_INPUT_SLOTS {
                 if !inv.slots[i].is_empty() {
                     inv.slots[i].count -= 1;
-                    inv.slots[i].normalize();
+                    if inv.slots[i].count == 0 {
+                        inv.slots[i] =
+                            remainder.map_or(ItemStack::EMPTY, |rem| ItemStack::new(rem, 1));
+                    }
                 }
             }
-            inv.update_crafting();
+            inv.update_crafting_with_registry(registry);
         }
         ClickMode::QuickMove => {
             // Shift-click: craft as many times as possible into storage/hotbar
@@ -621,14 +656,22 @@ fn handle_crafting_result_click(inv: &mut Inventory, _button: ClickButton, mode:
                     break;
                 }
 
+                let inputs = [inv.slots[40], inv.slots[41], inv.slots[42], inv.slots[43]];
+                let remainder = registry
+                    .find_match_2x2(&inputs)
+                    .and_then(crate::crafting::CraftingRecipe::remainder_item);
+
                 // Deduct 1 item from each crafting input
                 for i in CRAFTING_INPUT_SLOTS {
                     if !inv.slots[i].is_empty() {
                         inv.slots[i].count -= 1;
-                        inv.slots[i].normalize();
+                        if inv.slots[i].count == 0 {
+                            inv.slots[i] =
+                                remainder.map_or(ItemStack::EMPTY, |rem| ItemStack::new(rem, 1));
+                        }
                     }
                 }
-                inv.update_crafting();
+                inv.update_crafting_with_registry(registry);
             }
         }
         ClickMode::SwapHotbar | ClickMode::Drop => {

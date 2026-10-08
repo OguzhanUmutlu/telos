@@ -83,6 +83,51 @@ fn test_custom_data_pack_lifecycle_and_persistence() {
     "#;
     fs::write(tag_dir.join("pickaxe.json"), tag_json).unwrap();
 
+    // Recipes & Fuels: data/sample/recipes/ and data/sample/fuels/
+    let recipe_dir = sample_pack_dir.join("data").join("sample").join("recipes");
+    let fuel_dir = sample_pack_dir.join("data").join("sample").join("fuels");
+    fs::create_dir_all(&recipe_dir).unwrap();
+    fs::create_dir_all(&fuel_dir).unwrap();
+
+    let ruby_block_recipe = r#"{
+        "type": "shaped",
+        "pattern": [
+            "RRR",
+            "RRR",
+            "RRR"
+        ],
+        "key": {
+            "R": "sample:ruby"
+        },
+        "result": {
+            "item": "sample:ruby_block",
+            "count": 1
+        }
+    }"#;
+    fs::write(recipe_dir.join("ruby_block.json"), ruby_block_recipe).unwrap();
+
+    let ruby_from_block_recipe = r#"{
+        "type": "shapeless",
+        "ingredients": [
+            "sample:ruby_block"
+        ],
+        "result": {
+            "item": "sample:ruby",
+            "count": 9
+        }
+    }"#;
+    fs::write(
+        recipe_dir.join("ruby_from_block.json"),
+        ruby_from_block_recipe,
+    )
+    .unwrap();
+
+    let ruby_fuel = r#"{
+        "item": "sample:ruby",
+        "burn_ticks": 1200
+    }"#;
+    fs::write(fuel_dir.join("ruby_fuel.json"), ruby_fuel).unwrap();
+
     // 2. Discover packs
     let discovered = discover_packs(&[packs_dir]).unwrap();
     assert_eq!(discovered.len(), 1);
@@ -175,6 +220,13 @@ fn test_custom_data_pack_lifecycle_and_persistence() {
             .iter()
             .any(|(_, ident, _)| *ident == &ruby_item_ident)
     );
+
+    // Verify custom recipes and fuels
+    let custom_recipes = frozen.custom_recipes();
+    assert_eq!(custom_recipes.len(), 2);
+    let custom_fuels = frozen.custom_fuels();
+    assert_eq!(custom_fuels.len(), 1);
+    assert_eq!(custom_fuels[0].1.burn_ticks, 1200);
 
     // Verify block_registry light emission
     assert_eq!(frozen.block_registry().light_emission(ruby_block_state), 12);

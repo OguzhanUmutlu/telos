@@ -14,6 +14,7 @@ use crate::error::{ContentError, Result};
 use crate::pack::DiscoveredPack;
 use crate::schema::block::{BlockDef, BlockItemPolicy};
 use crate::schema::item::ItemDef;
+use crate::schema::recipe::{FuelDef, RecipeDef};
 use crate::schema::tag::TagDef;
 
 pub use item_registry::ItemRegistry;
@@ -46,6 +47,8 @@ pub struct RegistryBuilder {
     block_defs: Vec<(Identifier, BlockDef)>,
     block_ident_to_state: HashMap<Identifier, BlockStateId>,
     item_registry: ItemRegistry,
+    recipe_defs: Vec<(Identifier, RecipeDef)>,
+    fuel_defs: Vec<(Identifier, FuelDef)>,
     unresolved_tags: Vec<(Identifier, TagDef)>,
 }
 
@@ -57,6 +60,8 @@ impl Default for RegistryBuilder {
             block_defs: Vec::new(),
             block_ident_to_state: HashMap::new(),
             item_registry: ItemRegistry::new(),
+            recipe_defs: Vec::new(),
+            fuel_defs: Vec::new(),
             unresolved_tags: Vec::new(),
         };
 
@@ -164,6 +169,32 @@ impl RegistryBuilder {
                 let files = collect_sorted_files(&tags_dir)?;
                 for path in files {
                     self.load_tag_file(&ns, &tags_dir, &path)?;
+                }
+            }
+
+            // 4. Load recipes: data/<ns>/recipes/*.ron or *.json (or data/<ns>/recipe/)
+            let recipes_dir = if ns_dir.join("recipes").is_dir() {
+                ns_dir.join("recipes")
+            } else {
+                ns_dir.join("recipe")
+            };
+            if recipes_dir.is_dir() {
+                let files = collect_sorted_files(&recipes_dir)?;
+                for path in files {
+                    self.load_recipe_file(&ns, &path)?;
+                }
+            }
+
+            // 5. Load fuels: data/<ns>/fuels/*.ron or *.json (or data/<ns>/fuel/)
+            let fuels_dir = if ns_dir.join("fuels").is_dir() {
+                ns_dir.join("fuels")
+            } else {
+                ns_dir.join("fuel")
+            };
+            if fuels_dir.is_dir() {
+                let files = collect_sorted_files(&fuels_dir)?;
+                for path in files {
+                    self.load_fuel_file(&ns, &path)?;
                 }
             }
         }
@@ -297,6 +328,76 @@ impl RegistryBuilder {
         Ok(())
     }
 
+    fn load_recipe_file(&mut self, ns: &str, path: &Path) -> Result<()> {
+        let stem =
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| ContentError::DataParse {
+                    path: path.to_path_buf(),
+                    reason: "Invalid file name".into(),
+                })?;
+
+        let ident = Identifier::new(ns, stem)
+            .map_err(|e| ContentError::InvalidIdentifier(format!("{e}")))?;
+
+        let content = std::fs::read_to_string(path).map_err(|e| ContentError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+        let recipe_def: RecipeDef = if path.extension().is_some_and(|ext| ext == "json") {
+            serde_json::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("JSON error: {e}"),
+            })?
+        } else {
+            ron::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("RON error: {e}"),
+            })?
+        };
+
+        if let RecipeDef::Fuel(fuel) = recipe_def {
+            self.fuel_defs.push((ident, fuel));
+        } else {
+            self.recipe_defs.push((ident, recipe_def));
+        }
+        Ok(())
+    }
+
+    fn load_fuel_file(&mut self, ns: &str, path: &Path) -> Result<()> {
+        let stem =
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| ContentError::DataParse {
+                    path: path.to_path_buf(),
+                    reason: "Invalid file name".into(),
+                })?;
+
+        let ident = Identifier::new(ns, stem)
+            .map_err(|e| ContentError::InvalidIdentifier(format!("{e}")))?;
+
+        let content = std::fs::read_to_string(path).map_err(|e| ContentError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+        let fuel_def: FuelDef = if path.extension().is_some_and(|ext| ext == "json") {
+            serde_json::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("JSON error: {e}"),
+            })?
+        } else {
+            ron::from_str(&content).map_err(|e| ContentError::DataParse {
+                path: path.to_path_buf(),
+                reason: format!("RON error: {e}"),
+            })?
+        };
+
+        self.fuel_defs.push((ident, fuel_def));
+        Ok(())
+    }
+
     /// Freezes registries, validates all references, and produces `FrozenRegistries`.
     pub fn freeze(mut self) -> Result<FrozenRegistries> {
         self.lifecycle = RegistryLifecycle::Tags;
@@ -343,6 +444,29 @@ impl RegistryBuilder {
             }
         }
 
+        // Validate recipe definitions
+        for (_ident, recipe) in &self.recipe_defs {
+            match recipe {
+                RecipeDef::Shaped(shaped) => {
+                    shaped.resolve(&self.item_registry)?;
+                }
+                RecipeDef::Shapeless(shapeless) => {
+                    shapeless.resolve(&self.item_registry)?;
+                }
+                RecipeDef::Smelting(smelt) => {
+                    smelt.resolve(&self.item_registry)?;
+                }
+                RecipeDef::Fuel(fuel) => {
+                    fuel.resolve(&self.item_registry)?;
+                }
+            }
+        }
+
+        // Validate fuel definitions
+        for (_ident, fuel) in &self.fuel_defs {
+            fuel.resolve(&self.item_registry)?;
+        }
+
         self.lifecycle = RegistryLifecycle::Frozen;
         self.block_registry.freeze();
         self.item_registry.freeze();
@@ -365,11 +489,24 @@ impl RegistryBuilder {
             hasher.update(&def.max_stack_size.to_le_bytes());
         }
 
+        // 3. Hash recipes
+        for (ident, _) in &self.recipe_defs {
+            hasher.update(ident.to_string().as_bytes());
+        }
+
+        // 4. Hash fuels
+        for (ident, fuel) in &self.fuel_defs {
+            hasher.update(ident.to_string().as_bytes());
+            hasher.update(&fuel.burn_ticks.to_le_bytes());
+        }
+
         let content_hash = *hasher.finalize().as_bytes();
 
         info!(
             total_blocks = self.block_registry.total_states(),
             total_items = self.item_registry.total_items(),
+            total_recipes = self.recipe_defs.len(),
+            total_fuels = self.fuel_defs.len(),
             content_hash = %hasher.finalize().to_hex(),
             "Frozen content registries initialized"
         );
@@ -380,6 +517,8 @@ impl RegistryBuilder {
             block_defs: self.block_defs,
             block_ident_to_state: self.block_ident_to_state,
             item_registry: self.item_registry,
+            recipe_defs: self.recipe_defs,
+            fuel_defs: self.fuel_defs,
             tags: resolved_tags,
             content_hash,
         })
@@ -394,6 +533,8 @@ pub struct FrozenRegistries {
     block_defs: Vec<(Identifier, BlockDef)>,
     pub(crate) block_ident_to_state: HashMap<Identifier, BlockStateId>,
     item_registry: ItemRegistry,
+    recipe_defs: Vec<(Identifier, RecipeDef)>,
+    fuel_defs: Vec<(Identifier, FuelDef)>,
     tags: HashMap<Identifier, HashSet<Identifier>>,
     content_hash: [u8; 32],
 }
@@ -493,6 +634,18 @@ impl FrozenRegistries {
             .iter()
             .filter(|(_, ident, _)| ident.namespace() != "telos")
             .collect()
+    }
+
+    /// Returns custom recipe definitions defined by loaded data packs.
+    #[must_use]
+    pub fn custom_recipes(&self) -> &[(Identifier, RecipeDef)] {
+        &self.recipe_defs
+    }
+
+    /// Returns custom fuel definitions defined by loaded data packs.
+    #[must_use]
+    pub fn custom_fuels(&self) -> &[(Identifier, FuelDef)] {
+        &self.fuel_defs
     }
 
     /// Creates a `FrozenRegistries` instance containing only the built-in core engine pack (`telos`).
