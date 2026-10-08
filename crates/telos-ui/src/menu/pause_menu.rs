@@ -10,6 +10,8 @@ use telos_core::i18n::LanguageCatalog;
 pub enum PauseMenuAction {
     /// Resume game.
     Resume,
+    /// Open advancements screen.
+    Advancements,
     /// Open options screen.
     Options,
     /// Save and cleanly quit to title.
@@ -52,7 +54,7 @@ impl PauseMenuScreen {
         let btn_w = 180.0;
         let btn_h = 24.0;
         let btn_x = center_x - btn_w * 0.5;
-        let start_y = height_gui * 0.35;
+        let start_y = height_gui * 0.30;
 
         self.title = catalog.translate("menu.game").to_string();
 
@@ -66,9 +68,17 @@ impl PauseMenuScreen {
                 catalog.translate("menu.returnToGame"),
             ),
             MenuButton::new(
-                2,
+                4,
                 btn_x,
                 start_y + 32.0,
+                btn_w,
+                btn_h,
+                catalog.translate("menu.advancements"),
+            ),
+            MenuButton::new(
+                2,
+                btn_x,
+                start_y + 64.0,
                 btn_w,
                 btn_h,
                 catalog.translate("menu.options"),
@@ -76,7 +86,7 @@ impl PauseMenuScreen {
             MenuButton::new(
                 3,
                 btn_x,
-                start_y + 64.0,
+                start_y + 96.0,
                 btn_w,
                 btn_h,
                 catalog.translate("menu.returnToMenu"),
@@ -106,6 +116,7 @@ impl PauseMenuScreen {
                     1 => Some(PauseMenuAction::Resume),
                     2 => Some(PauseMenuAction::Options),
                     3 => Some(PauseMenuAction::SaveAndQuit),
+                    4 => Some(PauseMenuAction::Advancements),
                     _ => None,
                 };
             }

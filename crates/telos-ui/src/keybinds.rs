@@ -24,6 +24,8 @@ pub enum KeyAction {
     Sprint,
     /// Open/close survival inventory.
     Inventory,
+    /// Open/close advancements tree screen (L).
+    Advancements,
     /// Drop active hotbar item stack.
     Drop,
     /// Open multiplayer / local chat box.
@@ -84,6 +86,7 @@ impl KeyAction {
             Self::Sneak => "Sneak / Fly Down",
             Self::Sprint => "Sprint",
             Self::Inventory => "Open Inventory",
+            Self::Advancements => "Advancements (L)",
             Self::Drop => "Drop Item",
             Self::Chat => "Open Chat",
             Self::Command => "Open Command",
@@ -114,7 +117,9 @@ impl KeyAction {
             | Self::Jump
             | Self::Sneak
             | Self::Sprint => KeyCategory::Movement,
-            Self::Inventory | Self::Drop | Self::Chat | Self::Command => KeyCategory::Gameplay,
+            Self::Inventory | Self::Advancements | Self::Drop | Self::Chat | Self::Command => {
+                KeyCategory::Gameplay
+            }
             Self::Hotbar1
             | Self::Hotbar2
             | Self::Hotbar3
@@ -142,6 +147,7 @@ impl KeyAction {
             Self::Sneak,
             Self::Sprint,
             Self::Inventory,
+            Self::Advancements,
             Self::Drop,
             Self::Chat,
             Self::Command,
@@ -330,6 +336,7 @@ pub struct KeybindSettings {
     pub sneak: InputKey,
     pub sprint: InputKey,
     pub inventory: InputKey,
+    pub advancements: InputKey,
     pub drop: InputKey,
     pub chat: InputKey,
     pub command: InputKey,
@@ -359,6 +366,7 @@ impl Default for KeybindSettings {
             sneak: InputKey::ShiftLeft,
             sprint: InputKey::ControlLeft,
             inventory: InputKey::KeyE,
+            advancements: InputKey::KeyL,
             drop: InputKey::KeyQ,
             chat: InputKey::KeyT,
             command: InputKey::Slash,
@@ -392,6 +400,7 @@ impl KeybindSettings {
             KeyAction::Sneak => self.sneak,
             KeyAction::Sprint => self.sprint,
             KeyAction::Inventory => self.inventory,
+            KeyAction::Advancements => self.advancements,
             KeyAction::Drop => self.drop,
             KeyAction::Chat => self.chat,
             KeyAction::Command => self.command,
@@ -422,6 +431,7 @@ impl KeybindSettings {
             KeyAction::Sneak => self.sneak = key,
             KeyAction::Sprint => self.sprint = key,
             KeyAction::Inventory => self.inventory = key,
+            KeyAction::Advancements => self.advancements = key,
             KeyAction::Drop => self.drop = key,
             KeyAction::Chat => self.chat = key,
             KeyAction::Command => self.command = key,

@@ -58,6 +58,14 @@ pub struct UiLayers {
     pub crafting_table_bg: u32,
     /// Crafting table container background UV bounds `[u0, v0, u1, v1]`.
     pub crafting_table_bg_uv: [f32; 4],
+    /// Advancement tree window texture layer.
+    pub advancement_window: u32,
+    /// Advancement tree window UV bounds `[u0, v0, u1, v1]`.
+    pub advancement_window_uv: [f32; 4],
+    /// Toast banner notification texture layer.
+    pub toast_bg: u32,
+    /// Toast banner notification UV bounds `[u0, v0, u1, v1]`.
+    pub toast_bg_uv: [f32; 4],
 }
 
 impl Default for UiLayers {
@@ -88,6 +96,10 @@ impl Default for UiLayers {
             furnace_arrow_uv: [176.0 / 256.0, 16.0 / 256.0, 200.0 / 256.0, 32.0 / 256.0],
             crafting_table_bg: 8,
             crafting_table_bg_uv: [0.0, 0.0, 176.0 / 256.0, 166.0 / 256.0],
+            advancement_window: 9,
+            advancement_window_uv: [0.0, 0.0, 252.0 / 256.0, 140.0 / 256.0],
+            toast_bg: 10,
+            toast_bg_uv: [0.0, 0.0, 160.0 / 256.0, 32.0 / 256.0],
         }
     }
 }
@@ -157,6 +169,25 @@ pub struct HudState {
     pub is_flying: bool,
     /// Active status effects displayed in top-right HUD corner.
     pub active_effects: Vec<HudEffectDisplay>,
+    /// Active advancement toast notification sliding banner.
+    pub active_toast: Option<ToastState>,
+}
+
+/// Active advancement toast notification state displayed on the HUD.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToastState {
+    /// Identifier of the advancement.
+    pub id: String,
+    /// Title displayed on the toast banner.
+    pub title: String,
+    /// Icon item ID (rendered on the left of the banner).
+    pub icon_item: u32,
+    /// Frame tier (0 = Task, 1 = Goal, 2 = Challenge).
+    pub frame: u8,
+    /// Elapsed display time in seconds.
+    pub elapsed_secs: f32,
+    /// Total display duration in seconds (typically 5.0s).
+    pub duration_secs: f32,
 }
 
 /// Active status effect badge presentation on client HUD.
@@ -208,6 +239,7 @@ impl Default for HudState {
             game_mode: "Creative".to_string(),
             is_flying: true,
             active_effects: Vec::new(),
+            active_toast: None,
         }
     }
 }
@@ -411,6 +443,11 @@ pub fn render_hud(
     if state.f3_open {
         render_f3_overlay(state, font, screen_width, gui_scale, out);
     }
+
+    // 9. Active Advancement Toast Notification (sliding top-right banner)
+    if let Some(toast) = &state.active_toast {
+        render_toast(toast, layers, font, screen_width, gui_scale, out);
+    }
 }
 
 #[allow(
@@ -502,6 +539,97 @@ fn render_active_effects(
 
         cur_y += card_h + 3.0;
     }
+}
+
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn render_toast(
+    toast: &ToastState,
+    layers: &UiLayers,
+    font: &BitmapFont,
+    screen_width: u32,
+    gui_scale: u32,
+    out: &mut Vec<UiQuad>,
+) {
+    let scale_f = gui_scale as f32;
+    let toast_w = 160.0f32;
+    let toast_h = 32.0f32;
+    let sw_logical = screen_width as f32 / scale_f;
+    let toast_x = sw_logical - toast_w - 8.0f32;
+
+    // Slide-in / slide-out animation:
+    // First 0.5s slides down, last 0.5s slides up
+    let slide_in = (toast.elapsed_secs / 0.5).clamp(0.0, 1.0);
+    let slide_out = ((toast.duration_secs - toast.elapsed_secs) / 0.5).clamp(0.0, 1.0);
+    let slide = slide_in.min(slide_out);
+    let y_offset = (1.0 - slide) * -(toast_h + 12.0);
+    let toast_y = 6.0f32 + y_offset;
+
+    if toast_y + toast_h <= 0.0 {
+        return;
+    }
+
+    let px_x = (toast_x * scale_f).round() as i32;
+    let px_y = (toast_y * scale_f).round() as i32;
+    let px_w = (toast_w * scale_f).round() as u16;
+    let px_h = (toast_h * scale_f).round() as u16;
+
+    // 1. Toast banner background sprite (160x32 in toast_bg layer)
+    out.push(UiQuad::sprite(
+        [px_x, px_y],
+        [px_w, px_h],
+        [layers.toast_bg_uv[0], layers.toast_bg_uv[1]],
+        [layers.toast_bg_uv[2], layers.toast_bg_uv[3]],
+        layers.toast_bg,
+        UiQuad::rgba(255, 255, 255, 255),
+    ));
+
+    // 2. Icon item (16x16 icon at toast_x + 8, toast_y + 8)
+    if toast.icon_item > 0 {
+        let icon_x = ((toast_x + 8.0) * scale_f).round() as i32;
+        let icon_y = ((toast_y + 8.0) * scale_f).round() as i32;
+        let icon_sz = (16.0 * scale_f).round() as u16;
+        let uv = crate::inventory::item_icon_uv(toast.icon_item);
+        out.push(UiQuad::sprite(
+            [icon_x, icon_y],
+            [icon_sz, icon_sz],
+            [uv[0], uv[1]],
+            [uv[2], uv[3]],
+            layers.item_icons,
+            UiQuad::rgba(255, 255, 255, 255),
+        ));
+    }
+
+    // 3. Header text ("Advancement Made!", "Goal Reached!", "Challenge Complete!")
+    let (header_text, header_color) = match toast.frame {
+        1 => ("Goal Reached!", UiQuad::rgba(85, 255, 255, 255)), // Cyan
+        2 => ("Challenge Complete!", UiQuad::rgba(255, 85, 255, 255)), // Magenta
+        _ => ("Advancement Made!", UiQuad::rgba(255, 255, 85, 255)), // Yellow
+    };
+    font.layout_text(
+        header_text,
+        toast_x + 30.0,
+        toast_y + 7.0,
+        header_color,
+        true,
+        gui_scale,
+        out,
+    );
+
+    // 4. Advancement title text
+    font.layout_text(
+        &toast.title,
+        toast_x + 30.0,
+        toast_y + 18.0,
+        UiQuad::rgba(255, 255, 255, 255),
+        true,
+        gui_scale,
+        out,
+    );
 }
 
 #[allow(

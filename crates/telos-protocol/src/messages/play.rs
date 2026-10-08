@@ -3135,6 +3135,140 @@ impl S2cGameMode {
     }
 }
 
+/// Wire representation of a single advancement completion record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvancementProgressWire {
+    /// Unique namespaced advancement ID.
+    pub id: BoundedString<64>,
+    /// Whether the advancement is completed.
+    pub completed: bool,
+    /// Completion timestamp (unix seconds).
+    pub timestamp: u64,
+}
+
+impl AdvancementProgressWire {
+    /// Creates a new progress record.
+    #[must_use]
+    pub fn new(id: BoundedString<64>, completed: bool, timestamp: u64) -> Self {
+        Self {
+            id,
+            completed,
+            timestamp,
+        }
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.id.encode(buf);
+        buf.push(u8::from(self.completed));
+        encode_varlong(self.timestamp, buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let id = BoundedString::decode(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let completed = cursor[0] != 0;
+        *cursor = &cursor[1..];
+        let timestamp = decode_varlong(cursor)?;
+        Ok(Self {
+            id,
+            completed,
+            timestamp,
+        })
+    }
+}
+
+/// Server updates or synchronizes advancement completion statuses to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cAdvancementUpdate {
+    /// Whether the client should clear its progress set before applying these updates.
+    pub reset_all: bool,
+    /// List of updated advancement records.
+    pub advancements: BoundedVec<AdvancementProgressWire, 128>,
+}
+
+impl S2cAdvancementUpdate {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(u8::from(self.reset_all));
+        encode_varint(self.advancements.len() as u32, buf);
+        for adv in self.advancements.as_slice() {
+            adv.encode(buf);
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let reset_all = cursor[0] != 0;
+        *cursor = &cursor[1..];
+
+        let count = decode_varint(cursor)? as usize;
+        if count > 128 {
+            return Err(ProtocolError::VecTooLong {
+                actual: count,
+                limit: 128,
+            });
+        }
+        let mut list = Vec::with_capacity(count);
+        for _ in 0..count {
+            list.push(AdvancementProgressWire::decode(cursor)?);
+        }
+        let advancements = BoundedVec::new(list)?;
+
+        Ok(Self {
+            reset_all,
+            advancements,
+        })
+    }
+}
+
+/// Server instructs the client to display an animated top-right advancement toast banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cAdvancementToast {
+    /// Namespaced advancement identifier.
+    pub id: BoundedString<64>,
+    /// Localized advancement title.
+    pub title: BoundedString<64>,
+    /// Item ID displayed in the toast icon frame.
+    pub icon_item: u32,
+    /// Frame visual style (0: Task, 1: Goal, 2: Challenge).
+    pub frame: u8,
+}
+
+impl S2cAdvancementToast {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        self.id.encode(buf);
+        self.title.encode(buf);
+        encode_varint(self.icon_item, buf);
+        buf.push(self.frame);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let id = BoundedString::decode(cursor)?;
+        let title = BoundedString::decode(cursor)?;
+        let icon_item = decode_varint(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let frame = cursor[0];
+        *cursor = &cursor[1..];
+        Ok(Self {
+            id,
+            title,
+            icon_item,
+            frame,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3442,5 +3576,40 @@ mod tests {
             C2sPlayerCommand::decode(&mut cursor).expect("failed to decode C2sPlayerCommand");
         assert_eq!(cmd, decoded);
         assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn test_advancement_codec_round_trip() {
+        let adv_item = AdvancementProgressWire::new(
+            BoundedString::new("telos:story/mine_wood").unwrap(),
+            true,
+            1_234_567,
+        );
+        let msg = S2cAdvancementUpdate {
+            reset_all: true,
+            advancements: BoundedVec::new(vec![adv_item]).unwrap(),
+        };
+
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded =
+            S2cAdvancementUpdate::decode(&mut cursor).expect("decode S2cAdvancementUpdate");
+        assert_eq!(msg, decoded);
+        assert!(cursor.is_empty());
+
+        let toast = S2cAdvancementToast {
+            id: BoundedString::new("telos:story/mine_wood").unwrap(),
+            title: BoundedString::new("Getting Wood").unwrap(),
+            icon_item: 5,
+            frame: 0,
+        };
+        let mut buf2 = Vec::new();
+        toast.encode(&mut buf2);
+        let mut cursor2 = &buf2[..];
+        let decoded_toast =
+            S2cAdvancementToast::decode(&mut cursor2).expect("decode S2cAdvancementToast");
+        assert_eq!(toast, decoded_toast);
+        assert!(cursor2.is_empty());
     }
 }

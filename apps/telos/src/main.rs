@@ -5,6 +5,7 @@ pub mod entity_client;
 pub mod opengl_renderer;
 pub mod physics;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,14 +47,14 @@ use telos_sim::{
     MoveMode, MoveState, PredictionBuffer, VisualSmoothing, quantize_pitch, quantize_yaw,
 };
 use telos_ui::menu::{
-    MainMenuAction, MainMenuScreen, ModalFormAction, ModalFormScreen, PauseMenuAction,
-    PauseMenuScreen, SettingsScreen, WorldCreateAction, WorldCreateWizard, WorldSelectAction,
-    WorldSelectScreen,
+    AdvancementsScreen, MainMenuAction, MainMenuScreen, ModalFormAction, ModalFormScreen,
+    PauseMenuAction, PauseMenuScreen, SettingsScreen, UiAdvancementCategory, UiAdvancementFrame,
+    UiAdvancementNode, WorldCreateAction, WorldCreateWizard, WorldSelectAction, WorldSelectScreen,
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
     BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_CRAFTING_TABLE_SLOT_COUNT,
-    DUAL_FURNACE_SLOT_COUNT, HudState, UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos,
+    DUAL_FURNACE_SLOT_COUNT, HudState, ToastState, UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos,
     compute_gui_scale, crafting_table_slot_at_pos, furnace_slot_at_pos, render_chat_hud,
     render_chest_container, render_crafting_table_container, render_furnace_container, render_hud,
     render_inventory_screen, slot_at_pos, snap_to_physical,
@@ -1523,6 +1524,9 @@ struct App {
     settings_screen: SettingsScreen,
     pause_menu: PauseMenuScreen,
     is_paused: bool,
+    advancements_screen: AdvancementsScreen,
+    advancements_open: bool,
+    toast_queue: VecDeque<ToastState>,
     active_modal_form: Option<ModalFormScreen>,
     game_settings: GameSettings,
     settings_path: PathBuf,
@@ -1768,6 +1772,31 @@ impl App {
         let settings_screen = SettingsScreen::new(game_settings.clone());
         let pause_menu = PauseMenuScreen::new();
 
+        let mut advancements_screen = AdvancementsScreen::new();
+        for adv in telos_sim::AdvancementRegistry::standard().all() {
+            let category = match adv.category {
+                telos_sim::AdvancementCategory::Story => UiAdvancementCategory::Story,
+                _ => UiAdvancementCategory::Adventure,
+            };
+            let frame = match adv.frame {
+                telos_sim::AdvancementFrame::Task => UiAdvancementFrame::Task,
+                telos_sim::AdvancementFrame::Goal => UiAdvancementFrame::Goal,
+                telos_sim::AdvancementFrame::Challenge => UiAdvancementFrame::Challenge,
+            };
+            advancements_screen.nodes.push(UiAdvancementNode {
+                id: adv.id.to_string(),
+                parent_id: adv.parent.map(String::from),
+                category,
+                title: adv.title.to_string(),
+                description: adv.description.to_string(),
+                icon_item: adv.icon_item,
+                frame,
+                x: adv.x,
+                y: adv.y,
+                completed: false,
+            });
+        }
+
         let mut initial_chunks = HashMap::new();
         let mut initial_dirty = HashSet::new();
         if !is_direct_ingame {
@@ -1982,6 +2011,9 @@ impl App {
             settings_screen,
             pause_menu,
             is_paused: false,
+            advancements_screen,
+            advancements_open: false,
+            toast_queue: VecDeque::new(),
             active_modal_form: None,
             game_settings,
             settings_path,
@@ -2009,6 +2041,12 @@ impl App {
         self.pending_lod_uploads.clear();
         self.entity_store = ClientEntityStore::new();
         self.client_effects.clear();
+        self.advancements_open = false;
+        self.hud_state.active_toast = None;
+        self.toast_queue.clear();
+        for node in &mut self.advancements_screen.nodes {
+            node.completed = false;
+        }
 
         let gen_kind = match generator.to_lowercase().as_str() {
             "flat" => telos_worldgen::GeneratorKind::Flat,
@@ -2154,6 +2192,15 @@ impl App {
             self.camera.roll = tilt_deg.to_radians();
         } else {
             self.camera.roll = 0.0;
+        }
+    }
+
+    fn update_toast(&mut self, dt: f32) {
+        if let Some(toast) = &mut self.hud_state.active_toast {
+            toast.elapsed_secs += dt;
+            if toast.elapsed_secs >= toast.duration_secs {
+                self.hud_state.active_toast = self.toast_queue.pop_front();
+            }
         }
     }
 
@@ -2929,6 +2976,39 @@ impl App {
                         let mode_key = self.physics.game_mode.translation_key();
                         self.hud_state.game_mode = self.catalog.translate(mode_key).to_string();
                         self.hud_state.is_flying = self.physics.flying;
+                    }
+                    S2cMessage::AdvancementUpdate(update) => {
+                        if update.reset_all {
+                            for node in &mut self.advancements_screen.nodes {
+                                node.completed = false;
+                            }
+                        }
+                        for wire in update.advancements.as_slice() {
+                            if let Some(node) = self
+                                .advancements_screen
+                                .nodes
+                                .iter_mut()
+                                .find(|n| n.id == wire.id.as_str())
+                            {
+                                node.completed = wire.completed;
+                            }
+                        }
+                    }
+                    S2cMessage::AdvancementToast(toast) => {
+                        self.audio.play_advancement_chime();
+                        let new_toast = ToastState {
+                            id: toast.id.to_string(),
+                            title: toast.title.to_string(),
+                            icon_item: toast.icon_item,
+                            frame: toast.frame,
+                            elapsed_secs: 0.0,
+                            duration_secs: 5.0,
+                        };
+                        if self.hud_state.active_toast.is_none() {
+                            self.hud_state.active_toast = Some(new_toast);
+                        } else {
+                            self.toast_queue.push_back(new_toast);
+                        }
                     }
                     _ => {}
                 },
@@ -3846,6 +3926,7 @@ impl App {
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
         self.update_player_hurt_tilt(dt);
+        self.update_toast(dt);
 
         if self.current_screen == AppScreen::InGame {
             if !self.is_paused {
@@ -3912,6 +3993,7 @@ impl App {
                     if self.bow_charging {
                         if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW
                             && !self.inventory_open
+                            && !self.advancements_open
                             && self.container_state.is_none()
                             && !self.is_paused
                         {
@@ -6013,6 +6095,17 @@ impl App {
                                 );
                             }
 
+                            if self.advancements_open {
+                                self.advancements_screen.render(
+                                    &self.ui_layers,
+                                    font,
+                                    width_gui,
+                                    height_gui,
+                                    gui_scale,
+                                    &mut ui_quads,
+                                );
+                            }
+
                             let now_secs = self.start_time.elapsed().as_secs_f64();
                             render_chat_hud(
                                 &self.chat_state,
@@ -6466,6 +6559,17 @@ impl App {
                         );
                     }
 
+                    if self.advancements_open {
+                        self.advancements_screen.render(
+                            &self.ui_layers,
+                            font,
+                            width_gui,
+                            height_gui,
+                            gui_scale,
+                            &mut ui_quads,
+                        );
+                    }
+
                     let now_secs = self.start_time.elapsed().as_secs_f64();
                     render_chat_hud(
                         &self.chat_state,
@@ -6521,6 +6625,7 @@ impl App {
         let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
         self.last_frame_time = now;
         self.update_player_hurt_tilt(dt);
+        self.update_toast(dt);
 
         if self.current_screen == AppScreen::InGame && !self.is_paused {
             let input_state = PlayerInputState {
@@ -8459,6 +8564,7 @@ impl ApplicationHandler for App {
     ) {
         if self.current_screen != AppScreen::InGame
             || self.is_paused
+            || self.advancements_open
             || self.inventory_open
             || self.container_state.is_some()
             || self.chat_state.is_open
@@ -8532,6 +8638,11 @@ impl ApplicationHandler for App {
                     AppScreen::InGame => {
                         if self.is_paused {
                             self.pause_menu.handle_mouse_move(mx, my);
+                        } else if self.advancements_open {
+                            let width_gui = win_size.width as f32 / gui_scale as f32;
+                            let height_gui = win_size.height as f32 / gui_scale as f32;
+                            self.advancements_screen
+                                .handle_mouse_move(mx, my, width_gui, height_gui);
                         } else if let Some(ref cont) = self.container_state {
                             self.container_hovered_slot = if cont.container_kind == 2 {
                                 crafting_table_slot_at_pos(
@@ -8598,6 +8709,8 @@ impl ApplicationHandler for App {
                                 .buttons
                                 .iter()
                                 .any(|b| b.hovered && b.enabled)
+                        } else if self.advancements_open {
+                            self.advancements_screen.hovered_node.is_some()
                         } else if self.container_state.is_some() {
                             self.container_hovered_slot.is_some()
                         } else if self.inventory_open {
@@ -8659,6 +8772,7 @@ impl ApplicationHandler for App {
                         self.active_modal_form = None;
                         if self.current_screen == AppScreen::InGame
                             && !self.is_paused
+                            && !self.advancements_open
                             && !self.chat_state.is_open
                             && self.container_state.is_none()
                             && !self.inventory_open
@@ -8673,6 +8787,10 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released {
                     if let AppScreen::Settings { .. } = self.current_screen {
                         self.settings_screen.handle_mouse_up();
+                    }
+                    if self.advancements_open {
+                        self.advancements_screen.handle_mouse_up();
+                        return;
                     }
                     if self.current_screen == AppScreen::InGame
                         && button == MouseButton::Right
@@ -8859,6 +8977,12 @@ impl ApplicationHandler for App {
                                         self.controller.mouse_captured = true;
                                         self.set_cursor_captured(true);
                                     }
+                                    PauseMenuAction::Advancements => {
+                                        self.is_paused = false;
+                                        self.advancements_open = true;
+                                        self.controller.mouse_captured = false;
+                                        self.set_cursor_captured(false);
+                                    }
                                     PauseMenuAction::Options => {
                                         self.settings_screen =
                                             SettingsScreen::new(self.game_settings.clone());
@@ -8874,10 +8998,18 @@ impl ApplicationHandler for App {
                                     PauseMenuAction::SaveAndQuit => {
                                         self.stop_singleplayer_server();
                                         self.is_paused = false;
+                                        self.advancements_open = false;
                                         self.current_screen = AppScreen::MainMenu;
                                         self.set_cursor_captured(false);
                                     }
                                 }
+                            }
+                            return;
+                        }
+                        if self.advancements_open {
+                            if button == MouseButton::Left {
+                                self.advancements_screen
+                                    .handle_mouse_down(mx, my, width_gui, height_gui);
                             }
                             return;
                         }
@@ -9281,6 +9413,7 @@ impl ApplicationHandler for App {
                                 self.active_modal_form = None;
                                 if self.current_screen == AppScreen::InGame
                                     && !self.is_paused
+                                    && !self.advancements_open
                                     && !self.chat_state.is_open
                                     && self.container_state.is_none()
                                     && !self.inventory_open
@@ -9572,6 +9705,19 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                if self.advancements_open {
+                    let key = key_code_to_input_key(code);
+                    let kb = &self.game_settings.controls.keybinds;
+                    if pressed
+                        && (code == KeyCode::Escape || kb.matches(KeyAction::Advancements, key))
+                    {
+                        self.advancements_open = false;
+                        self.controller.mouse_captured = true;
+                        self.set_cursor_captured(true);
+                    }
+                    return;
+                }
+
                 let key = key_code_to_input_key(code);
                 let kb = &self.game_settings.controls.keybinds;
 
@@ -9622,6 +9768,17 @@ impl ApplicationHandler for App {
                             win_size.height,
                             gui_scale,
                         );
+                    } else if kb.matches(KeyAction::Advancements, key) {
+                        self.advancements_open = true;
+                        self.controller.mouse_captured = false;
+                        self.set_cursor_captured(false);
+                        self.controller.forward = false;
+                        self.controller.backward = false;
+                        self.controller.left = false;
+                        self.controller.right = false;
+                        self.controller.up = false;
+                        self.controller.down = false;
+                        self.controller.sprint = false;
                     } else if kb.matches(KeyAction::Chat, key) {
                         self.chat_state.open(None);
                         self.controller.mouse_captured = false;
@@ -9775,7 +9932,7 @@ impl ApplicationHandler for App {
                                 let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                                 info!("Sent test add XP command (50 XP)");
                             }
-                            KeyCode::KeyL => {
+                            KeyCode::KeyH => {
                                 let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
                                     command: PlayerCommandKind::SetFood(6),
                                 });
@@ -9825,6 +9982,7 @@ impl ApplicationHandler for App {
                 } else if self.current_screen == AppScreen::InGame
                     && !self.is_paused
                     && !self.inventory_open
+                    && !self.advancements_open
                     && self.container_state.is_none()
                 {
                     if scroll > 0.0 {
@@ -9891,6 +10049,7 @@ impl ApplicationHandler for App {
                     self.controller.sprint = false;
                     if self.current_screen == AppScreen::InGame
                         && !self.inventory_open
+                        && !self.advancements_open
                         && self.container_state.is_none()
                         && !self.chat_state.is_open
                         && self.args.screenshot.is_none()
@@ -10517,7 +10676,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     let mut stack = ResourcePackStack::new();
     mount_asset_roots(&mut stack);
 
-    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 9) as usize];
+    let mut pixel_data = vec![0u8; (UI_RES * UI_RES * 4 * 11) as usize];
 
     // Helper to copy a sub-image into a 256x256 layer at specified offset
     let copy_to_layer_at = |dest: &mut [u8],
@@ -11030,7 +11189,58 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     };
     copy_to_layer_at(&mut pixel_data, 8, 0, 0, &crafting_table_bg_img);
 
-    let regions: Vec<TextureMipRegion> = (0..9)
+    // Layer 9: Advancements Window Background (252x140 window on 256x256 canvas)
+    let adv_window_img = if let Some(img) = stack
+        .find_texture("textures/gui/advancements/window.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 252, 140)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(252, 140);
+        for y in 0..140 {
+            for x in 0..252 {
+                let idx = ((y * 252 + x) * 4) as usize;
+                let is_border = x == 0 || x == 251 || y == 0 || y == 139;
+                let is_inner_border = x == 9 || x == 242 || y == 18 || y == 130;
+                let color = if is_border || is_inner_border {
+                    40
+                } else {
+                    198
+                };
+                img.data[idx] = color;
+                img.data[idx + 1] = color;
+                img.data[idx + 2] = color;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 9, 0, 0, &adv_window_img);
+
+    // Layer 10: Advancement Toast Notification Banner (160x32 on 256x256 canvas)
+    let toast_bg_img = if let Some(img) = stack
+        .find_texture("textures/gui/sprites/toast/advancement.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        ensure_size(img, 160, 32)
+    } else {
+        let mut img = telos_assets::RgbaImage::new(160, 32);
+        for y in 0..32 {
+            for x in 0..160 {
+                let idx = ((y * 160 + x) * 4) as usize;
+                let is_border = x == 0 || x == 159 || y == 0 || y == 31;
+                let color = if is_border { 50 } else { 210 };
+                img.data[idx] = color;
+                img.data[idx + 1] = color;
+                img.data[idx + 2] = color;
+                img.data[idx + 3] = 245;
+            }
+        }
+        img
+    };
+    copy_to_layer_at(&mut pixel_data, 10, 0, 0, &toast_bg_img);
+
+    let regions: Vec<TextureMipRegion> = (0..11)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * UI_RES * UI_RES * 4),
             layer,
@@ -11046,10 +11256,10 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
 fn load_and_upload_ui_textures(gpu_context: &GpuContext) -> Result<(GpuTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let texture_array = gpu_context.create_texture_array(UI_RES, 9, 1, &pixel_data, &regions)?;
+    let texture_array = gpu_context.create_texture_array(UI_RES, 11, 1, &pixel_data, &regions)?;
 
     info!(
-        "UI texture array loaded (9 layers, 256x256, font baked, survival icons, inventory background, item icons, furnace GUI, crafting table GUI)"
+        "UI texture array loaded (11 layers, 256x256, font baked, survival icons, inventory background, item icons, furnace GUI, crafting table GUI, advancements window, toast banner)"
     );
 
     Ok((texture_array, font))
@@ -11060,7 +11270,7 @@ fn load_and_upload_ui_textures_gl(
 ) -> Result<(telos_gpu::opengl::GlTextureArray, BitmapFont)> {
     const UI_RES: u32 = 256;
     let (pixel_data, regions, font) = bake_ui_textures();
-    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 9, 1)?;
+    let gl_array = telos_gpu::opengl::GlTextureArray::new(gl.clone(), UI_RES, UI_RES, 11, 1)?;
 
     for r in &regions {
         let start = r.buffer_offset as usize;

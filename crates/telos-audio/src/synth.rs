@@ -422,6 +422,51 @@ pub fn synthesize_chest_close() -> Arc<[f32]> {
     samples.into()
 }
 
+/// Synthesizes a celebratory procedural advancement chime fanfare (mono, 44.1 kHz, ~0.65s).
+///
+/// Features a crisp 3-tone arpeggio fanfare (C5 -> E5 -> G5) with a shimmering high octave (C6)
+/// bell decay envelope and harmonic overtones.
+#[must_use]
+pub fn synthesize_advancement_chime() -> Arc<[f32]> {
+    let duration_sec = 0.65f32;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+
+    let notes = [
+        (523.25f32, 0.00f32, 7.0f32, 0.55f32), // C5: freq, start, decay, volume
+        (659.25f32, 0.10f32, 7.0f32, 0.60f32), // E5
+        (783.99f32, 0.20f32, 6.0f32, 0.70f32), // G5
+        (1046.50f32, 0.32f32, 5.0f32, 0.40f32), // C6 shimmer
+    ];
+
+    let mut phases = [0.0f32; 4];
+    let mut overtone_phases = [0.0f32; 4];
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let mut sample_acc = 0.0f32;
+
+        for (idx, &(freq, start, decay, vol)) in notes.iter().enumerate() {
+            if t >= start {
+                let dt = t - start;
+                let attack = (dt / 0.005).min(1.0);
+                let env = attack * (-decay * dt).exp();
+
+                let step = 2.0 * std::f32::consts::PI * freq / SYNTH_SAMPLE_RATE as f32;
+                phases[idx] += step;
+                overtone_phases[idx] += step * 2.0;
+
+                let tone = phases[idx].sin() * 0.8 + overtone_phases[idx].sin() * 0.2;
+                sample_acc += tone * env * vol;
+            }
+        }
+
+        samples.push(sample_acc.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +546,16 @@ mod tests {
         let close_buf = synthesize_chest_close();
         assert!(!close_buf.is_empty());
         for &s in close_buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+    }
+
+    #[test]
+    fn test_advancement_chime_bounds() {
+        let buf = synthesize_advancement_chime();
+        assert!(!buf.is_empty());
+        for &s in buf.iter() {
             assert!(!s.is_nan());
             assert!((-1.0..=1.0).contains(&s));
         }

@@ -12,15 +12,16 @@ use telos_protocol::codec::{
 };
 use telos_protocol::error::ProtocolError;
 use telos_protocol::messages::{
-    AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
-    C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries,
-    C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand, C2sPlayerPosition,
-    ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload, ParticleEffectKind,
-    PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cGameMode, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
-    S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
+    C2sClientSettings, C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive,
+    C2sKnownRegistries, C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
+    C2sPlayerPosition, ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload,
+    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cGameMode,
+    S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess,
+    S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRegistryData,
+    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -295,6 +296,21 @@ fn test_s2c_messages_roundtrip() {
             vel_z: -0.5,
             yaw: 45.0,
             pitch: -10.0,
+        }),
+        S2cMessage::AdvancementUpdate(S2cAdvancementUpdate {
+            reset_all: true,
+            advancements: BoundedVec::new(vec![AdvancementProgressWire::new(
+                BoundedString::new("telos:story/root").unwrap(),
+                true,
+                100,
+            )])
+            .unwrap(),
+        }),
+        S2cMessage::AdvancementToast(S2cAdvancementToast {
+            id: BoundedString::new("telos:story/root").unwrap(),
+            title: BoundedString::new("Telos").unwrap(),
+            icon_item: 1,
+            frame: 0,
         }),
         S2cMessage::Disconnect(Disconnect {
             reason: DisconnectReason::ServerFull,

@@ -4,9 +4,10 @@ use crate::error::AudioError;
 use crate::source::SoundBuffer;
 use crate::spatial::{Listener, calculate_spatial_gains};
 use crate::synth::{
-    SYNTH_SAMPLE_RATE, synthesize_arrow_hit, synthesize_block_break, synthesize_block_place,
-    synthesize_bow_shoot, synthesize_chest_close, synthesize_chest_open, synthesize_entity_hurt,
-    synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop, synthesize_thunder,
+    SYNTH_SAMPLE_RATE, synthesize_advancement_chime, synthesize_arrow_hit, synthesize_block_break,
+    synthesize_block_place, synthesize_bow_shoot, synthesize_chest_close, synthesize_chest_open,
+    synthesize_entity_hurt, synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop,
+    synthesize_thunder,
 };
 use glam::Vec3;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
@@ -305,6 +306,13 @@ impl AudioEngine {
         let samples = synthesize_chest_close();
         let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
         self.play_sound_3d(SoundCategory::Blocks, &buffer, pos, 0.9, 1.0, 1.0, 16.0);
+    }
+
+    /// Dispatches a celebratory procedural advancement fanfare chime (non-spatial 2D).
+    pub fn play_advancement_chime(&mut self) {
+        let samples = synthesize_advancement_chime();
+        let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
+        self.play_sound_2d(SoundCategory::Players, &buffer, 1.0, 1.0);
     }
 
     /// Loads and caches an in-memory OGG/WAV sound buffer.

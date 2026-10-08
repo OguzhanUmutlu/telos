@@ -18,16 +18,16 @@ use telos_mod::{JsPlugin, JsPluginEngine, ModConfig, ModManager, ModPermissions,
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
-    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
-    C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
-    ChunkPayload, ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind,
-    PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
-    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cGameMode,
-    S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity,
-    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
+    C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse,
+    C2sPlayerCommand, ChunkPayload, ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind,
+    PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
+    S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cDespawnEntity, S2cEntityMove,
+    S2cEntityStatus, S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
+    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow,
+    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
     S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
@@ -147,6 +147,10 @@ pub struct Server {
     pub fuel_registry: telos_sim::FuelRegistry,
     /// Registry of deterministic crafting recipes.
     pub recipe_registry: telos_sim::RecipeRegistry,
+    /// Registry of data-driven achievements and criteria trees.
+    pub advancement_registry: Arc<telos_sim::AdvancementRegistry>,
+    /// Initial launch positions of arrows for distance-based advancement calculations.
+    pub arrow_origins: HashMap<u32, DVec3>,
     /// Next unique modal form identifier.
     pub next_form_id: u32,
     /// Outstanding pending modal forms dispatched to clients.
@@ -329,6 +333,8 @@ impl Server {
             smelting_recipes: telos_sim::SmeltingRegistry::standard(),
             fuel_registry: telos_sim::FuelRegistry::standard(),
             recipe_registry: telos_sim::RecipeRegistry::standard(),
+            advancement_registry: Arc::new(telos_sim::AdvancementRegistry::standard()),
+            arrow_origins: HashMap::new(),
             next_form_id: 1,
             pending_forms: HashMap::new(),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
@@ -684,6 +690,7 @@ impl Server {
 
         self.tracked_arrows.insert(net_id, entity);
         self.arrow_positions.insert(net_id, pos);
+        self.arrow_origins.insert(net_id, pos);
 
         let spawn_msg = S2cMessage::SpawnArrow(S2cSpawnArrow {
             net_id,
@@ -713,6 +720,7 @@ impl Server {
         if let Some(entity) = self.tracked_arrows.remove(&net_id) {
             self.ecs_world.despawn(entity);
             self.arrow_positions.remove(&net_id);
+            self.arrow_origins.remove(&net_id);
 
             let despawn_msg = S2cMessage::DespawnEntity(S2cDespawnEntity {
                 net_ids: BoundedVec::new(vec![net_id]).expect("single net_id"),
@@ -828,6 +836,16 @@ impl Server {
 
         // 6. Despawn mob
         self.despawn_mob(net_id);
+
+        // 7. Evaluate MobKill advancement trigger for killer
+        if let Some(sid) = killer_session_id {
+            self.evaluate_player_advancements(
+                sid,
+                &telos_sim::CriterionTrigger::MobKill {
+                    entity_type: u32::from(entity_type as u8),
+                },
+            );
+        }
     }
 
     /// Clears and despawns all currently active mobs.
@@ -957,6 +975,7 @@ impl Server {
 
         // 3. Player proximity pickup check (survival players <= 1.5 blocks with pickup_delay == 0)
         let mut picked_up_despawns = Vec::new();
+        let mut picked_up_sessions = Vec::new();
         let player_candidates: Vec<(u64, bevy_ecs::entity::Entity, DVec3)> = self
             .sessions
             .iter()
@@ -1036,6 +1055,7 @@ impl Server {
 
                         if stack_to_give.is_empty() {
                             picked_up_despawns.push(net_id);
+                            picked_up_sessions.push(sid);
                             break;
                         }
                     }
@@ -1045,6 +1065,10 @@ impl Server {
 
         for id in picked_up_despawns {
             self.despawn_item_entity(id);
+        }
+
+        for sid in picked_up_sessions {
+            self.check_inventory_advancements(sid);
         }
 
         // 4. Movement delta broadcast if item moved noticeably
@@ -1249,6 +1273,25 @@ impl Server {
                                 let _ = s
                                     .connection
                                     .send(Lane::Control, Payload::Msg(hurt_msg.clone()));
+                            }
+                        }
+
+                        let origin = self.arrow_origins.remove(net_id).unwrap_or(pos.0);
+                        #[allow(clippy::cast_possible_truncation)]
+                        let hit_dist = origin.distance(cur_pos) as f32;
+                        if let Some(shooter_id) = arrow_comp.shooter_id {
+                            let shooter_session = self.sessions.iter().find_map(|(&sid, s)| {
+                                if s.entity_id == shooter_id {
+                                    Some(sid)
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(sid) = shooter_session {
+                                self.evaluate_player_advancements(
+                                    sid,
+                                    &telos_sim::CriterionTrigger::ArcheryHit { distance: hit_dist },
+                                );
                             }
                         }
 
@@ -2143,6 +2186,7 @@ impl Server {
 
         let mut disconnected = Vec::new();
         let mut player_joined = Vec::new();
+        let mut newly_joined_sids = Vec::new();
         let mut block_actions: Vec<(u64, C2sBlockAction)> = Vec::new();
         let mut inventory_clicks: Vec<(u64, C2sInventoryClick)> = Vec::new();
         let mut container_closes: Vec<(u64, C2sCloseContainer)> = Vec::new();
@@ -2457,6 +2501,49 @@ impl Server {
 
                                 // Force initial chunk subscriptions
                                 let _ = session.recompute_subscriptions();
+
+                                // Load and synchronize player advancements
+                                let player_id = if session.username.is_empty() {
+                                    "default"
+                                } else {
+                                    &session.username
+                                };
+                                let loaded: Option<telos_sim::PlayerAdvancements> =
+                                    self.config.save_directory.as_ref().and_then(|dir| {
+                                        telos_storage::load_player_advancements(dir, player_id)
+                                            .ok()
+                                            .flatten()
+                                    });
+                                session.advancements = loaded.unwrap_or_default();
+
+                                let now_sec = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |d| d.as_secs());
+
+                                for adv in self.advancement_registry.all() {
+                                    if adv.is_root() && !session.advancements.is_completed(adv.id) {
+                                        session.advancements.grant(adv.id, now_sec);
+                                    }
+                                }
+
+                                let mut initial_wire = Vec::new();
+                                for (adv_id, &ts) in &session.advancements.completed {
+                                    if let Ok(id_b) = BoundedString::new(adv_id.clone()) {
+                                        initial_wire
+                                            .push(AdvancementProgressWire::new(id_b, true, ts));
+                                    }
+                                }
+                                if let Ok(adv_vec) = BoundedVec::new(initial_wire) {
+                                    let update_msg = S2cAdvancementUpdate {
+                                        reset_all: true,
+                                        advancements: adv_vec,
+                                    };
+                                    let _ = session.connection.send(
+                                        Lane::Control,
+                                        Payload::Msg(S2cMessage::AdvancementUpdate(update_msg)),
+                                    );
+                                }
+                                newly_joined_sids.push(*session_id);
                             }
                             C2sMessage::Disconnect(_) => {
                                 disconnected.push(*session_id);
@@ -2556,6 +2643,10 @@ impl Server {
             });
         }
 
+        for sid in newly_joined_sids {
+            self.check_inventory_advancements(sid);
+        }
+
         for id in disconnected {
             if let Some((world_name, chest_pos, container_kind)) = self.close_session_container(id)
                 && container_kind == 0
@@ -2583,6 +2674,13 @@ impl Server {
                 }
             }
             if let Some(session) = self.sessions.remove(&id) {
+                if let Some(save_dir) = &self.config.save_directory {
+                    let _ = telos_storage::save_player_advancements(
+                        save_dir,
+                        &session.username,
+                        &session.advancements,
+                    );
+                }
                 self.event_queue.push(GameEvent::PlayerLeft {
                     entity_net_id: session.entity_id,
                     username: session.username.clone(),
@@ -3711,6 +3809,8 @@ impl Server {
                     let _ = s.connection.send(Lane::Control, Payload::Msg(bulk_msg));
                 }
             }
+
+            self.check_inventory_advancements(session_id);
         }
 
         // 3b. Process container close requests
@@ -3752,6 +3852,7 @@ impl Server {
         // 4. Process block actions (authoritative validation & simulation)
         let mut dropped_items_to_spawn = Vec::new();
         let mut containers_to_close = Vec::new();
+        let mut block_advancement_triggers = Vec::new();
         for (session_id, action) in block_actions {
             let (
                 session_pos,
@@ -4099,6 +4200,11 @@ impl Server {
                                         drop_stack,
                                     ));
                                 }
+
+                                block_advancement_triggers.push((
+                                    session_id,
+                                    telos_sim::CriterionTrigger::BlockBreak { block: old_state.0 },
+                                ));
                             }
                             BlockActionKind::Place { .. } => {
                                 self.event_queue.push(GameEvent::BlockPlaced {
@@ -4106,6 +4212,11 @@ impl Server {
                                     new_state,
                                     actor_net_id: Some(u64::from(session_entity_id)),
                                 });
+
+                                block_advancement_triggers.push((
+                                    session_id,
+                                    telos_sim::CriterionTrigger::BlockPlace { block: new_state.0 },
+                                ));
                             }
                             BlockActionKind::Interact => {}
                         }
@@ -4212,6 +4323,11 @@ impl Server {
                 let _ = s.connection.send(Lane::Control, Payload::Msg(close_msg));
             }
             self.close_session_container(viewer_id);
+        }
+
+        for (sid, trigger) in block_advancement_triggers {
+            self.evaluate_player_advancements(sid, &trigger);
+            self.check_inventory_advancements(sid);
         }
 
         // 4c. Process player movement inputs and authoritative simulation
@@ -5036,9 +5152,19 @@ impl Server {
             && self
                 .tick_count
                 .is_multiple_of(u64::from(self.config.autosave_interval_ticks))
-            && let Err(err) = self.worlds.save_all()
         {
-            tracing::error!("Autosave failed: {err}");
+            if let Some(save_dir) = &self.config.save_directory {
+                for session in self.sessions.values() {
+                    let _ = telos_storage::save_player_advancements(
+                        save_dir,
+                        &session.username,
+                        &session.advancements,
+                    );
+                }
+            }
+            if let Err(err) = self.worlds.save_all() {
+                tracing::error!("Autosave failed: {err}");
+            }
         }
 
         // 5. Time progression and periodic synchronization
@@ -5075,14 +5201,167 @@ impl Server {
         }
     }
 
+    /// Checks all current inventory items of a player against inventory criteria.
+    pub fn check_inventory_advancements(&mut self, session_id: u64) {
+        let Some(entity) = self.sessions.get(&session_id).and_then(|s| s.ecs_entity) else {
+            return;
+        };
+        let Some(inv) = self.ecs_world.get::<Inventory>(entity) else {
+            return;
+        };
+        let mut counts: hashbrown::HashMap<u32, u32> = hashbrown::HashMap::new();
+        for slot in &inv.slots {
+            if !slot.is_empty() {
+                *counts.entry(slot.item).or_insert(0) += u32::from(slot.count);
+            }
+        }
+        for (item, count) in counts {
+            self.evaluate_player_advancements(
+                session_id,
+                &telos_sim::CriterionTrigger::Inventory { item, count },
+            );
+        }
+    }
+
+    /// Evaluates advancement criteria triggers for the specified player session.
+    ///
+    /// If any new advancements are completed:
+    /// - Dispatches toast notifications (`S2cAdvancementToast`) to the player.
+    /// - Dispatches progress update (`S2cAdvancementUpdate`).
+    /// - Broadcasts celebratory announcement chat message if `advancement.announce_chat`.
+    /// - Persists updated progress to `<world_dir>/advancements/<player_id>.json`.
+    pub fn evaluate_player_advancements(
+        &mut self,
+        session_id: u64,
+        trigger: &telos_sim::CriterionTrigger,
+    ) {
+        let now_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+
+        let (newly_unlocked, username) = {
+            let Some(session) = self.sessions.get_mut(&session_id) else {
+                return;
+            };
+            if session.phase != ConnectionPhase::Play {
+                return;
+            }
+            let newly =
+                session
+                    .advancements
+                    .evaluate_trigger(&self.advancement_registry, trigger, now_sec);
+            (newly, session.username.clone())
+        };
+
+        if newly_unlocked.is_empty() {
+            return;
+        }
+
+        let mut toasts = Vec::new();
+        let mut announcements = Vec::new();
+
+        for adv_id in &newly_unlocked {
+            if let Some(adv) = self.advancement_registry.get(adv_id) {
+                if adv.display_toast
+                    && let (Ok(id_b), Ok(title_b)) =
+                        (BoundedString::new(adv.id), BoundedString::new(adv.title))
+                {
+                    toasts.push(S2cAdvancementToast {
+                        id: id_b,
+                        title: title_b,
+                        icon_item: adv.icon_item,
+                        frame: adv.frame as u8,
+                    });
+                }
+                if adv.announce_chat {
+                    let frame_title = match adv.frame {
+                        telos_sim::AdvancementFrame::Task => "advancement",
+                        telos_sim::AdvancementFrame::Goal => "goal",
+                        telos_sim::AdvancementFrame::Challenge => "challenge",
+                    };
+                    let text = format!("{username} has made the {frame_title} [{}]", adv.title);
+                    if let Ok(msg_b) = BoundedString::new(text) {
+                        announcements.push(S2cChatMessage {
+                            sender: BoundedString::new("Server").unwrap(),
+                            message: msg_b,
+                            timestamp: self.tick_count,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            for toast in toasts {
+                let _ = session.connection.send(
+                    Lane::Control,
+                    Payload::Msg(S2cMessage::AdvancementToast(toast)),
+                );
+            }
+
+            let mut wire_items = Vec::new();
+            for adv_id in &newly_unlocked {
+                if let Ok(id_b) = BoundedString::new(adv_id.clone()) {
+                    wire_items.push(AdvancementProgressWire::new(id_b, true, now_sec));
+                }
+            }
+
+            if let Ok(wire_vec) = BoundedVec::new(wire_items) {
+                let update_msg = S2cAdvancementUpdate {
+                    reset_all: false,
+                    advancements: wire_vec,
+                };
+                let _ = session.connection.send(
+                    Lane::Control,
+                    Payload::Msg(S2cMessage::AdvancementUpdate(update_msg)),
+                );
+            }
+
+            if let Some(save_dir) = &self.config.save_directory {
+                let _ = telos_storage::save_player_advancements(
+                    save_dir,
+                    &session.username,
+                    &session.advancements,
+                );
+            }
+        }
+
+        for chat in announcements {
+            let msg = S2cMessage::ChatMessage(chat);
+            for s in self.sessions.values_mut() {
+                if s.phase == ConnectionPhase::Play {
+                    let _ = s.connection.send(Lane::Control, Payload::Msg(msg.clone()));
+                }
+            }
+        }
+    }
+
     /// Saves all dirty chunks to `.tlr` region files and syncs data to disk across all worlds.
     pub fn save_and_flush(&mut self) -> Result<usize, telos_storage::StorageError> {
+        if let Some(save_dir) = &self.config.save_directory {
+            for session in self.sessions.values() {
+                let _ = telos_storage::save_player_advancements(
+                    save_dir,
+                    &session.username,
+                    &session.advancements,
+                );
+            }
+        }
         self.worlds.save_all()
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
+        if let Some(save_dir) = &self.config.save_directory {
+            for session in self.sessions.values() {
+                let _ = telos_storage::save_player_advancements(
+                    save_dir,
+                    &session.username,
+                    &session.advancements,
+                );
+            }
+        }
         let _ = self.worlds.save_all();
     }
 }

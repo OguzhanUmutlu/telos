@@ -13,17 +13,17 @@ pub use disconnect::{Disconnect, DisconnectReason};
 pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
-    BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
-    C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse, C2sPlayerCommand,
-    C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame, LodPayload,
-    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
-    S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cGameMode, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
-    S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
-    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
-    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
+    C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse,
+    C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame,
+    LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
+    S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cContainerProperty,
+    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow,
+    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -265,9 +265,14 @@ pub enum S2cMessage {
     /// Play phase container property update (burn time, cook progress, etc.).
     ContainerProperty(S2cContainerProperty),
     /// Play phase request to display server-driven modal form dialog.
+    /// Play phase request to display server-driven modal form dialog.
     ModalFormRequest(S2cModalFormRequest),
     /// Play phase player game mode and capability synchronization.
     GameMode(S2cGameMode),
+    /// Play phase player advancement tree progress update.
+    AdvancementUpdate(S2cAdvancementUpdate),
+    /// Play phase advancement unlocked toast notification.
+    AdvancementToast(S2cAdvancementToast),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -312,7 +317,9 @@ impl S2cMessage {
             | Self::BlockEvent(_)
             | Self::ContainerProperty(_)
             | Self::ModalFormRequest(_)
-            | Self::GameMode(_) => Some(ConnectionPhase::Play),
+            | Self::GameMode(_)
+            | Self::AdvancementUpdate(_)
+            | Self::AdvancementToast(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -355,6 +362,8 @@ impl S2cMessage {
             Self::ContainerProperty(_) => 28,
             Self::ModalFormRequest(_) => 29,
             Self::GameMode(_) => 30,
+            Self::AdvancementUpdate(_) => 31,
+            Self::AdvancementToast(_) => 32,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -397,6 +406,8 @@ impl S2cMessage {
             Self::ContainerProperty(m) => m.encode(buf),
             Self::ModalFormRequest(m) => m.encode(buf),
             Self::GameMode(m) => m.encode(buf),
+            Self::AdvancementUpdate(m) => m.encode(buf),
+            Self::AdvancementToast(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

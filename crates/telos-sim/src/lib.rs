@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod advancement;
 pub mod attributes;
 pub mod bundles;
 pub mod capabilities;
@@ -29,6 +30,10 @@ pub mod schedule;
 pub mod smelting;
 pub mod weather;
 
+pub use advancement::{
+    Advancement, AdvancementCategory, AdvancementCriterion, AdvancementFrame, AdvancementRegistry,
+    CriterionTrigger, PlayerAdvancements,
+};
 pub use attributes::{
     Attribute, AttributeKind, AttributeModifier, Attributes, CombatTracker, DamageEvent,
     DamageType, Health, ModifierOperation, apply_damage, apply_mitigated_damage,

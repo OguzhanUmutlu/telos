@@ -162,6 +162,9 @@ fn test_server_handshake_and_chunk_streaming() {
             | S2cMessage::InventoryBulk(_)
             | S2cMessage::UpdateWeather(_)
             | S2cMessage::GameMode(_)
+            | S2cMessage::AdvancementUpdate(_)
+            | S2cMessage::AdvancementToast(_)
+            | S2cMessage::ChatMessage(_)
             | S2cMessage::PlayerMovementAck(_) => {}
             other => panic!("unexpected message during chunk delivery: {other:?}"),
         }

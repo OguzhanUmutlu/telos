@@ -17,10 +17,13 @@ lz4_flex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 bitflags = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+tempfile = { workspace = true }
 telos-worldgen = { workspace = true }
 
 [[bench]]

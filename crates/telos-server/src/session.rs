@@ -105,6 +105,8 @@ pub struct PlayerSession {
     pub active_container: Option<ActiveContainerSession>,
     /// Active 3x3 crafting table grid state (if crafting table container is open).
     pub active_crafting_table: telos_sim::CraftingTableInventory,
+    /// Player advancement progress state.
+    pub advancements: telos_sim::PlayerAdvancements,
 }
 
 /// Tracks an open container window for a player session.
@@ -200,6 +202,7 @@ impl PlayerSession {
             world_name: "overworld".to_string(),
             active_container: None,
             active_crafting_table: telos_sim::CraftingTableInventory::new(),
+            advancements: telos_sim::PlayerAdvancements::default(),
         }
     }
 
