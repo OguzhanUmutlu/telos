@@ -4,6 +4,18 @@ use crate::font::BitmapFont;
 use crate::quad::UiQuad;
 use crate::scale::snap_to_physical;
 
+/// Visual theme style for a menu button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ButtonStyle {
+    /// Standard neutral dark slate button.
+    #[default]
+    Default,
+    /// Electric cyan accent button for primary actions (e.g. Play, Save).
+    Primary,
+    /// Alert crimson button for destructive actions (e.g. Delete, Move to Trash).
+    Danger,
+}
+
 /// Standard interactive button widget rendered to `UiQuad` primitives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuButton {
@@ -23,6 +35,8 @@ pub struct MenuButton {
     pub enabled: bool,
     /// Whether the mouse cursor is currently hovering over this button.
     pub hovered: bool,
+    /// Visual style theme.
+    pub style: ButtonStyle,
 }
 
 impl MenuButton {
@@ -38,7 +52,15 @@ impl MenuButton {
             label: label.into(),
             enabled: true,
             hovered: false,
+            style: ButtonStyle::Default,
         }
+    }
+
+    /// Sets the visual style theme and returns `self`.
+    #[must_use]
+    pub fn with_style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
     }
 
     /// Hit-tests a mouse position in GUI pixels against this button.
@@ -59,22 +81,79 @@ impl MenuButton {
         let px_h = snap_to_physical(self.height, scale) as u16;
         let border_th = scale.max(1) as u16;
 
-        // Background color
-        let bg_col = if !self.enabled {
-            UiQuad::rgba(30, 30, 30, 200)
-        } else if self.hovered {
-            UiQuad::rgba(70, 70, 75, 240)
-        } else {
-            UiQuad::rgba(45, 45, 50, 220)
-        };
-
-        // Outer border
-        let border_col = if !self.enabled {
-            UiQuad::rgba(20, 20, 20, 255)
-        } else if self.hovered {
-            UiQuad::rgba(255, 255, 255, 255)
-        } else {
-            UiQuad::rgba(15, 15, 15, 255)
+        let (bg_col, border_col, text_col) = match self.style {
+            ButtonStyle::Default => {
+                let bg = if !self.enabled {
+                    UiQuad::rgba(30, 30, 30, 200)
+                } else if self.hovered {
+                    UiQuad::rgba(70, 70, 75, 240)
+                } else {
+                    UiQuad::rgba(45, 45, 50, 220)
+                };
+                let border = if !self.enabled {
+                    UiQuad::rgba(20, 20, 20, 255)
+                } else if self.hovered {
+                    UiQuad::rgba(255, 255, 255, 255)
+                } else {
+                    UiQuad::rgba(15, 15, 15, 255)
+                };
+                let text = if !self.enabled {
+                    UiQuad::rgba(140, 140, 140, 255)
+                } else if self.hovered {
+                    UiQuad::rgba(255, 255, 160, 255)
+                } else {
+                    UiQuad::rgba(240, 240, 240, 255)
+                };
+                (bg, border, text)
+            }
+            ButtonStyle::Primary => {
+                let bg = if !self.enabled {
+                    UiQuad::rgba(22, 32, 45, 180)
+                } else if self.hovered {
+                    UiQuad::rgba(14, 116, 144, 245)
+                } else {
+                    UiQuad::rgba(15, 60, 85, 230)
+                };
+                let border = if !self.enabled {
+                    UiQuad::rgba(35, 50, 70, 200)
+                } else if self.hovered {
+                    UiQuad::rgba(103, 232, 249, 255)
+                } else {
+                    UiQuad::rgba(56, 189, 248, 240)
+                };
+                let text = if !self.enabled {
+                    UiQuad::rgba(100, 125, 145, 255)
+                } else if self.hovered {
+                    UiQuad::rgba(255, 255, 255, 255)
+                } else {
+                    UiQuad::rgba(224, 242, 254, 255)
+                };
+                (bg, border, text)
+            }
+            ButtonStyle::Danger => {
+                let bg = if !self.enabled {
+                    UiQuad::rgba(35, 25, 25, 180)
+                } else if self.hovered {
+                    UiQuad::rgba(153, 27, 27, 245)
+                } else {
+                    UiQuad::rgba(65, 20, 25, 225)
+                };
+                let border = if !self.enabled {
+                    UiQuad::rgba(55, 30, 30, 200)
+                } else if self.hovered {
+                    UiQuad::rgba(248, 113, 113, 255)
+                } else {
+                    UiQuad::rgba(185, 28, 28, 235)
+                };
+                let text = if !self.enabled {
+                    UiQuad::rgba(125, 100, 100, 255)
+                } else if self.hovered {
+                    UiQuad::rgba(255, 255, 255, 255)
+                } else {
+                    UiQuad::rgba(252, 165, 165, 255)
+                };
+                (bg, border, text)
+            }
         };
 
         // Border quads (top, bottom, left, right)
@@ -102,14 +181,6 @@ impl MenuButton {
         let (text_w, text_h) = font.measure_text(&self.label);
         let text_x = self.x + (self.width - text_w) * 0.5;
         let text_y = self.y + (self.height - text_h) * 0.5;
-
-        let text_col = if !self.enabled {
-            UiQuad::rgba(140, 140, 140, 255)
-        } else if self.hovered {
-            UiQuad::rgba(255, 255, 160, 255)
-        } else {
-            UiQuad::rgba(240, 240, 240, 255)
-        };
 
         font.layout_text(&self.label, text_x, text_y, text_col, true, scale, out);
     }

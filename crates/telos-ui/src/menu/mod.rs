@@ -16,6 +16,6 @@ pub use main_menu::{MainMenuAction, MainMenuScreen};
 pub use modal_form::{CustomWidgetState, ModalFormAction, ModalFormScreen};
 pub use pause_menu::{PauseMenuAction, PauseMenuScreen};
 pub use settings_screen::{SettingsScreen, SettingsTab};
-pub use widgets::{MenuButton, MenuSlider, MenuTextInput};
+pub use widgets::{ButtonStyle, MenuButton, MenuSlider, MenuTextInput};
 pub use world_create::{WorldCreateAction, WorldCreateWizard};
-pub use world_select::{WorldEntry, WorldSelectAction, WorldSelectScreen};
+pub use world_select::{WorldDeletePrompt, WorldEntry, WorldSelectAction, WorldSelectScreen};

@@ -11,6 +11,7 @@ pub mod ident;
 pub mod raycast;
 pub mod telemetry;
 pub mod time;
+pub mod trash;
 
 pub use cpu::{CpuFeatures, SimdBackend};
 
@@ -36,4 +37,7 @@ pub use time::{
     DAY_TICKS, FixedTimestep, LUNAR_CYCLE_DAYS, MIDNIGHT_TICKS, NOON_TICKS, SUNRISE_TICKS,
     SUNSET_TICKS, daylight_factor, moon_direction, moon_phase, sun_angle, sun_direction,
     sunset_factor,
+};
+pub use trash::{
+    format_iso8601_utc, move_to_local_trash, move_to_trash, move_to_xdg_trash, percent_encode_path,
 };

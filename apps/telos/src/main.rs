@@ -109,7 +109,7 @@ use telos_voxel::light::ChunkLight;
 use telos_voxel::registry::BlockRegistry;
 use telos_voxel::shape::{BlockShape, SubBox};
 use telos_voxel::state::{BlockStateId, StateFlags};
-use tracing::info;
+use tracing::{info, warn};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
@@ -9059,11 +9059,7 @@ impl ApplicationHandler for App {
                         .buttons
                         .iter()
                         .any(|b| b.hovered && b.enabled),
-                    AppScreen::WorldSelect => self
-                        .world_select
-                        .buttons
-                        .iter()
-                        .any(|b| b.hovered && b.enabled),
+                    AppScreen::WorldSelect => self.world_select.is_hovered(),
                     AppScreen::WorldCreate => self
                         .world_create
                         .buttons
@@ -9241,8 +9237,15 @@ impl ApplicationHandler for App {
                                     self.current_screen = AppScreen::WorldCreate;
                                 }
                                 WorldSelectAction::DeleteWorld(entry) => {
-                                    info!(world = %entry.name, path = ?entry.path, "Deleting world");
-                                    let _ = std::fs::remove_dir_all(&entry.path);
+                                    info!(world = %entry.name, path = ?entry.path, "Moving world to trash");
+                                    match telos_core::trash::move_to_trash(&entry.path) {
+                                        Ok(dest) => {
+                                            info!(world = %entry.name, destination = ?dest, "Successfully moved world to trash");
+                                        }
+                                        Err(err) => {
+                                            warn!(world = %entry.name, error = %err, "Failed to move world to trash");
+                                        }
+                                    }
                                     self.world_select.scan_worlds(&self.worlds_dir);
                                 }
                                 WorldSelectAction::BackToTitle => {
@@ -9957,8 +9960,48 @@ impl ApplicationHandler for App {
                         return;
                     }
                     AppScreen::WorldSelect => {
-                        if pressed && code == KeyCode::Escape {
-                            self.current_screen = AppScreen::MainMenu;
+                        if pressed {
+                            if code == KeyCode::Escape {
+                                if self.world_select.has_prompt() {
+                                    self.world_select.cancel_prompt();
+                                } else {
+                                    self.current_screen = AppScreen::MainMenu;
+                                }
+                            } else if code == KeyCode::Enter || code == KeyCode::NumpadEnter {
+                                if self.world_select.has_prompt() {
+                                    if let Some(WorldSelectAction::DeleteWorld(entry)) =
+                                        self.world_select.confirm_prompt()
+                                    {
+                                        info!(world = %entry.name, path = ?entry.path, "Moving world to trash");
+                                        let _ = telos_core::trash::move_to_trash(&entry.path);
+                                        self.world_select.scan_worlds(&self.worlds_dir);
+                                    }
+                                } else if let Some(idx) = self.world_select.selected_index
+                                    && let Some(entry) = self.world_select.worlds.get(idx).cloned()
+                                {
+                                    self.start_singleplayer_server(
+                                        entry.path,
+                                        entry.seed,
+                                        &entry.generator,
+                                    );
+                                    self.current_screen = AppScreen::InGame;
+                                    self.is_paused = false;
+                                    self.controller.mouse_captured = true;
+                                    self.set_cursor_captured(true);
+                                }
+                            } else if (code == KeyCode::Delete || code == KeyCode::Backspace)
+                                && !self.world_select.has_prompt()
+                            {
+                                self.world_select.open_delete_prompt_i18n(&self.catalog);
+                            } else if (code == KeyCode::ArrowUp || code == KeyCode::KeyW)
+                                && !self.world_select.has_prompt()
+                            {
+                                self.world_select.select_previous();
+                            } else if (code == KeyCode::ArrowDown || code == KeyCode::KeyS)
+                                && !self.world_select.has_prompt()
+                            {
+                                self.world_select.select_next();
+                            }
                         }
                         return;
                     }
@@ -10412,8 +10455,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if self.current_screen == AppScreen::WorldSelect {
-                    self.world_select.scroll_offset =
-                        (self.world_select.scroll_offset - scroll * 16.0).max(0.0);
+                    self.world_select.handle_mouse_wheel(scroll);
                 } else if self.current_screen == AppScreen::InGame
                     && !self.is_paused
                     && !self.inventory_open

@@ -110,7 +110,7 @@ pub struct ModalFormScreen {
     pub dialog_w: f32,
     /// Height of dialog in GUI pixels.
     pub dialog_h: f32,
-    /// Title bar close button [X].
+    /// Title bar close button `[X]`.
     pub close_btn: MenuButton,
     /// Current vertical scroll offset in GUI pixels.
     pub scroll_offset: f32,
