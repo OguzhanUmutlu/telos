@@ -161,20 +161,12 @@ impl ColumnHeights {
     }
 
     /// Updates the column heightmap with the contents of a cubic chunk at chunk coordinate $cy$.
-    #[allow(clippy::cast_possible_wrap)]
     pub fn update_chunk(&mut self, chunk_cy: i32, chunk_hm: &ChunkHeightmap) {
-        let chunk_base_y = chunk_cy << 5;
-        for z in 0..32 {
-            for x in 0..32 {
-                if let Some(local_y) = chunk_hm.highest_y(x, z) {
-                    let world_y = (chunk_base_y + local_y as i32) as i16;
-                    let idx = ChunkHeightmap::col_idx(x, z);
-                    if world_y > self.top[idx] {
-                        self.top[idx] = world_y;
-                    }
-                }
-            }
-        }
+        crate::simd::light::update_column_heights_simd(
+            &mut self.top,
+            chunk_cy,
+            &chunk_hm.top_local,
+        );
     }
 
     /// Checks if a voxel at $(x, z)$ and world coordinate $Y$ has unobstructed line-of-sight to the open sky.

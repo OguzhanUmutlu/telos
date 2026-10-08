@@ -28,5 +28,9 @@ harness = false
 name = "tree_bench"
 harness = false
 
+[[bench]]
+name = "noise_simd_bench"
+harness = false
+
 [lints]
 workspace = true

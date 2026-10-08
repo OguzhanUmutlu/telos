@@ -19,6 +19,7 @@ pub mod map;
 pub mod occupancy;
 pub mod registry;
 pub mod shape;
+pub mod simd;
 pub mod state;
 pub mod storage;
 

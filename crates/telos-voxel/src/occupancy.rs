@@ -133,7 +133,7 @@ impl Occupancy {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.col_y.iter().all(|&c| c == 0)
+        crate::simd::occupancy::is_empty_simd(&self.col_y)
     }
 }
 

@@ -1,7 +1,12 @@
 //! Noise primitives and fractal evaluations.
 
+pub mod simd;
 pub mod simplex;
 
+pub use simd::{
+    fbm2d_batch_8, fbm2d_slice, fbm3d_batch_8, fbm3d_slice, noise2_batch_8, noise3_batch_8,
+    ridged2d_batch_8,
+};
 pub use simplex::{noise2, noise3};
 
 /// Evaluates 2D Fractal Brownian Motion (fBm).

@@ -138,6 +138,10 @@ impl CoarseGrid {
         let detail_seed = seed.wrapping_add(777);
         let cave_seed = seed.wrapping_add(888);
         let mut densities = [0.0f32; TOTAL_CORNERS];
+        let mut xs = [0.0f32; TOTAL_CORNERS];
+        let mut ys = [0.0f32; TOTAL_CORNERS];
+        let mut zs = [0.0f32; TOTAL_CORNERS];
+        let mut details = [0.0f32; TOTAL_CORNERS];
 
         for cz in 0..CORNERS_XZ {
             let z = origin_z + (cz * 4) as f32;
@@ -145,15 +149,39 @@ impl CoarseGrid {
                 let y = origin_y + (cy * 8) as f32;
                 for cx in 0..CORNERS_XZ {
                     let x = origin_x + (cx * 4) as f32;
+                    let idx = cz * (CORNERS_Y * CORNERS_XZ) + cy * CORNERS_XZ + cx;
+                    xs[idx] = x;
+                    ys[idx] = y;
+                    zs[idx] = z;
+                }
+            }
+        }
+
+        crate::noise::fbm3d_slice(
+            detail_seed,
+            &xs,
+            &ys,
+            &zs,
+            2,
+            1.0 / 64.0,
+            2.0,
+            0.5,
+            &mut details,
+        );
+
+        for cz in 0..CORNERS_XZ {
+            for cy in 0..CORNERS_Y {
+                let y = origin_y + (cy * 8) as f32;
+                for cx in 0..CORNERS_XZ {
                     let col = columns[cz * CORNERS_XZ + cx];
                     let idx = cz * (CORNERS_Y * CORNERS_XZ) + cy * CORNERS_XZ + cx;
 
                     let mut density = (col.h - y) / col.softness;
-
-                    let detail = fbm3d(detail_seed, x, y, z, 2, 1.0 / 64.0, 2.0, 0.5) * 0.45;
-                    density += detail;
+                    density += details[idx] * 0.45;
 
                     if y < col.h - 6.0 {
+                        let x = xs[idx];
+                        let z = zs[idx];
                         let cave_noise = fbm3d(cave_seed, x, y, z, 2, 1.0 / 48.0, 2.0, 0.5);
                         if cave_noise > 0.38 {
                             density = density.min(-1.0);

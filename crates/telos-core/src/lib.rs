@@ -3,6 +3,7 @@
 //! Core primitive types, coordinate systems, identifiers, and telemetry for the voxel engine.
 
 pub mod coords;
+pub mod cpu;
 pub mod dirs;
 pub mod form;
 pub mod i18n;
@@ -10,6 +11,8 @@ pub mod ident;
 pub mod raycast;
 pub mod telemetry;
 pub mod time;
+
+pub use cpu::{CpuFeatures, SimdBackend};
 
 pub use form::{
     ActionForm, CustomForm, FormButton, FormCancelReason, FormElement, FormImage, FormImageType,
