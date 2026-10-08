@@ -98,6 +98,10 @@ pub const ITEM_ARROW: u32 = 62;
 pub const ITEM_CHEST: u32 = 63;
 /// Furnace block container item identifier (64).
 pub const ITEM_FURNACE: u32 = 64;
+/// Potion item identifier (36).
+pub const ITEM_POTION: u32 = 36;
+/// Glass bottle item identifier (38).
+pub const ITEM_GLASS_BOTTLE: u32 = 38;
 /// Crafting table block container item identifier (14).
 pub const ITEM_CRAFTING_TABLE: u32 = 14;
 /// Cooked porkchop food item identifier (65).
@@ -178,6 +182,12 @@ pub const fn is_chest(item: u32) -> bool {
 #[must_use]
 pub const fn is_furnace(item: u32) -> bool {
     item == ITEM_FURNACE
+}
+
+/// Returns true if the item is a potion bottle.
+#[must_use]
+pub const fn is_potion(item: u32) -> bool {
+    item == ITEM_POTION
 }
 
 /// Checks if a slot accepts the specified item.

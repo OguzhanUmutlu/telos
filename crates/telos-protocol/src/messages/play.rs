@@ -3269,6 +3269,124 @@ impl S2cAdvancementToast {
     }
 }
 
+/// Server instructs the client to apply or update an active status effect on an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cEntityEffect {
+    /// Network entity ID (0 for client player).
+    pub entity_id: u32,
+    /// Effect type identifier (1..=18).
+    pub effect_id: u8,
+    /// Amplifier / power level (0 = Level I, 1 = Level II, etc.).
+    pub amplifier: u8,
+    /// Duration remaining in ticks (-1 for permanent/beacon, >= 0 for finite).
+    pub duration_ticks: i32,
+    /// Whether the effect was granted by an ambient source (e.g. Beacon/Conduit).
+    pub ambient: bool,
+    /// Whether to render swirling particle emitters.
+    pub show_particles: bool,
+    /// Whether to display the effect icon in the client HUD.
+    pub show_icon: bool,
+}
+
+impl S2cEntityEffect {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.entity_id, buf);
+        buf.push(self.effect_id);
+        buf.push(self.amplifier);
+        encode_varint(zigzag_i32(self.duration_ticks), buf);
+        let mut flags = 0u8;
+        if self.ambient {
+            flags |= 0x01;
+        }
+        if self.show_particles {
+            flags |= 0x02;
+        }
+        if self.show_icon {
+            flags |= 0x04;
+        }
+        buf.push(flags);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let entity_id = decode_varint(cursor)?;
+        if cursor.len() < 2 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let effect_id = cursor[0];
+        let amplifier = cursor[1];
+        *cursor = &cursor[2..];
+
+        if !(1..=18).contains(&effect_id) {
+            return Err(ProtocolError::InvalidValue {
+                field: "effect_id",
+                reason: format!("Effect ID out of range 1..=18: {effect_id}"),
+            });
+        }
+
+        let duration_ticks = unzigzag_i32(decode_varint(cursor)?);
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let flags = cursor[0];
+        *cursor = &cursor[1..];
+
+        let ambient = (flags & 0x01) != 0;
+        let show_particles = (flags & 0x02) != 0;
+        let show_icon = (flags & 0x04) != 0;
+
+        Ok(Self {
+            entity_id,
+            effect_id,
+            amplifier,
+            duration_ticks,
+            ambient,
+            show_particles,
+            show_icon,
+        })
+    }
+}
+
+/// Server instructs the client to remove an active status effect from an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S2cRemoveEntityEffect {
+    /// Network entity ID (0 for client player).
+    pub entity_id: u32,
+    /// Effect type identifier (1..=18).
+    pub effect_id: u8,
+}
+
+impl S2cRemoveEntityEffect {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.entity_id, buf);
+        buf.push(self.effect_id);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let entity_id = decode_varint(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let effect_id = cursor[0];
+        *cursor = &cursor[1..];
+
+        if !(1..=18).contains(&effect_id) {
+            return Err(ProtocolError::InvalidValue {
+                field: "effect_id",
+                reason: format!("Effect ID out of range 1..=18: {effect_id}"),
+            });
+        }
+
+        Ok(Self {
+            entity_id,
+            effect_id,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3611,5 +3729,52 @@ mod tests {
             S2cAdvancementToast::decode(&mut cursor2).expect("decode S2cAdvancementToast");
         assert_eq!(toast, decoded_toast);
         assert!(cursor2.is_empty());
+
+        // Test S2cEntityEffect and S2cRemoveEntityEffect
+        let effect_msg = S2cEntityEffect {
+            entity_id: 10,
+            effect_id: 17, // Night Vision
+            amplifier: 0,
+            duration_ticks: 3600,
+            ambient: false,
+            show_particles: true,
+            show_icon: true,
+        };
+        let mut buf3 = Vec::new();
+        effect_msg.encode(&mut buf3);
+        let mut cursor3 = &buf3[..];
+        let decoded_effect = S2cEntityEffect::decode(&mut cursor3).expect("decode S2cEntityEffect");
+        assert_eq!(effect_msg, decoded_effect);
+        assert!(cursor3.is_empty());
+
+        // Infinite / beacon duration test (-1)
+        let beacon_effect = S2cEntityEffect {
+            entity_id: 0,
+            effect_id: 1, // Speed
+            amplifier: 1,
+            duration_ticks: -1,
+            ambient: true,
+            show_particles: true,
+            show_icon: true,
+        };
+        let mut buf_beacon = Vec::new();
+        beacon_effect.encode(&mut buf_beacon);
+        let mut cursor_beacon = &buf_beacon[..];
+        let decoded_beacon =
+            S2cEntityEffect::decode(&mut cursor_beacon).expect("decode beacon effect");
+        assert_eq!(beacon_effect, decoded_beacon);
+        assert!(cursor_beacon.is_empty());
+
+        let remove_msg = S2cRemoveEntityEffect {
+            entity_id: 10,
+            effect_id: 17,
+        };
+        let mut buf4 = Vec::new();
+        remove_msg.encode(&mut buf4);
+        let mut cursor4 = &buf4[..];
+        let decoded_remove =
+            S2cRemoveEntityEffect::decode(&mut cursor4).expect("decode S2cRemoveEntityEffect");
+        assert_eq!(remove_msg, decoded_remove);
+        assert!(cursor4.is_empty());
     }
 }

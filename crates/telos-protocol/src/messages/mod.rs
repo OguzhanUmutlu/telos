@@ -21,11 +21,12 @@ pub use play::{
     LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
     S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cContainerProperty,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow,
-    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    S2cDespawnEntity, S2cEntityEffect, S2cEntityMove, S2cEntityStatus, S2cGameMode,
+    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
+    S2cPlayerMovementAck, S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
+    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -279,6 +280,10 @@ pub enum S2cMessage {
     AdvancementUpdate(S2cAdvancementUpdate),
     /// Play phase advancement unlocked toast notification.
     AdvancementToast(S2cAdvancementToast),
+    /// Play phase single entity status effect applied, updated, or refreshed.
+    EntityEffect(S2cEntityEffect),
+    /// Play phase single entity status effect removed or expired.
+    RemoveEntityEffect(S2cRemoveEntityEffect),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -328,7 +333,9 @@ impl S2cMessage {
             | Self::ModalFormRequest(_)
             | Self::GameMode(_)
             | Self::AdvancementUpdate(_)
-            | Self::AdvancementToast(_) => Some(ConnectionPhase::Play),
+            | Self::AdvancementToast(_)
+            | Self::EntityEffect(_)
+            | Self::RemoveEntityEffect(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -373,6 +380,8 @@ impl S2cMessage {
             Self::GameMode(_) => 30,
             Self::AdvancementUpdate(_) => 31,
             Self::AdvancementToast(_) => 32,
+            Self::EntityEffect(_) => 33,
+            Self::RemoveEntityEffect(_) => 34,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -419,6 +428,8 @@ impl S2cMessage {
             Self::GameMode(m) => m.encode(buf),
             Self::AdvancementUpdate(m) => m.encode(buf),
             Self::AdvancementToast(m) => m.encode(buf),
+            Self::EntityEffect(m) => m.encode(buf),
+            Self::RemoveEntityEffect(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

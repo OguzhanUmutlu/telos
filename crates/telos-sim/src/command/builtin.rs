@@ -301,7 +301,15 @@ fn register_effect(dispatcher: &mut CommandDispatcher) {
                 .then(
                     CommandNode::argument("target", ArgumentType::Entity)
                         .with_tooltip("Target entity to clear")
-                        .executes(|_| CommandOutput::success("Cleared all effects from target")),
+                        .executes(|_| CommandOutput::success("Cleared all effects from target"))
+                        .then(
+                            CommandNode::argument("effect", ArgumentType::Word)
+                                .with_tooltip("Specific status effect to clear")
+                                .executes(|ctx| {
+                                    let effect = ctx.get_string("effect").unwrap_or("effect");
+                                    CommandOutput::success(format!("Cleared {effect} from target"))
+                                }),
+                        ),
                 ),
         )
         .then(

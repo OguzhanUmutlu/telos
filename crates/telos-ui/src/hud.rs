@@ -203,6 +203,10 @@ pub struct HudEffectDisplay {
     pub duration_ticks: i32,
     /// Particle and badge accent RGB color.
     pub color: [u8; 3],
+    /// Whether effect is from an ambient source (e.g. beacon / conduit).
+    pub ambient: bool,
+    /// Whether this effect is beneficial (true) or harmful (false).
+    pub is_beneficial: bool,
 }
 
 impl Default for HudState {
@@ -484,12 +488,13 @@ fn render_active_effects(
         let px_w = (card_w * gui_scale as f32).round() as u16;
         let px_h = (card_h * gui_scale as f32).round() as u16;
 
-        // Dark translucent background card
-        out.push(UiQuad::solid(
-            [px_x, px_y],
-            [px_w, px_h],
-            UiQuad::rgba(25, 25, 30, bg_alpha),
-        ));
+        // Dark translucent background card: reddish tint if harmful, dark gray if beneficial
+        let bg_quad_color = if eff.is_beneficial {
+            UiQuad::rgba(25, 25, 30, bg_alpha)
+        } else {
+            UiQuad::rgba(45, 18, 18, bg_alpha)
+        };
+        out.push(UiQuad::solid([px_x, px_y], [px_w, px_h], bg_quad_color));
 
         // Colored accent bar on left edge (3 logical px wide)
         let bar_w = to_physical_pixels(3, gui_scale) as u16;
@@ -498,6 +503,16 @@ fn render_active_effects(
             [bar_w, px_h],
             UiQuad::rgba(eff.color[0], eff.color[1], eff.color[2], 255),
         ));
+
+        // Ambient effect (beacon/conduit): render subtle gold top highlight line
+        if eff.ambient {
+            let border_h = to_physical_pixels(1, gui_scale).max(1) as u16;
+            out.push(UiQuad::solid(
+                [px_x, px_y],
+                [px_w, border_h],
+                UiQuad::rgba(255, 215, 0, 180),
+            ));
+        }
 
         // Effect title (e.g. "Speed II")
         let title_x = card_x + 6.0;

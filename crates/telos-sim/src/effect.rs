@@ -40,6 +40,10 @@ pub enum StatusEffectKind {
     InstantHealth = 15,
     /// Instant damage dealing (deals `6 << amplifier` HP).
     InstantDamage = 16,
+    /// Enhances visibility in dark conditions and underwater.
+    NightVision = 17,
+    /// Severely constrains vision distance and creates dark vignette.
+    Blindness = 18,
 }
 
 impl StatusEffectKind {
@@ -69,6 +73,8 @@ impl StatusEffectKind {
             14 => Some(Self::JumpBoost),
             15 => Some(Self::InstantHealth),
             16 => Some(Self::InstantDamage),
+            17 => Some(Self::NightVision),
+            18 => Some(Self::Blindness),
             _ => None,
         }
     }
@@ -93,6 +99,8 @@ impl StatusEffectKind {
             Self::JumpBoost => "Jump Boost",
             Self::InstantHealth => "Instant Health",
             Self::InstantDamage => "Instant Damage",
+            Self::NightVision => "Night Vision",
+            Self::Blindness => "Blindness",
         }
     }
 
@@ -116,6 +124,8 @@ impl StatusEffectKind {
             Self::JumpBoost => [34, 255, 76],
             Self::InstantHealth => [248, 36, 35],
             Self::InstantDamage => [67, 10, 9],
+            Self::NightVision => [31, 31, 160],
+            Self::Blindness => [31, 31, 35],
         }
     }
 
@@ -140,7 +150,228 @@ impl StatusEffectKind {
                 | Self::Invisibility
                 | Self::JumpBoost
                 | Self::InstantHealth
+                | Self::NightVision
         )
+    }
+}
+
+/// Metadata definition for a status effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusEffectDef {
+    /// Effect kind enum variant.
+    pub kind: StatusEffectKind,
+    /// Wire / numeric identifier (1..=18).
+    pub id: u8,
+    /// Canonical namespaced identifier (e.g. "telos:speed").
+    pub identifier: &'static str,
+    /// Human-readable display name (e.g. "Speed").
+    pub display_name: &'static str,
+    /// Ambient swirl particle color `[R, G, B]`.
+    pub particle_color: [u8; 3],
+    /// Whether the effect is beneficial to the affected entity.
+    pub is_beneficial: bool,
+    /// Whether the effect is applied instantly without ongoing duration.
+    pub is_instant: bool,
+}
+
+/// Static registry of all standard status effect definitions.
+pub struct StatusEffectRegistry;
+
+impl StatusEffectRegistry {
+    /// All 18 standard status effect definitions.
+    pub const ALL: [StatusEffectDef; 18] = [
+        StatusEffectDef {
+            kind: StatusEffectKind::Speed,
+            id: 1,
+            identifier: "telos:speed",
+            display_name: "Speed",
+            particle_color: [124, 175, 198],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Slowness,
+            id: 2,
+            identifier: "telos:slowness",
+            display_name: "Slowness",
+            particle_color: [90, 108, 129],
+            is_beneficial: false,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Strength,
+            id: 3,
+            identifier: "telos:strength",
+            display_name: "Strength",
+            particle_color: [147, 36, 35],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Weakness,
+            id: 4,
+            identifier: "telos:weakness",
+            display_name: "Weakness",
+            particle_color: [72, 77, 72],
+            is_beneficial: false,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Regeneration,
+            id: 5,
+            identifier: "telos:regeneration",
+            display_name: "Regeneration",
+            particle_color: [205, 92, 171],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Poison,
+            id: 6,
+            identifier: "telos:poison",
+            display_name: "Poison",
+            particle_color: [78, 147, 49],
+            is_beneficial: false,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Wither,
+            id: 7,
+            identifier: "telos:wither",
+            display_name: "Wither",
+            particle_color: [53, 42, 39],
+            is_beneficial: false,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Resistance,
+            id: 8,
+            identifier: "telos:resistance",
+            display_name: "Resistance",
+            particle_color: [153, 69, 58],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::FireResistance,
+            id: 9,
+            identifier: "telos:fire_resistance",
+            display_name: "Fire Resistance",
+            particle_color: [228, 154, 58],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::WaterBreathing,
+            id: 10,
+            identifier: "telos:water_breathing",
+            display_name: "Water Breathing",
+            particle_color: [46, 82, 153],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Haste,
+            id: 11,
+            identifier: "telos:haste",
+            display_name: "Haste",
+            particle_color: [217, 192, 67],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::MiningFatigue,
+            id: 12,
+            identifier: "telos:mining_fatigue",
+            display_name: "Mining Fatigue",
+            particle_color: [74, 66, 23],
+            is_beneficial: false,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Invisibility,
+            id: 13,
+            identifier: "telos:invisibility",
+            display_name: "Invisibility",
+            particle_color: [127, 131, 146],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::JumpBoost,
+            id: 14,
+            identifier: "telos:jump_boost",
+            display_name: "Jump Boost",
+            particle_color: [34, 255, 76],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::InstantHealth,
+            id: 15,
+            identifier: "telos:instant_health",
+            display_name: "Instant Health",
+            particle_color: [248, 36, 35],
+            is_beneficial: true,
+            is_instant: true,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::InstantDamage,
+            id: 16,
+            identifier: "telos:instant_damage",
+            display_name: "Instant Damage",
+            particle_color: [67, 10, 9],
+            is_beneficial: false,
+            is_instant: true,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::NightVision,
+            id: 17,
+            identifier: "telos:night_vision",
+            display_name: "Night Vision",
+            particle_color: [31, 31, 160],
+            is_beneficial: true,
+            is_instant: false,
+        },
+        StatusEffectDef {
+            kind: StatusEffectKind::Blindness,
+            id: 18,
+            identifier: "telos:blindness",
+            display_name: "Blindness",
+            particle_color: [31, 31, 35],
+            is_beneficial: false,
+            is_instant: false,
+        },
+    ];
+
+    /// Queries an effect definition by its enum kind.
+    #[must_use]
+    pub fn get(kind: StatusEffectKind) -> Option<&'static StatusEffectDef> {
+        Self::ALL.iter().find(|d| d.kind == kind)
+    }
+
+    /// Queries an effect definition by its numeric wire ID (1..=18).
+    #[must_use]
+    pub fn get_by_id(id: u8) -> Option<&'static StatusEffectDef> {
+        Self::ALL.iter().find(|d| d.id == id)
+    }
+
+    /// Queries an effect definition by name or namespaced ID (e.g. "speed", "telos:speed", `night_vision`).
+    /// Case-insensitive.
+    #[must_use]
+    pub fn get_by_name(name: &str) -> Option<&'static StatusEffectDef> {
+        let clean = name.trim().to_ascii_lowercase();
+        let stripped = clean
+            .strip_prefix("telos:")
+            .or_else(|| clean.strip_prefix("minecraft:"))
+            .unwrap_or(&clean);
+
+        Self::ALL.iter().find(|d| {
+            let d_clean = d.identifier.strip_prefix("telos:").unwrap_or(d.identifier);
+            d_clean == stripped
+                || d.identifier == clean
+                || d.display_name.eq_ignore_ascii_case(stripped)
+        })
     }
 }
 
@@ -308,6 +539,7 @@ impl StatusEffects {
 /// 2. Evaluates periodic effect intervals (Regeneration, Poison, Wither).
 /// 3. Cleans up expired effects.
 /// 4. Synchronizes dynamic attribute modifiers with `Attributes`.
+#[allow(clippy::too_many_lines)]
 pub fn status_effect_system(
     mut query: Query<(
         Entity,
@@ -323,6 +555,8 @@ pub fn status_effect_system(
                 attrs.remove_modifier(AttributeKind::MovementSpeed, "effect.slowness");
                 attrs.remove_modifier(AttributeKind::AttackDamage, "effect.strength");
                 attrs.remove_modifier(AttributeKind::AttackDamage, "effect.weakness");
+                attrs.remove_modifier(AttributeKind::AttackSpeed, "effect.haste");
+                attrs.remove_modifier(AttributeKind::AttackSpeed, "effect.mining_fatigue");
             }
             continue;
         }
@@ -420,6 +654,35 @@ pub fn status_effect_system(
                 );
             } else {
                 attrs.remove_modifier(AttributeKind::AttackDamage, "effect.weakness");
+            }
+
+            // Haste / Mining Fatigue -> AttackSpeed
+            if let Some(haste_amp) = effects.amplifier(StatusEffectKind::Haste) {
+                let bonus = 0.10 * f64::from(haste_amp + 1);
+                attrs.add_modifier(
+                    AttributeKind::AttackSpeed,
+                    AttributeModifier::new(
+                        "effect.haste",
+                        bonus,
+                        ModifierOperation::AddMultipliedBase,
+                    ),
+                );
+            } else {
+                attrs.remove_modifier(AttributeKind::AttackSpeed, "effect.haste");
+            }
+
+            if let Some(fatigue_amp) = effects.amplifier(StatusEffectKind::MiningFatigue) {
+                let penalty = -0.10 * f64::from(fatigue_amp + 1);
+                attrs.add_modifier(
+                    AttributeKind::AttackSpeed,
+                    AttributeModifier::new(
+                        "effect.mining_fatigue",
+                        penalty,
+                        ModifierOperation::AddMultipliedBase,
+                    ),
+                );
+            } else {
+                attrs.remove_modifier(AttributeKind::AttackSpeed, "effect.mining_fatigue");
             }
         }
     }
@@ -524,5 +787,71 @@ mod tests {
         let mut a_expired = world.get_mut::<Attributes>(entity).unwrap();
         // Back to base 0.1
         assert!((a_expired.get_value(AttributeKind::MovementSpeed) - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_haste_and_fatigue_attributes() {
+        let health = Health::new(20.0);
+        let mut effects = StatusEffects::new();
+        effects.apply(EffectInstance::new(StatusEffectKind::Haste, 10, 1)); // Haste II = +20% attack speed
+        let attrs = Attributes::player_default();
+
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn((health, effects, attrs)).id();
+
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(status_effect_system);
+
+        schedule.run(&mut world);
+
+        let mut a = world.get_mut::<Attributes>(entity).unwrap();
+        // Base 4.0 * (1.0 + 0.20) = 4.8
+        assert!((a.get_value(AttributeKind::AttackSpeed) - 4.8).abs() < 1e-6);
+
+        // Add Mining Fatigue I (-10%)
+        let mut eff = world.get_mut::<StatusEffects>(entity).unwrap();
+        eff.apply(EffectInstance::new(StatusEffectKind::MiningFatigue, 10, 0));
+
+        schedule.run(&mut world);
+        let mut a2 = world.get_mut::<Attributes>(entity).unwrap();
+        // Base 4.0 * (1.0 + 0.20 - 0.10) = 4.4
+        assert!((a2.get_value(AttributeKind::AttackSpeed) - 4.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_status_effect_registry_all_18_effects() {
+        assert_eq!(StatusEffectRegistry::ALL.len(), 18);
+
+        for id in 1..=18 {
+            let kind = StatusEffectKind::from_u8(id).expect("valid effect id");
+            assert_eq!(kind.id(), id);
+
+            let def = StatusEffectRegistry::get(kind).expect("definition exists");
+            assert_eq!(def.id, id);
+            assert_eq!(def.kind, kind);
+            assert_eq!(def.display_name, kind.name());
+            assert_eq!(def.particle_color, kind.particle_color());
+            assert_eq!(def.is_beneficial, kind.is_beneficial());
+            assert_eq!(def.is_instant, kind.is_instant());
+
+            assert_eq!(StatusEffectRegistry::get_by_id(id), Some(def));
+
+            // Test lookup by identifier and display name
+            assert_eq!(StatusEffectRegistry::get_by_name(def.identifier), Some(def));
+            assert_eq!(
+                StatusEffectRegistry::get_by_name(def.display_name),
+                Some(def)
+            );
+        }
+
+        // Test namespaced / prefix stripping
+        let speed = StatusEffectRegistry::get_by_name("speed").unwrap();
+        assert_eq!(speed.kind, StatusEffectKind::Speed);
+
+        let nv = StatusEffectRegistry::get_by_name("telos:night_vision").unwrap();
+        assert_eq!(nv.kind, StatusEffectKind::NightVision);
+
+        let mc_blindness = StatusEffectRegistry::get_by_name("minecraft:blindness").unwrap();
+        assert_eq!(mc_blindness.kind, StatusEffectKind::Blindness);
     }
 }

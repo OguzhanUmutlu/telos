@@ -26,12 +26,12 @@ use telos_protocol::messages::{
     LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
     S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
     S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
-    S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
-    S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cRecipeManifest, S2cRegistryData, S2cSpawnArrow,
-    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData,
+    S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove,
+    S2cEntityStatus, S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
+    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRecipeManifest, S2cRegistryData,
+    S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -45,9 +45,10 @@ use telos_sim::{
     Health, Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
     ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack, Mob, MobBundle, MoveMode, NetEntity,
     PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position, PotionType, Rotation, SimParams,
-    SimulationFrozen, StatusEffectKind, StatusEffects, TargetablePlayer, Velocity, WeatherKind,
-    WeatherState, apply_mitigated_damage, block_to_drop_item, build_sim_schedule,
-    calculate_total_epf, merge_item_stacks, tick_arrow_physics_step, tick_item_physics_step,
+    SimulationFrozen, StatusEffectKind, StatusEffectRegistry, StatusEffects, TargetablePlayer,
+    Velocity, WeatherKind, WeatherState, apply_mitigated_damage, block_to_drop_item,
+    build_sim_schedule, calculate_total_epf, merge_item_stacks, tick_arrow_physics_step,
+    tick_item_physics_step,
 };
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
@@ -3078,6 +3079,42 @@ impl Server {
                         && let Some(mut effects) = self.ecs_world.get_mut::<StatusEffects>(entity)
                     {
                         effects.apply(effect);
+
+                        // If player is holding a potion item (36) in survival, deduct 1 and return a glass bottle (38)
+                        let is_creative = self
+                            .sessions
+                            .get(&session_id)
+                            .is_some_and(|s| s.game_mode == GameMode::Creative);
+
+                        if !is_creative
+                            && let Some(session) = self.sessions.get(&session_id)
+                            && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(entity)
+                        {
+                            let slot_idx = session.selected_slot as usize;
+                            if slot_idx < inv.slots.len() && inv.slots[slot_idx].item == 36 {
+                                if inv.slots[slot_idx].count > 1 {
+                                    inv.slots[slot_idx].count -= 1;
+                                    let mut bottle = ItemStack::new(38, 1);
+                                    for slot in &mut inv.slots {
+                                        if slot.can_stack(&bottle) {
+                                            slot.count += 1;
+                                            bottle = ItemStack::EMPTY;
+                                            break;
+                                        }
+                                    }
+                                    if !bottle.is_empty() {
+                                        for slot in &mut inv.slots {
+                                            if slot.is_empty() {
+                                                *slot = bottle;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    inv.slots[slot_idx] = ItemStack::new(38, 1);
+                                }
+                            }
+                        }
                     }
                 }
                 PlayerCommandKind::DropItem { entire_stack } => {
@@ -3654,11 +3691,39 @@ impl Server {
                                 "Usage: /world list or /world tp <world_name> [x y z]".to_string();
                         }
                     } else if text.starts_with("/effect clear") {
+                        let parts: Vec<&str> = text.split_whitespace().collect();
+                        let target_effect = if parts.len() >= 4
+                            && (parts[2].starts_with('@') || parts[2] == "self")
+                        {
+                            parts.get(3).copied()
+                        } else if parts.len() >= 3
+                            && !parts[2].starts_with('@')
+                            && parts[2] != "self"
+                        {
+                            parts.get(2).copied()
+                        } else {
+                            None
+                        };
+
                         if let Some(s) = self.sessions.get(&session_id)
                             && let Some(ent) = s.ecs_entity
                             && let Some(mut effs) = self.ecs_world.get_mut::<StatusEffects>(ent)
                         {
-                            effs.clear();
+                            if let Some(eff_str) = target_effect {
+                                let kind = StatusEffectRegistry::get_by_name(eff_str)
+                                    .map(|d| d.kind)
+                                    .or_else(|| {
+                                        eff_str
+                                            .parse::<u8>()
+                                            .ok()
+                                            .and_then(StatusEffectKind::from_u8)
+                                    });
+                                if let Some(k) = kind {
+                                    effs.remove(k);
+                                }
+                            } else {
+                                effs.clear();
+                            }
                         }
                     } else if text.starts_with("/effect give") {
                         let parts: Vec<&str> = text.split_whitespace().collect();
@@ -3684,32 +3749,22 @@ impl Server {
                             ("unknown", 30, 0)
                         };
 
-                        let kind = match effect_name.to_lowercase().as_str() {
-                            "speed" => Some(StatusEffectKind::Speed),
-                            "slowness" => Some(StatusEffectKind::Slowness),
-                            "strength" => Some(StatusEffectKind::Strength),
-                            "weakness" => Some(StatusEffectKind::Weakness),
-                            "regeneration" | "regen" => Some(StatusEffectKind::Regeneration),
-                            "poison" => Some(StatusEffectKind::Poison),
-                            "wither" => Some(StatusEffectKind::Wither),
-                            "resistance" => Some(StatusEffectKind::Resistance),
-                            "fire_resistance" => Some(StatusEffectKind::FireResistance),
-                            "water_breathing" => Some(StatusEffectKind::WaterBreathing),
-                            "haste" => Some(StatusEffectKind::Haste),
-                            "mining_fatigue" => Some(StatusEffectKind::MiningFatigue),
-                            "invisibility" => Some(StatusEffectKind::Invisibility),
-                            "jump_boost" => Some(StatusEffectKind::JumpBoost),
-                            "instant_health" => Some(StatusEffectKind::InstantHealth),
-                            "instant_damage" => Some(StatusEffectKind::InstantDamage),
-                            _ => None,
-                        };
+                        let kind = StatusEffectRegistry::get_by_name(effect_name)
+                            .map(|d| d.kind)
+                            .or_else(|| {
+                                effect_name
+                                    .parse::<u8>()
+                                    .ok()
+                                    .and_then(StatusEffectKind::from_u8)
+                            });
 
                         if let Some(k) = kind
                             && let Some(s) = self.sessions.get(&session_id)
                             && let Some(ent) = s.ecs_entity
                             && let Some(mut effs) = self.ecs_world.get_mut::<StatusEffects>(ent)
                         {
-                            effs.apply(EffectInstance::new(k, seconds * 20, amplifier));
+                            let duration = if seconds < 0 { -1 } else { seconds * 20 };
+                            effs.apply(EffectInstance::new(k, duration, amplifier));
                         }
                     } else if text.starts_with("/enchant") {
                         let parts: Vec<&str> = text.split_whitespace().collect();
@@ -4696,6 +4751,59 @@ impl Server {
                     }
                 }
 
+                // Check fire / lava environmental hazard
+                if !session.capabilities.invincible
+                    && session.move_mode != MoveMode::NoClipFly
+                    && self.tick_count.is_multiple_of(10)
+                {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let block_pos = BlockPos::new(
+                        session.position.x.floor() as i32,
+                        session.position.y.floor() as i32,
+                        session.position.z.floor() as i32,
+                    );
+                    let block_id = self
+                        .worlds
+                        .get_or_default_mut(&session.world_name)
+                        .get_block(block_pos)
+                        .0;
+
+                    if (block_id == 31 || block_id == 32 || block_id == 33)
+                        && let Some(entity) = session.ecs_entity
+                    {
+                        let has_fire_res = self
+                            .ecs_world
+                            .get::<StatusEffects>(entity)
+                            .is_some_and(|eff| eff.has(StatusEffectKind::FireResistance));
+
+                        if !has_fire_res {
+                            let resistance = self
+                                .ecs_world
+                                .get::<StatusEffects>(entity)
+                                .and_then(|eff| eff.amplifier(StatusEffectKind::Resistance))
+                                .map_or(0, |amp| amp + 1);
+
+                            let raw_dmg = if block_id == 33 { 1.0 } else { 4.0 };
+                            let mut query =
+                                self.ecs_world.query::<(&mut Health, &mut CombatTracker)>();
+                            if let Ok((mut health, mut combat)) =
+                                query.get_mut(&mut self.ecs_world, entity)
+                            {
+                                apply_mitigated_damage(
+                                    &mut health,
+                                    &mut combat,
+                                    raw_dmg,
+                                    DamageType::Fire,
+                                    0.0,
+                                    0.0,
+                                    resistance,
+                                    0,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let ack_msg = S2cMessage::PlayerMovementAck(S2cPlayerMovementAck {
                     client_tick_ack: session.last_processed_client_tick,
                     #[allow(clippy::cast_possible_truncation)]
@@ -5161,14 +5269,60 @@ impl Server {
             });
 
             if session.cached_effects != current_effects {
-                session.cached_effects.clone_from(&current_effects);
+                // 1. Emit granular S2cRemoveEntityEffect for removed / expired effects
+                for old in &session.cached_effects {
+                    if !current_effects.iter().any(|c| c.effect_id == old.effect_id) {
+                        let remove_msg = S2cMessage::RemoveEntityEffect(S2cRemoveEntityEffect {
+                            entity_id: 0,
+                            effect_id: old.effect_id,
+                        });
+                        let _ = session
+                            .connection
+                            .send(Lane::Control, Payload::Msg(remove_msg));
+                    }
+                }
+
+                // 2. Emit granular S2cEntityEffect for newly added or refreshed/amplified effects
+                for cur in &current_effects {
+                    let old_opt = session
+                        .cached_effects
+                        .iter()
+                        .find(|o| o.effect_id == cur.effect_id);
+                    let should_send = match old_opt {
+                        None => true,
+                        Some(old) => {
+                            old.amplifier != cur.amplifier
+                                || old.ambient != cur.ambient
+                                || (cur.duration_ticks - old.duration_ticks).abs() > 20
+                                || (cur.duration_ticks < 0) != (old.duration_ticks < 0)
+                        }
+                    };
+                    if should_send {
+                        let effect_msg = S2cMessage::EntityEffect(S2cEntityEffect {
+                            entity_id: 0,
+                            effect_id: cur.effect_id,
+                            amplifier: cur.amplifier,
+                            duration_ticks: cur.duration_ticks,
+                            ambient: cur.ambient,
+                            show_particles: true,
+                            show_icon: true,
+                        });
+                        let _ = session
+                            .connection
+                            .send(Lane::Control, Payload::Msg(effect_msg));
+                    }
+                }
+
+                // 3. Emit S2cUpdateEffects full synchronization packet
                 let effects_msg = S2cMessage::UpdateEffects(S2cUpdateEffects {
                     entity_id: 0,
-                    effects: current_effects,
+                    effects: current_effects.clone(),
                 });
                 let _ = session
                     .connection
                     .send(Lane::Control, Payload::Msg(effects_msg));
+
+                session.cached_effects = current_effects;
             }
         }
 

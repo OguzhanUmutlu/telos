@@ -22,10 +22,10 @@ use telos_protocol::messages::{
     Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
     S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
     S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
-    S2cConfigDone, S2cContainerProperty, S2cContentManifest, S2cGameMode, S2cHelloReply,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest, S2cRegistryData,
-    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    S2cConfigDone, S2cContainerProperty, S2cContentManifest, S2cEntityEffect, S2cGameMode,
+    S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess,
+    S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest,
+    S2cRegistryData, S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -1113,6 +1113,42 @@ fn test_s2c_recipe_manifest_roundtrip() {
     } else {
         panic!("expected RecipeManifest");
     }
+}
+
+#[test]
+fn test_s2c_entity_effect_and_remove_envelope_roundtrip() {
+    let effect_msg = S2cMessage::EntityEffect(S2cEntityEffect {
+        entity_id: 100,
+        effect_id: 18, // Blindness
+        amplifier: 2,
+        duration_ticks: 600,
+        ambient: false,
+        show_particles: true,
+        show_icon: true,
+    });
+
+    let mut buf = Vec::new();
+    encode_s2c(&effect_msg, &mut buf);
+
+    let mut cursor = &buf[..];
+    let decoded =
+        decode_s2c(ConnectionPhase::Play, &mut cursor).expect("decode S2cMessage::EntityEffect");
+    assert_eq!(effect_msg, decoded);
+    assert!(cursor.is_empty());
+
+    let remove_msg = S2cMessage::RemoveEntityEffect(S2cRemoveEntityEffect {
+        entity_id: 100,
+        effect_id: 18,
+    });
+
+    let mut buf_remove = Vec::new();
+    encode_s2c(&remove_msg, &mut buf_remove);
+
+    let mut cursor_remove = &buf_remove[..];
+    let decoded_remove = decode_s2c(ConnectionPhase::Play, &mut cursor_remove)
+        .expect("decode S2cMessage::RemoveEntityEffect");
+    assert_eq!(remove_msg, decoded_remove);
+    assert!(cursor_remove.is_empty());
 }
 
 proptest! {

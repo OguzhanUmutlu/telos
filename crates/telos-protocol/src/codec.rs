@@ -14,10 +14,11 @@ use crate::messages::play::{
     C2sPlayerPosition, C2sTeleportAck, S2cAdvancementToast, S2cAdvancementUpdate,
     S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
     S2cCloseContainer, S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity,
-    S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
-    S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer,
-    S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather,
+    S2cEntityEffect, S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck,
+    S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -403,6 +404,10 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 30 => S2cMessage::GameMode(S2cGameMode::decode(&mut frame_cur)?),
                 31 => S2cMessage::AdvancementUpdate(S2cAdvancementUpdate::decode(&mut frame_cur)?),
                 32 => S2cMessage::AdvancementToast(S2cAdvancementToast::decode(&mut frame_cur)?),
+                33 => S2cMessage::EntityEffect(S2cEntityEffect::decode(&mut frame_cur)?),
+                34 => {
+                    S2cMessage::RemoveEntityEffect(S2cRemoveEntityEffect::decode(&mut frame_cur)?)
+                }
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

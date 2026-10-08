@@ -114,9 +114,29 @@ fn test_render_hud_quad_generation() {
         amplifier: 1,
         duration_ticks: 200,
         color: [124, 175, 198],
+        ambient: false,
+        is_beneficial: true,
     });
     quads.clear();
     render_hud(&state, &font, &layers, 1920, 1080, 4, &mut quads);
     // Base 44 quads + badge background + accent bar + text glyphs
     assert!(quads.len() > 44, "Active effects must generate HUD quads");
+
+    // Add harmful + ambient effect
+    state.active_effects.push(telos_ui::HudEffectDisplay {
+        effect_id: 7,
+        name: "Wither".to_string(),
+        amplifier: 0,
+        duration_ticks: 100,
+        color: [53, 42, 39],
+        ambient: true,
+        is_beneficial: false,
+    });
+    let prev_count = quads.len();
+    quads.clear();
+    render_hud(&state, &font, &layers, 1920, 1080, 4, &mut quads);
+    assert!(
+        quads.len() > prev_count,
+        "Multiple active effects including ambient line generate extra quads"
+    );
 }

@@ -2363,6 +2363,55 @@ impl App {
         }
     }
 
+    fn recompute_active_effects(&mut self) {
+        let mut speed_mult = 1.0f32;
+        let mut jump_boost = 0.0f32;
+        for eff in &self.client_effects {
+            if eff.effect_id == 1 {
+                speed_mult += 0.20 * (f32::from(eff.amplifier) + 1.0);
+            } else if eff.effect_id == 2 {
+                speed_mult *= (1.0 - 0.15 * (f32::from(eff.amplifier) + 1.0)).max(0.1);
+            } else if eff.effect_id == 14 {
+                jump_boost += 1.5 * (f32::from(eff.amplifier) + 1.0);
+            }
+        }
+        self.physics.speed_multiplier = speed_mult;
+        self.physics.jump_boost = jump_boost;
+
+        self.hud_state.active_effects = self
+            .client_effects
+            .iter()
+            .map(|e| {
+                let (name_base, is_beneficial) =
+                    telos_sim::StatusEffectRegistry::get_by_id(e.effect_id).map_or_else(
+                        || ("Effect", true),
+                        |def| (def.display_name, def.is_beneficial),
+                    );
+                let name = if e.amplifier == 0 {
+                    name_base.to_string()
+                } else {
+                    let roman = match e.amplifier {
+                        1 => "II",
+                        2 => "III",
+                        3 => "IV",
+                        4 => "V",
+                        _ => "+",
+                    };
+                    format!("{name_base} {roman}")
+                };
+                telos_ui::HudEffectDisplay {
+                    effect_id: e.effect_id,
+                    name,
+                    amplifier: e.amplifier,
+                    duration_ticks: e.duration_ticks,
+                    color: e.particle_color,
+                    ambient: e.ambient,
+                    is_beneficial,
+                }
+            })
+            .collect();
+    }
+
     fn apply_block_update(&mut self, pos: BlockPos, state_id: BlockStateId) {
         let (chunk_pos, local_idx) = telos_voxel::coords::split_block_pos(pos);
         if let Some(snap) = self.chunks.get(&chunk_pos) {
@@ -2754,82 +2803,39 @@ impl App {
                     }
                     S2cMessage::UpdateEffects(eff_msg) => {
                         self.client_effects.clone_from(&eff_msg.effects);
-                        let mut speed_mult = 1.0f32;
-                        let mut jump_boost = 0.0f32;
-                        for eff in &eff_msg.effects {
-                            if eff.effect_id == 1 {
-                                speed_mult += 0.20 * (f32::from(eff.amplifier) + 1.0);
-                            } else if eff.effect_id == 2 {
-                                speed_mult *=
-                                    (1.0 - 0.15 * (f32::from(eff.amplifier) + 1.0)).max(0.1);
-                            } else if eff.effect_id == 14 {
-                                jump_boost += 1.5 * (f32::from(eff.amplifier) + 1.0);
+                        self.recompute_active_effects();
+                    }
+                    S2cMessage::EntityEffect(eff) => {
+                        if eff.entity_id == 0 {
+                            let particle_color =
+                                telos_sim::StatusEffectRegistry::get_by_id(eff.effect_id)
+                                    .map_or([255, 255, 255], |def| def.particle_color);
+                            if let Some(existing) = self
+                                .client_effects
+                                .iter_mut()
+                                .find(|e| e.effect_id == eff.effect_id)
+                            {
+                                existing.amplifier = eff.amplifier;
+                                existing.duration_ticks = eff.duration_ticks;
+                                existing.ambient = eff.ambient;
+                                existing.particle_color = particle_color;
+                            } else {
+                                self.client_effects.push(NetworkEffect {
+                                    effect_id: eff.effect_id,
+                                    amplifier: eff.amplifier,
+                                    duration_ticks: eff.duration_ticks,
+                                    ambient: eff.ambient,
+                                    particle_color,
+                                });
                             }
+                            self.recompute_active_effects();
                         }
-                        self.physics.speed_multiplier = speed_mult;
-                        self.physics.jump_boost = jump_boost;
-
-                        self.hud_state.active_effects = eff_msg
-                            .effects
-                            .iter()
-                            .map(|e| {
-                                let name_base =
-                                    match telos_sim::StatusEffectKind::from_u8(e.effect_id) {
-                                        Some(telos_sim::StatusEffectKind::Speed) => "Speed",
-                                        Some(telos_sim::StatusEffectKind::Slowness) => "Slowness",
-                                        Some(telos_sim::StatusEffectKind::Strength) => "Strength",
-                                        Some(telos_sim::StatusEffectKind::Weakness) => "Weakness",
-                                        Some(telos_sim::StatusEffectKind::Regeneration) => "Regen",
-                                        Some(telos_sim::StatusEffectKind::Poison) => "Poison",
-                                        Some(telos_sim::StatusEffectKind::Wither) => "Wither",
-                                        Some(telos_sim::StatusEffectKind::Resistance) => {
-                                            "Resistance"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::FireResistance) => {
-                                            "Fire Res"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::WaterBreathing) => {
-                                            "Water Br."
-                                        }
-                                        Some(telos_sim::StatusEffectKind::Haste) => "Haste",
-                                        Some(telos_sim::StatusEffectKind::MiningFatigue) => {
-                                            "Fatigue"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::Invisibility) => {
-                                            "Invisible"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::JumpBoost) => {
-                                            "Jump Boost"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::InstantHealth) => {
-                                            "Health"
-                                        }
-                                        Some(telos_sim::StatusEffectKind::InstantDamage) => {
-                                            "Damage"
-                                        }
-                                        None => "Effect",
-                                    };
-                                let name = if e.amplifier == 0 {
-                                    name_base.to_string()
-                                } else {
-                                    let roman = match e.amplifier {
-                                        1 => "II",
-                                        2 => "III",
-                                        3 => "IV",
-                                        4 => "V",
-                                        _ => "+",
-                                    };
-                                    format!("{name_base} {roman}")
-                                };
-                                telos_ui::HudEffectDisplay {
-                                    effect_id: e.effect_id,
-                                    name,
-                                    amplifier: e.amplifier,
-                                    duration_ticks: e.duration_ticks,
-                                    color: e.particle_color,
-                                }
-                            })
-                            .collect();
+                    }
+                    S2cMessage::RemoveEntityEffect(rem) => {
+                        if rem.entity_id == 0 {
+                            self.client_effects.retain(|e| e.effect_id != rem.effect_id);
+                            self.recompute_active_effects();
+                        }
                     }
                     S2cMessage::InventoryBulk(bulk) => {
                         let had_items = self
@@ -4101,6 +4107,21 @@ impl App {
                 while self.sim_time_acc >= 0.05 {
                     self.sim_time_acc -= 0.05;
                     self.tick_movement_prediction();
+
+                    if !self.client_effects.is_empty() {
+                        let mut changed = false;
+                        for eff in &mut self.client_effects {
+                            if eff.duration_ticks > 0 {
+                                eff.duration_ticks -= 1;
+                                changed = true;
+                            }
+                        }
+                        let prev_len = self.client_effects.len();
+                        self.client_effects.retain(|e| e.duration_ticks != 0);
+                        if changed || self.client_effects.len() != prev_len {
+                            self.recompute_active_effects();
+                        }
+                    }
 
                     if let Some(ref cont) = self.container_state {
                         let chest_center = Vec3::new(
@@ -9382,6 +9403,14 @@ impl ApplicationHandler for App {
                             if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW {
                                 self.bow_charging = true;
                                 self.bow_charge_ticks = 0;
+                                return;
+                            }
+
+                            if telos_sim::is_potion(self.inventory_sim.selected_item().item) {
+                                let msg = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                                    command: PlayerCommandKind::DrinkPotion { potion_type: 4 },
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
                                 return;
                             }
 

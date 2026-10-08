@@ -43,6 +43,22 @@ pub enum PotionType {
     FireResistance = 17,
     /// Potion of Invisibility (Invisibility for 3:00 = 3600 ticks).
     Invisibility = 18,
+    /// Potion of Night Vision (Night Vision for 3:00 = 3600 ticks).
+    NightVision = 19,
+    /// Potion of Night Vision (Extended) (Night Vision for 8:00 = 9600 ticks).
+    NightVisionLong = 20,
+    /// Potion of Water Breathing (Water Breathing for 3:00 = 3600 ticks).
+    WaterBreathing = 21,
+    /// Potion of Water Breathing (Extended) (Water Breathing for 8:00 = 9600 ticks).
+    WaterBreathingLong = 22,
+    /// Potion of Leaping (Jump Boost I for 3:00 = 3600 ticks).
+    Leaping = 23,
+    /// Potion of Leaping II (Jump Boost II for 1:30 = 1800 ticks).
+    LeapingStrong = 24,
+    /// Potion of Weakness (Weakness for 1:30 = 1800 ticks).
+    Weakness = 25,
+    /// Potion of Weakness (Extended) (Weakness for 4:00 = 4800 ticks).
+    WeaknessLong = 26,
 }
 
 impl PotionType {
@@ -75,6 +91,14 @@ impl PotionType {
             16 => Some(Self::RegenerationStrong),
             17 => Some(Self::FireResistance),
             18 => Some(Self::Invisibility),
+            19 => Some(Self::NightVision),
+            20 => Some(Self::NightVisionLong),
+            21 => Some(Self::WaterBreathing),
+            22 => Some(Self::WaterBreathingLong),
+            23 => Some(Self::Leaping),
+            24 => Some(Self::LeapingStrong),
+            25 => Some(Self::Weakness),
+            26 => Some(Self::WeaknessLong),
             _ => None,
         }
     }
@@ -102,6 +126,14 @@ impl PotionType {
             Self::RegenerationStrong => "Potion of Regeneration II",
             Self::FireResistance => "Potion of Fire Resistance",
             Self::Invisibility => "Potion of Invisibility",
+            Self::NightVision => "Potion of Night Vision",
+            Self::NightVisionLong => "Potion of Night Vision (Extended)",
+            Self::WaterBreathing => "Potion of Water Breathing",
+            Self::WaterBreathingLong => "Potion of Water Breathing (Extended)",
+            Self::Leaping => "Potion of Leaping",
+            Self::LeapingStrong => "Potion of Leaping II",
+            Self::Weakness => "Potion of Weakness",
+            Self::WeaknessLong => "Potion of Weakness (Extended)",
         }
     }
 
@@ -133,7 +165,43 @@ impl PotionType {
             Self::Invisibility => {
                 Some(EffectInstance::new(StatusEffectKind::Invisibility, 3600, 0))
             }
+            Self::NightVision => Some(EffectInstance::new(StatusEffectKind::NightVision, 3600, 0)),
+            Self::NightVisionLong => {
+                Some(EffectInstance::new(StatusEffectKind::NightVision, 9600, 0))
+            }
+            Self::WaterBreathing => Some(EffectInstance::new(
+                StatusEffectKind::WaterBreathing,
+                3600,
+                0,
+            )),
+            Self::WaterBreathingLong => Some(EffectInstance::new(
+                StatusEffectKind::WaterBreathing,
+                9600,
+                0,
+            )),
+            Self::Leaping => Some(EffectInstance::new(StatusEffectKind::JumpBoost, 3600, 0)),
+            Self::LeapingStrong => Some(EffectInstance::new(StatusEffectKind::JumpBoost, 1800, 1)),
+            Self::Weakness => Some(EffectInstance::new(StatusEffectKind::Weakness, 1800, 0)),
+            Self::WeaknessLong => Some(EffectInstance::new(StatusEffectKind::Weakness, 4800, 0)),
         }
+    }
+}
+
+/// Resolves consumable status effects for an item ID.
+#[must_use]
+pub fn consume_item_effects(item_id: u32) -> Option<Vec<EffectInstance>> {
+    match item_id {
+        // Spider eye: Poison I for 4 seconds (80 ticks)
+        44 => Some(vec![EffectInstance::new(StatusEffectKind::Poison, 80, 0)]),
+        // Rotten Flesh: Slowness I for 5 seconds (100 ticks)
+        48 => Some(vec![EffectInstance::new(
+            StatusEffectKind::Slowness,
+            100,
+            0,
+        )]),
+        // Standard Potion bottle item (36) defaults to Speed I for 3:00 (3600 ticks)
+        36 => Some(vec![EffectInstance::new(StatusEffectKind::Speed, 3600, 0)]),
+        _ => None,
     }
 }
 
@@ -175,6 +243,7 @@ impl BrewingRegistry {
     /// - 20: Logic Wire (Redstone analogue for extension/tiering)
     /// - 25: Logic Lamp (Glowstone analogue for Tier II)
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn standard() -> Self {
         let recipes = vec![
             // Base creation
@@ -264,6 +333,60 @@ impl BrewingRegistry {
                 ingredient: 47,
                 result: PotionType::FireResistance,
             },
+            // Night Vision
+            BrewingRecipe {
+                base: PotionType::Awkward,
+                ingredient: 53,
+                result: PotionType::NightVision,
+            },
+            BrewingRecipe {
+                base: PotionType::NightVision,
+                ingredient: 20,
+                result: PotionType::NightVisionLong,
+            },
+            BrewingRecipe {
+                base: PotionType::NightVision,
+                ingredient: 45,
+                result: PotionType::Invisibility,
+            },
+            // Water Breathing
+            BrewingRecipe {
+                base: PotionType::Awkward,
+                ingredient: 55,
+                result: PotionType::WaterBreathing,
+            },
+            BrewingRecipe {
+                base: PotionType::WaterBreathing,
+                ingredient: 20,
+                result: PotionType::WaterBreathingLong,
+            },
+            // Leaping
+            BrewingRecipe {
+                base: PotionType::Awkward,
+                ingredient: 51,
+                result: PotionType::Leaping,
+            },
+            BrewingRecipe {
+                base: PotionType::Leaping,
+                ingredient: 25,
+                result: PotionType::LeapingStrong,
+            },
+            BrewingRecipe {
+                base: PotionType::Leaping,
+                ingredient: 45,
+                result: PotionType::Slowness,
+            },
+            // Weakness
+            BrewingRecipe {
+                base: PotionType::Water,
+                ingredient: 45,
+                result: PotionType::Weakness,
+            },
+            BrewingRecipe {
+                base: PotionType::Weakness,
+                ingredient: 20,
+                result: PotionType::WeaknessLong,
+            },
         ];
 
         Self { recipes }
@@ -311,6 +434,36 @@ mod tests {
             Some(PotionType::Slowness)
         );
 
+        // Water + Fermented Spider Eye (45) -> Weakness
+        assert_eq!(
+            registry.brew(PotionType::Water, 45),
+            Some(PotionType::Weakness)
+        );
+
+        // Weakness + Redstone (20) -> WeaknessLong
+        assert_eq!(
+            registry.brew(PotionType::Weakness, 20),
+            Some(PotionType::WeaknessLong)
+        );
+
+        // Awkward + Gold Ingot (53) -> NightVision
+        assert_eq!(
+            registry.brew(PotionType::Awkward, 53),
+            Some(PotionType::NightVision)
+        );
+
+        // NightVision + Redstone (20) -> NightVisionLong
+        assert_eq!(
+            registry.brew(PotionType::NightVision, 20),
+            Some(PotionType::NightVisionLong)
+        );
+
+        // NightVision + Fermented Spider Eye (45) -> Invisibility
+        assert_eq!(
+            registry.brew(PotionType::NightVision, 45),
+            Some(PotionType::Invisibility)
+        );
+
         // Invalid ingredient -> None
         assert_eq!(registry.brew(PotionType::Water, 1), None);
     }
@@ -322,5 +475,23 @@ mod tests {
         assert_eq!(effect.kind, StatusEffectKind::Speed);
         assert_eq!(effect.amplifier, 1);
         assert_eq!(effect.duration_ticks, 1800);
+
+        let nv = PotionType::NightVisionLong;
+        let nv_eff = nv.effect().unwrap();
+        assert_eq!(nv_eff.kind, StatusEffectKind::NightVision);
+        assert_eq!(nv_eff.duration_ticks, 9600);
+
+        let leap = PotionType::LeapingStrong;
+        let leap_eff = leap.effect().unwrap();
+        assert_eq!(leap_eff.kind, StatusEffectKind::JumpBoost);
+        assert_eq!(leap_eff.amplifier, 1);
+
+        // Consumable item effects
+        let spider_eye_effs = consume_item_effects(44).unwrap();
+        assert_eq!(spider_eye_effs[0].kind, StatusEffectKind::Poison);
+        assert_eq!(spider_eye_effs[0].duration_ticks, 80);
+
+        let rotten_flesh_effs = consume_item_effects(48).unwrap();
+        assert_eq!(rotten_flesh_effs[0].kind, StatusEffectKind::Slowness);
     }
 }
