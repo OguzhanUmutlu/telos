@@ -14,15 +14,16 @@ pub use hello::{C2sHello, S2cHelloReply};
 pub use login::{AuthMode, C2sLoginStart, S2cLoginSuccess};
 pub use play::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
-    C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sPlayerCommand, C2sPlayerInput,
-    C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame, LodPayload, NetworkEffect,
-    ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
-    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
-    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
-    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity,
-    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData, decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
+    C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse, C2sPlayerCommand,
+    C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, ChunkPayload, InputFrame, LodPayload,
+    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent,
+    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
+    S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus,
+    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
+    S2cPlayerMovementAck, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
 /// The protocol lifecycle phase of a connection.
@@ -112,6 +113,8 @@ pub enum C2sMessage {
     TeleportAck(C2sTeleportAck),
     /// Play phase client notifications of closing a container.
     CloseContainer(C2sCloseContainer),
+    /// Play phase response to server-driven modal form dialog.
+    ModalFormResponse(C2sModalFormResponse),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -138,7 +141,8 @@ impl C2sMessage {
             | Self::CommandSuggest(_)
             | Self::PlayerInput(_)
             | Self::TeleportAck(_)
-            | Self::CloseContainer(_) => Some(ConnectionPhase::Play),
+            | Self::CloseContainer(_)
+            | Self::ModalFormResponse(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -161,6 +165,7 @@ impl C2sMessage {
             Self::PlayerInput(_) => 8,
             Self::TeleportAck(_) => 9,
             Self::CloseContainer(_) => 10,
+            Self::ModalFormResponse(_) => 11,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -184,6 +189,7 @@ impl C2sMessage {
             Self::PlayerInput(m) => m.encode(buf),
             Self::TeleportAck(m) => m.encode(buf),
             Self::CloseContainer(m) => m.encode(buf),
+            Self::ModalFormResponse(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -258,6 +264,8 @@ pub enum S2cMessage {
     BlockEvent(S2cBlockEvent),
     /// Play phase container property update (burn time, cook progress, etc.).
     ContainerProperty(S2cContainerProperty),
+    /// Play phase request to display server-driven modal form dialog.
+    ModalFormRequest(S2cModalFormRequest),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -300,7 +308,8 @@ impl S2cMessage {
             | Self::OpenContainer(_)
             | Self::CloseContainer(_)
             | Self::BlockEvent(_)
-            | Self::ContainerProperty(_) => Some(ConnectionPhase::Play),
+            | Self::ContainerProperty(_)
+            | Self::ModalFormRequest(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -341,6 +350,7 @@ impl S2cMessage {
             Self::CloseContainer(_) => 26,
             Self::BlockEvent(_) => 27,
             Self::ContainerProperty(_) => 28,
+            Self::ModalFormRequest(_) => 29,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -381,6 +391,7 @@ impl S2cMessage {
             Self::CloseContainer(m) => m.encode(buf),
             Self::BlockEvent(m) => m.encode(buf),
             Self::ContainerProperty(m) => m.encode(buf),
+            Self::ModalFormRequest(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

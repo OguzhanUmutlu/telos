@@ -3582,6 +3582,8 @@ dependencies = [
  "criterion",
  "lz4_flex",
  "proptest",
+ "serde",
+ "serde_json",
  "telos-core",
  "telos-voxel",
  "thiserror 2.0.21",

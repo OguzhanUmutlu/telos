@@ -7,6 +7,7 @@
 pub mod builder;
 pub mod config;
 pub mod error;
+pub mod form;
 pub mod multi_world;
 pub mod priority;
 pub mod server;

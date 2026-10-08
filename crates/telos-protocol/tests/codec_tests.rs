@@ -3,6 +3,9 @@
 use proptest::prelude::*;
 use std::sync::Arc;
 use telos_core::coords::ChunkPos;
+use telos_core::form::{
+    ActionForm, CustomForm, FormCancelReason, FormResponseData, FormValue, ModalForm, ModalFormData,
+};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::codec::{
     MAX_FRAME_SIZE, PacketHeader, decode_c2s, decode_s2c, encode_c2s, encode_s2c, peek_frame,
@@ -11,13 +14,13 @@ use telos_protocol::error::ProtocolError;
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive, C2sKnownRegistries,
-    C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase,
-    Disconnect, DisconnectReason, LodPayload, ParticleEffectKind, PlayerCommandKind,
-    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cHelloReply,
-    S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cOpenContainer, S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem,
-    S2cUniformChunk, SlotData,
+    C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand, C2sPlayerPosition,
+    ChunkPayload, ConnectionPhase, Disconnect, DisconnectReason, LodPayload, ParticleEffectKind,
+    PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
+    S2cContainerProperty, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
+    S2cLodNodeUnload, S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer,
+    S2cParticleEvent, S2cRegistryData, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -798,6 +801,137 @@ fn test_container_packets_roundtrip() {
         decode_s2c(ConnectionPhase::Play, &mut cursor_prop).expect("decode S2cContainerProperty");
     assert_eq!(decoded_prop, prop_msg);
     assert!(cursor_prop.is_empty());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_modal_form_wire_roundtrips() {
+    // 1. S2cModalFormRequest ActionForm
+    let form = ModalFormData::Action(
+        ActionForm::new("Help Menu", "Choose an option:")
+            .button("Commands")
+            .button("Rules"),
+    );
+    let req = S2cModalFormRequest::new(101, &form).expect("create form request");
+    let req_msg = S2cMessage::ModalFormRequest(req);
+    let mut req_buf = Vec::new();
+    encode_s2c(&req_msg, &mut req_buf);
+    let mut cursor = &req_buf[..];
+    let decoded_s2c =
+        decode_s2c(ConnectionPhase::Play, &mut cursor).expect("decode S2cModalFormRequest");
+    assert_eq!(decoded_s2c, req_msg);
+    assert!(cursor.is_empty());
+
+    if let S2cMessage::ModalFormRequest(r) = decoded_s2c {
+        assert_eq!(r.form_id, 101);
+        let parsed_form = r.parse_form().expect("parse form data");
+        assert_eq!(parsed_form, form);
+    } else {
+        panic!("expected ModalFormRequest");
+    }
+
+    // 2. C2sModalFormResponse Action success
+    let action_resp = FormResponseData::Action { button_index: 1 };
+    let c2s_resp = C2sModalFormResponse::success(101, &action_resp).expect("create c2s response");
+    let c2s_msg = C2sMessage::ModalFormResponse(c2s_resp);
+    let mut c2s_buf = Vec::new();
+    encode_c2s(&c2s_msg, &mut c2s_buf);
+    let mut cursor = &c2s_buf[..];
+    let decoded_c2s =
+        decode_c2s(ConnectionPhase::Play, &mut cursor).expect("decode C2sModalFormResponse");
+    assert_eq!(decoded_c2s, c2s_msg);
+    assert!(cursor.is_empty());
+
+    if let C2sMessage::ModalFormResponse(r) = decoded_c2s {
+        assert_eq!(r.form_id, 101);
+        assert!(r.has_response);
+        let parsed_resp = r.parse_action_response().expect("parse action response");
+        assert_eq!(parsed_resp, action_resp);
+    } else {
+        panic!("expected ModalFormResponse");
+    }
+
+    // 3. C2sModalFormResponse Cancelled
+    let cancel_resp = C2sModalFormResponse::cancelled(101, FormCancelReason::UserClosed);
+    let cancel_msg = C2sMessage::ModalFormResponse(cancel_resp);
+    let mut cancel_buf = Vec::new();
+    encode_c2s(&cancel_msg, &mut cancel_buf);
+    let mut cursor = &cancel_buf[..];
+    let decoded_cancel = decode_c2s(ConnectionPhase::Play, &mut cursor).expect("decode cancel");
+    assert_eq!(decoded_cancel, cancel_msg);
+    if let C2sMessage::ModalFormResponse(r) = decoded_cancel {
+        assert!(!r.has_response);
+        assert_eq!(r.cancel_reason, Some(0));
+    } else {
+        panic!("expected cancelled response");
+    }
+
+    // 4. ModalForm roundtrip
+    let modal = ModalFormData::Modal(ModalForm::new("Confirm", "Are you sure?", "Yes", "No"));
+    let modal_req = S2cModalFormRequest::new(102, &modal).expect("create modal req");
+    let mut modal_buf = Vec::new();
+    encode_s2c(&S2cMessage::ModalFormRequest(modal_req), &mut modal_buf);
+    let mut cursor_modal = &modal_buf[..];
+    let decoded_modal = decode_s2c(ConnectionPhase::Play, &mut cursor_modal).expect("decode modal");
+    if let S2cMessage::ModalFormRequest(r) = decoded_modal {
+        assert_eq!(r.form_id, 102);
+        assert_eq!(r.parse_form().unwrap(), modal);
+    } else {
+        panic!("expected modal req");
+    }
+
+    let modal_resp = FormResponseData::Modal { confirmed: true };
+    let modal_c2s = C2sModalFormResponse::success(102, &modal_resp).unwrap();
+    let mut modal_c2s_buf = Vec::new();
+    encode_c2s(
+        &C2sMessage::ModalFormResponse(modal_c2s),
+        &mut modal_c2s_buf,
+    );
+    let mut cursor_modal_c2s = &modal_c2s_buf[..];
+    let decoded_modal_c2s =
+        decode_c2s(ConnectionPhase::Play, &mut cursor_modal_c2s).expect("decode modal resp");
+    if let C2sMessage::ModalFormResponse(r) = decoded_modal_c2s {
+        assert_eq!(r.parse_modal_response().unwrap(), modal_resp);
+    } else {
+        panic!("expected modal resp");
+    }
+
+    // 5. CustomForm roundtrip
+    let custom = ModalFormData::Custom(
+        CustomForm::new("Config")
+            .label("Info")
+            .toggle("Feature", true),
+    );
+    let custom_req = S2cModalFormRequest::new(103, &custom).expect("create custom req");
+    let mut custom_buf = Vec::new();
+    encode_s2c(&S2cMessage::ModalFormRequest(custom_req), &mut custom_buf);
+    let mut cursor_custom = &custom_buf[..];
+    let decoded_custom =
+        decode_s2c(ConnectionPhase::Play, &mut cursor_custom).expect("decode custom");
+    if let S2cMessage::ModalFormRequest(r) = decoded_custom {
+        assert_eq!(r.form_id, 103);
+        assert_eq!(r.parse_form().unwrap(), custom);
+    } else {
+        panic!("expected custom req");
+    }
+
+    let custom_resp = FormResponseData::Custom {
+        values: vec![FormValue::Null, FormValue::Bool(true)],
+    };
+    let custom_c2s = C2sModalFormResponse::success(103, &custom_resp).unwrap();
+    let mut custom_c2s_buf = Vec::new();
+    encode_c2s(
+        &C2sMessage::ModalFormResponse(custom_c2s),
+        &mut custom_c2s_buf,
+    );
+    let mut cursor_custom_c2s = &custom_c2s_buf[..];
+    let decoded_custom_c2s =
+        decode_c2s(ConnectionPhase::Play, &mut cursor_custom_c2s).expect("decode custom resp");
+    if let C2sMessage::ModalFormResponse(r) = decoded_custom_c2s {
+        assert_eq!(r.parse_custom_response().unwrap(), custom_resp);
+    } else {
+        panic!("expected custom resp");
+    }
 }
 
 proptest! {

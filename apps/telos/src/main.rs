@@ -34,24 +34,26 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity,
-    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck,
-    ChunkPayload, ConnectionPhase, InputFrame, NetworkEffect, ParticleEffectKind,
-    PlayerCommandKind, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck, input_buttons,
+    C2sInventoryClick, C2sLoginStart, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
+    C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase, InputFrame, NetworkEffect,
+    ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent, S2cPlayerMovementAck,
+    input_buttons,
 };
 use telos_sim::particle::{ParticleGpu, ParticleSystem};
 use telos_sim::{
     MoveMode, MoveState, PredictionBuffer, VisualSmoothing, quantize_pitch, quantize_yaw,
 };
 use telos_ui::menu::{
-    MainMenuAction, MainMenuScreen, PauseMenuAction, PauseMenuScreen, SettingsScreen,
-    WorldCreateAction, WorldCreateWizard, WorldSelectAction, WorldSelectScreen,
+    MainMenuAction, MainMenuScreen, ModalFormAction, ModalFormScreen, PauseMenuAction,
+    PauseMenuScreen, SettingsScreen, WorldCreateAction, WorldCreateWizard, WorldSelectAction,
+    WorldSelectScreen,
 };
 use telos_ui::settings::GameSettings;
 use telos_ui::{
     BitmapFont, ChatHudState, DUAL_CONTAINER_SLOT_COUNT, DUAL_FURNACE_SLOT_COUNT, HudState,
     UiLayers, UiQuad, UiSlotItem, chest_slot_at_pos, compute_gui_scale, furnace_slot_at_pos,
     render_chat_hud, render_chest_container, render_furnace_container, render_hud,
-    render_inventory_screen, slot_at_pos,
+    render_inventory_screen, slot_at_pos, snap_to_physical,
 };
 
 /// Top-level application screen state.
@@ -1441,6 +1443,7 @@ struct App {
     settings_screen: SettingsScreen,
     pause_menu: PauseMenuScreen,
     is_paused: bool,
+    active_modal_form: Option<ModalFormScreen>,
     game_settings: GameSettings,
     settings_path: PathBuf,
     worlds_dir: PathBuf,
@@ -1898,6 +1901,7 @@ impl App {
             settings_screen,
             pause_menu,
             is_paused: false,
+            active_modal_form: None,
             game_settings,
             settings_path,
             worlds_dir,
@@ -2771,6 +2775,40 @@ impl App {
                             self.audio.play_chest_close(sound_pos);
                         }
                     }
+                    S2cMessage::ModalFormRequest(req) => match req.parse_form() {
+                        Ok(form_data) => {
+                            let mut form = ModalFormScreen::new(req.form_id, form_data);
+                            let win_size = self.window_size();
+                            let gui_scale = compute_gui_scale(win_size.width, win_size.height);
+                            let width_gui = win_size.width as f32 / gui_scale as f32;
+                            let height_gui = win_size.height as f32 / gui_scale as f32;
+                            form.update_layout(width_gui, height_gui);
+                            self.active_modal_form = Some(form);
+                            self.controller.mouse_captured = false;
+                            self.controller.forward = false;
+                            self.controller.backward = false;
+                            self.controller.left = false;
+                            self.controller.right = false;
+                            self.controller.up = false;
+                            self.controller.down = false;
+                            self.controller.sprint = false;
+                            self.set_cursor_captured(false);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "Failed to parse S2cModalFormRequest {}: {err}",
+                                req.form_id
+                            );
+                            let cancel_msg =
+                                C2sMessage::ModalFormResponse(C2sModalFormResponse::cancelled(
+                                    req.form_id,
+                                    telos_core::form::FormCancelReason::UserClosed,
+                                ));
+                            let _ = self
+                                .client_conn
+                                .send(Lane::Control, Payload::Msg(cancel_msg));
+                        }
+                    },
                     _ => {}
                 },
             }
@@ -5849,6 +5887,23 @@ impl App {
                     }
                 }
 
+                if let Some(form) = &mut self.active_modal_form {
+                    form.update_layout(width_gui, height_gui);
+                    let full_w = snap_to_physical(width_gui, gui_scale) as u16;
+                    let full_h = snap_to_physical(height_gui, gui_scale) as u16;
+                    ui_quads.push(UiQuad::solid(
+                        [0, 0],
+                        [full_w, full_h],
+                        UiQuad::rgba(0, 0, 0, 160),
+                    ));
+                    form.render(
+                        font,
+                        gui_scale,
+                        u64::from(self.frame_counter),
+                        &mut ui_quads,
+                    );
+                }
+
                 if !ui_quads.is_empty() {
                     let required_bytes =
                         (ui_quads.len() * std::mem::size_of::<UiQuad>()) as vk::DeviceSize;
@@ -6260,6 +6315,23 @@ impl App {
                     );
                 }
             }
+        }
+
+        if let Some(form) = &mut self.active_modal_form {
+            form.update_layout(width_gui, height_gui);
+            let full_w = snap_to_physical(width_gui, gui_scale) as u16;
+            let full_h = snap_to_physical(height_gui, gui_scale) as u16;
+            ui_quads.push(UiQuad::solid(
+                [0, 0],
+                [full_w, full_h],
+                UiQuad::rgba(0, 0, 0, 160),
+            ));
+            form.render(
+                font,
+                gui_scale,
+                u64::from(self.frame_counter),
+                &mut ui_quads,
+            );
         }
 
         ui_quads
@@ -8268,6 +8340,19 @@ impl ApplicationHandler for App {
                     position.y as f32 / gui_scale as f32,
                 );
 
+                if let Some(form) = &mut self.active_modal_form {
+                    form.handle_mouse_move(mx, my);
+                    if let Some(window) = &self.window {
+                        let icon = if form.is_hovered() {
+                            winit::window::CursorIcon::Pointer
+                        } else {
+                            winit::window::CursorIcon::Default
+                        };
+                        window.set_cursor(icon);
+                    }
+                    return;
+                }
+
                 match &mut self.current_screen {
                     AppScreen::MainMenu => {
                         self.main_menu.handle_mouse_move(mx, my);
@@ -8371,6 +8456,49 @@ impl ApplicationHandler for App {
                     self.mouse_cursor_pos[0] / gui_scale as f32,
                     self.mouse_cursor_pos[1] / gui_scale as f32,
                 );
+
+                if let Some(form) = &mut self.active_modal_form {
+                    if state == ElementState::Released {
+                        form.handle_mouse_up();
+                        return;
+                    }
+                    if button == MouseButton::Left
+                        && let Some(action) = form.handle_mouse_click(mx, my)
+                    {
+                        let form_id = form.form_id;
+                        match action {
+                            ModalFormAction::Submit(resp) => {
+                                if let Ok(resp_payload) =
+                                    C2sModalFormResponse::success(form_id, &resp)
+                                {
+                                    let resp_msg = C2sMessage::ModalFormResponse(resp_payload);
+                                    let _ = self
+                                        .client_conn
+                                        .send(Lane::Control, Payload::Msg(resp_msg));
+                                }
+                            }
+                            ModalFormAction::Cancel(reason) => {
+                                let cancel_msg = C2sMessage::ModalFormResponse(
+                                    C2sModalFormResponse::cancelled(form_id, reason),
+                                );
+                                let _ = self
+                                    .client_conn
+                                    .send(Lane::Control, Payload::Msg(cancel_msg));
+                            }
+                        }
+                        self.active_modal_form = None;
+                        if self.current_screen == AppScreen::InGame
+                            && !self.is_paused
+                            && !self.chat_state.is_open
+                            && self.container_state.is_none()
+                            && !self.inventory_open
+                        {
+                            self.controller.mouse_captured = true;
+                            self.set_cursor_captured(true);
+                        }
+                    }
+                    return;
+                }
 
                 if state == ElementState::Released {
                     if let AppScreen::Settings { .. } = self.current_screen {
@@ -8931,6 +9059,46 @@ impl ApplicationHandler for App {
             } => {
                 let pressed = state.is_pressed();
 
+                if let Some(form) = &mut self.active_modal_form {
+                    if pressed {
+                        match code {
+                            KeyCode::Escape => {
+                                let cancel_msg =
+                                    C2sMessage::ModalFormResponse(C2sModalFormResponse::cancelled(
+                                        form.form_id,
+                                        telos_core::form::FormCancelReason::UserClosed,
+                                    ));
+                                let _ = self
+                                    .client_conn
+                                    .send(Lane::Control, Payload::Msg(cancel_msg));
+                                self.active_modal_form = None;
+                                if self.current_screen == AppScreen::InGame
+                                    && !self.is_paused
+                                    && !self.chat_state.is_open
+                                    && self.container_state.is_none()
+                                    && !self.inventory_open
+                                {
+                                    self.controller.mouse_captured = true;
+                                    self.set_cursor_captured(true);
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                form.handle_backspace();
+                            }
+                            _ => {
+                                if let Some(txt) = text {
+                                    for ch in txt.chars() {
+                                        if !ch.is_control() {
+                                            form.handle_char(ch);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 match &mut self.current_screen {
                     AppScreen::WorldCreate => {
                         if pressed {
@@ -9360,6 +9528,10 @@ impl ApplicationHandler for App {
                     #[allow(clippy::cast_possible_truncation)]
                     winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
                 };
+                if let Some(form) = &mut self.active_modal_form {
+                    form.handle_scroll(scroll);
+                    return;
+                }
                 if self.current_screen == AppScreen::WorldSelect {
                     self.world_select.scroll_offset =
                         (self.world_select.scroll_offset - scroll * 16.0).max(0.0);

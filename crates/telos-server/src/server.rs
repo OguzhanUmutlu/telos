@@ -1,5 +1,8 @@
 //! Authoritative game server ticking at 20 TPS with session management and chunk streaming.
 
+use crate::form::{
+    FormHandlerKind, HELP_COMMANDS, PendingForm, build_help_detail_form, build_help_index_form,
+};
 use glam::{DVec3, Vec3};
 use hashbrown::HashMap;
 use std::fmt::Write as _;
@@ -10,20 +13,21 @@ use telos_content::{
     FrozenRegistries, ModSide, RegistryBuilder, discover_packs, resolve_load_order,
 };
 use telos_core::coords::{BlockPos, ChunkPos, Face};
+use telos_core::form::{FormResponseData, ModalFormData};
 use telos_mod::{JsPlugin, JsPluginEngine, ModConfig, ModManager, ModPermissions, ModResult};
 use telos_net::{Connection, Lane, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest,
-    C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sPlayerCommand, ChunkPayload,
-    ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind,
-    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty,
-    S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply, S2cInventoryBulk,
-    S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload, S2cLoginSuccess, S2cMessage,
-    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow,
-    S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
-    S2cUpdateWeather, SlotData,
+    C2sInteractEntity, C2sInventoryClick, C2sMessage, C2sModalFormResponse, C2sPlayerCommand,
+    ChunkPayload, ConnectionPhase, LodPayload, NetworkEffect, ParticleEffectKind,
+    PlayerCommandKind, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
+    S2cContainerProperty, S2cDespawnEntity, S2cEntityMove, S2cEntityStatus, S2cHelloReply,
+    S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData, S2cLodNodeUnload,
+    S2cLoginSuccess, S2cMessage, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
+    S2cPlayerMovementAck, S2cRegistryData, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
+    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -140,6 +144,10 @@ pub struct Server {
     pub smelting_recipes: telos_sim::SmeltingRegistry,
     /// Registry of combustible fuels and burn durations.
     pub fuel_registry: telos_sim::FuelRegistry,
+    /// Next unique modal form identifier.
+    pub next_form_id: u32,
+    /// Outstanding pending modal forms dispatched to clients.
+    pub pending_forms: HashMap<(u64, u32), PendingForm>,
     /// Thread-safe signal to request server shutdown.
     shutdown_requested: Arc<AtomicBool>,
 }
@@ -317,6 +325,8 @@ impl Server {
             lan_emitter,
             smelting_recipes: telos_sim::SmeltingRegistry::standard(),
             fuel_registry: telos_sim::FuelRegistry::standard(),
+            next_form_id: 1,
+            pending_forms: HashMap::new(),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1671,6 +1681,74 @@ impl Server {
         }
     }
 
+    /// Dispatches a server-driven modal form request to a connected player session.
+    pub fn send_modal_form(
+        &mut self,
+        session_id: u64,
+        form: &ModalFormData,
+        handler: FormHandlerKind,
+    ) -> Option<u32> {
+        let session = self.sessions.get_mut(&session_id)?;
+        if session.phase != ConnectionPhase::Play {
+            return None;
+        }
+
+        let form_id = self.next_form_id;
+        self.next_form_id = self.next_form_id.wrapping_add(1).max(1);
+
+        let req = match S2cModalFormRequest::new(form_id, form) {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::warn!(?err, "Failed to serialize modal form payload");
+                return None;
+            }
+        };
+
+        let _ = session.connection.send(
+            Lane::Control,
+            Payload::Msg(S2cMessage::ModalFormRequest(req)),
+        );
+
+        self.pending_forms.insert(
+            (session_id, form_id),
+            PendingForm {
+                sent_tick: self.tick_count,
+                handler,
+            },
+        );
+
+        Some(form_id)
+    }
+
+    /// Dispatches a paginated `/help` command index form to a player session.
+    pub fn send_help_form(&mut self, session_id: u64, page: usize) -> Option<u32> {
+        let (form, current_page) = build_help_index_form(page);
+        self.send_modal_form(
+            session_id,
+            &form,
+            FormHandlerKind::HelpIndex { page: current_page },
+        )
+    }
+
+    /// Dispatches a command syntax and example details form to a player session.
+    pub fn send_help_command_detail(
+        &mut self,
+        session_id: u64,
+        command_name: &str,
+        return_page: usize,
+    ) -> Option<u32> {
+        let (form, default_example) = build_help_detail_form(command_name);
+        self.send_modal_form(
+            session_id,
+            &form,
+            FormHandlerKind::HelpCommandDetail {
+                command_name: command_name.trim_start_matches('/').to_lowercase(),
+                return_page,
+                example_command: default_example.map(ToString::to_string),
+            },
+        )
+    }
+
     /// Accesses the ECS simulation world immutably.
     #[must_use]
     pub fn ecs_world(&self) -> &bevy_ecs::world::World {
@@ -1949,6 +2027,7 @@ impl Server {
         let mut entity_interactions: Vec<(u64, C2sInteractEntity)> = Vec::new();
         let mut chat_messages: Vec<(u64, C2sChatMessage)> = Vec::new();
         let mut command_suggests: Vec<(u64, C2sCommandSuggest)> = Vec::new();
+        let mut modal_form_responses: Vec<(u64, C2sModalFormResponse)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -2323,6 +2402,9 @@ impl Server {
                         C2sMessage::CommandSuggest(suggest) => {
                             command_suggests.push((*session_id, suggest));
                         }
+                        C2sMessage::ModalFormResponse(resp) => {
+                            modal_form_responses.push((*session_id, resp));
+                        }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
                         }
@@ -2373,8 +2455,15 @@ impl Server {
                 if let Some(entity) = session.ecs_entity {
                     self.ecs_world.despawn(entity);
                 }
+                self.pending_forms.retain(|&(s_id, _), _| s_id != id);
                 info!(session_id = id, "Session disconnected");
             }
+        }
+
+        // Periodic purge of expired pending forms (older than 60s / 1200 ticks)
+        if self.tick_count.is_multiple_of(100) {
+            self.pending_forms
+                .retain(|_, pending| self.tick_count.saturating_sub(pending.sent_tick) <= 1200);
         }
 
         // 2. Process player debug and action commands
@@ -2802,6 +2891,85 @@ impl Server {
             }
         }
 
+        // 3.5. Process modal form responses
+        for (session_id, resp) in modal_form_responses {
+            let Some(pending) = self.pending_forms.remove(&(session_id, resp.form_id)) else {
+                debug!(
+                    session_id,
+                    form_id = resp.form_id,
+                    "Received response for unknown or expired form"
+                );
+                continue;
+            };
+
+            if !resp.has_response {
+                debug!(
+                    session_id,
+                    form_id = resp.form_id,
+                    cancel_reason = ?resp.cancel_reason,
+                    "Client dismissed modal form"
+                );
+                continue;
+            }
+
+            match pending.handler {
+                FormHandlerKind::HelpIndex { page } => {
+                    if let Ok(FormResponseData::Action { button_index }) =
+                        resp.parse_action_response()
+                    {
+                        let total_pages = HELP_COMMANDS.len().div_ceil(crate::form::HELP_PAGE_SIZE);
+                        let start_idx = page * crate::form::HELP_PAGE_SIZE;
+                        let end_idx =
+                            (start_idx + crate::form::HELP_PAGE_SIZE).min(HELP_COMMANDS.len());
+                        let count_on_page = end_idx - start_idx;
+
+                        let button_idx = button_index as usize;
+                        if button_idx < count_on_page {
+                            let cmd_name = HELP_COMMANDS[start_idx + button_idx].name;
+                            self.send_help_command_detail(session_id, cmd_name, page);
+                        } else {
+                            let nav_idx = button_idx - count_on_page;
+                            let has_next = page + 1 < total_pages;
+                            let has_prev = page > 0;
+
+                            if has_next && nav_idx == 0 {
+                                self.send_help_form(session_id, page + 1);
+                            } else if has_prev
+                                && ((has_next && nav_idx == 1) || (!has_next && nav_idx == 0))
+                            {
+                                self.send_help_form(session_id, page - 1);
+                            }
+                        }
+                    }
+                }
+                FormHandlerKind::HelpCommandDetail {
+                    command_name: _,
+                    return_page,
+                    example_command,
+                } => {
+                    if let Ok(FormResponseData::Action { button_index }) =
+                        resp.parse_action_response()
+                    {
+                        match button_index {
+                            0 => {
+                                self.send_help_form(session_id, return_page);
+                            }
+                            1 => {
+                                if let Some(cmd) = example_command
+                                    && let Ok(bounded) = BoundedString::new(cmd)
+                                {
+                                    chat_messages
+                                        .push((session_id, C2sChatMessage { message: bounded }));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                FormHandlerKind::CustomAction { .. } => {}
+            }
+        }
+
         // 4. Process chat messages and commands
         for (session_id, chat) in chat_messages {
             let Some(session) = self.sessions.get_mut(&session_id) else {
@@ -2849,7 +3017,20 @@ impl Server {
 
                 // Apply world side-effects for built-in commands
                 if output.success {
-                    if text.starts_with("/time set ") {
+                    if text.starts_with("/help") {
+                        let sub = text.trim_start_matches("/help").trim();
+                        if sub.is_empty() || sub == "1" {
+                            self.send_help_form(session_id, 0);
+                            output.message = "Opening command reference form...".to_string();
+                        } else if let Ok(page_num) = sub.parse::<usize>() {
+                            self.send_help_form(session_id, page_num.saturating_sub(1));
+                            output.message =
+                                format!("Opening command reference page {page_num}...");
+                        } else {
+                            self.send_help_command_detail(session_id, sub, 0);
+                            output.message = format!("Opening /{sub} command details...");
+                        }
+                    } else if text.starts_with("/time set ") {
                         let sub = text.trim_start_matches("/time set ").trim();
                         let new_time = match sub {
                             "day" => Some(1_000),

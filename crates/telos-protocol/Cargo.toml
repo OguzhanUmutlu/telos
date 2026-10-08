@@ -16,6 +16,8 @@ bitflags = { workspace = true }
 xxhash-rust = { workspace = true }
 crc32fast = { workspace = true }
 lz4_flex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

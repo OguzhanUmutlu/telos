@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use telos_core::coords::ChunkPos;
+use telos_core::form::{FormCancelReason, FormResponseData, ModalFormData};
 use telos_voxel::{
     chunk::ChunkSnapshot,
     light::{ChunkLight, LIGHT_LAYER_BYTES, LightLayer},
@@ -2904,6 +2905,166 @@ impl S2cContainerProperty {
             window_id,
             property_id,
             value,
+        })
+    }
+}
+
+/// Server requests client to open and display a server-driven modal form dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2cModalFormRequest {
+    /// Server-assigned unique identifier for matching client responses.
+    pub form_id: u32,
+    /// JSON payload defining the form structure according to Bedrock schema.
+    pub form_json: BoundedString<32768>,
+}
+
+impl S2cModalFormRequest {
+    /// Creates a new `S2cModalFormRequest` by serializing a typed `ModalFormData`.
+    ///
+    /// # Errors
+    /// Returns `ProtocolError::InvalidString` or JSON serialization error.
+    pub fn new(form_id: u32, form: &ModalFormData) -> Result<Self> {
+        let json = form
+            .to_json()
+            .map_err(|e| ProtocolError::Malformed(e.to_string()))?;
+        let form_json = BoundedString::new(json)?;
+        Ok(Self { form_id, form_json })
+    }
+
+    /// Deserializes the JSON payload into a typed `ModalFormData`.
+    ///
+    /// # Errors
+    /// Returns an error if the JSON is malformed or does not match `ModalFormData`.
+    pub fn parse_form(&self) -> std::result::Result<ModalFormData, serde_json::Error> {
+        ModalFormData::from_json(self.form_json.as_str())
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.form_id, buf);
+        self.form_json.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let form_id = decode_varint(cursor)?;
+        let form_json = BoundedString::<32768>::decode(cursor)?;
+        Ok(Self { form_id, form_json })
+    }
+}
+
+/// Client sends response to a server-driven modal form dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct C2sModalFormResponse {
+    /// Form identifier matching the server's `S2cModalFormRequest`.
+    pub form_id: u32,
+    /// Whether user submitted a response (`true`) or cancelled/dismissed (`false`).
+    pub has_response: bool,
+    /// JSON payload containing the user's choices or selections.
+    pub response_json: BoundedString<16384>,
+    /// Optional cancellation reason byte (0: closed, 1: busy).
+    pub cancel_reason: Option<u8>,
+}
+
+impl C2sModalFormResponse {
+    /// Creates a successful response containing serialized `FormResponseData`.
+    ///
+    /// # Errors
+    /// Returns error if serialization or bounded string creation fails.
+    pub fn success(form_id: u32, response: &FormResponseData) -> Result<Self> {
+        let json = response
+            .to_json()
+            .map_err(|e| ProtocolError::Malformed(e.to_string()))?;
+        let response_json = BoundedString::new(json)?;
+        Ok(Self {
+            form_id,
+            has_response: true,
+            response_json,
+            cancel_reason: None,
+        })
+    }
+
+    /// Creates a cancellation response specifying the reason why the form was dismissed.
+    #[must_use]
+    pub fn cancelled(form_id: u32, reason: FormCancelReason) -> Self {
+        Self {
+            form_id,
+            has_response: false,
+            response_json: BoundedString::new(String::new()).unwrap(),
+            cancel_reason: Some(reason.to_u8()),
+        }
+    }
+
+    /// Parses the response JSON for an `ActionForm`.
+    ///
+    /// # Errors
+    /// Returns error if parsing fails.
+    pub fn parse_action_response(
+        &self,
+    ) -> std::result::Result<FormResponseData, serde_json::Error> {
+        FormResponseData::from_action_json(self.response_json.as_str())
+    }
+
+    /// Parses the response JSON for a `ModalForm`.
+    ///
+    /// # Errors
+    /// Returns error if parsing fails.
+    pub fn parse_modal_response(&self) -> std::result::Result<FormResponseData, serde_json::Error> {
+        FormResponseData::from_modal_json(self.response_json.as_str())
+    }
+
+    /// Parses the response JSON for a `CustomForm`.
+    ///
+    /// # Errors
+    /// Returns error if parsing fails.
+    pub fn parse_custom_response(
+        &self,
+    ) -> std::result::Result<FormResponseData, serde_json::Error> {
+        FormResponseData::from_custom_json(self.response_json.as_str())
+    }
+
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint(self.form_id, buf);
+        buf.push(u8::from(self.has_response));
+        self.response_json.encode(buf);
+        if let Some(r) = self.cancel_reason {
+            buf.push(1);
+            buf.push(r);
+        } else {
+            buf.push(0);
+        }
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let form_id = decode_varint(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let has_response = cursor[0] != 0;
+        *cursor = &cursor[1..];
+        let response_json = BoundedString::<16384>::decode(cursor)?;
+        if cursor.is_empty() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let has_reason = cursor[0] != 0;
+        *cursor = &cursor[1..];
+        let cancel_reason = if has_reason {
+            if cursor.is_empty() {
+                return Err(ProtocolError::UnexpectedEof);
+            }
+            let r = cursor[0];
+            *cursor = &cursor[1..];
+            Some(r)
+        } else {
+            None
+        };
+        Ok(Self {
+            form_id,
+            has_response,
+            response_json,
+            cancel_reason,
         })
     }
 }
