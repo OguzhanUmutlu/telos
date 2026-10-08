@@ -18,15 +18,15 @@ use telos_protocol::messages::{
     AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
     C2sClientSettings, C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sKeepAlive,
     C2sKnownRegistries, C2sLoginProof, C2sLoginStart, C2sMessage, C2sModalFormResponse,
-    C2sPlayerCommand, C2sPlayerPosition, ChunkPayload, ConnectionPhase, CustomBlockDefWire,
-    CustomItemDefWire, Disconnect, DisconnectReason, LodPayload, ParticleEffectKind,
-    PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent,
-    S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer,
-    S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty, S2cContentManifest,
-    S2cEntityEffect, S2cGameMode, S2cHelloReply, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
-    S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest, S2cRegistryData, S2cRemoveEntityEffect,
-    S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, SlotData,
+    C2sPlayerCommand, C2sPlayerPosition, C2sVoiceData, ChunkPayload, ConnectionPhase,
+    CustomBlockDefWire, CustomItemDefWire, Disconnect, DisconnectReason, LodPayload,
+    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty,
+    S2cContentManifest, S2cEntityEffect, S2cGameMode, S2cHelloReply, S2cJoinGame, S2cKeepAlive,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cRecipeManifest, S2cRegistryData,
+    S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnItem, S2cUniformChunk, S2cVoiceData, SlotData,
 };
 use telos_protocol::varint::{
     decode_varint, decode_varint_zigzag, decode_varlong, encode_varint, encode_varint_zigzag,
@@ -1159,6 +1159,37 @@ fn test_s2c_entity_effect_and_remove_envelope_roundtrip() {
         .expect("decode S2cMessage::RemoveEntityEffect");
     assert_eq!(remove_msg, decoded_remove);
     assert!(cursor_remove.is_empty());
+}
+
+#[test]
+fn test_voice_data_full_packet_roundtrip() {
+    let c2s_voice = C2sMessage::VoiceData(C2sVoiceData {
+        sequence: 42,
+        opus_frame: BoundedVec::new(vec![0xFC, 0x01, 0x02, 0x03]).unwrap(),
+    });
+    let mut buf_c2s = Vec::new();
+    encode_c2s(&c2s_voice, &mut buf_c2s);
+
+    let mut cursor_c2s = &buf_c2s[..];
+    let decoded_c2s =
+        decode_c2s(ConnectionPhase::Play, &mut cursor_c2s).expect("decode C2sMessage::VoiceData");
+    assert_eq!(c2s_voice, decoded_c2s);
+    assert!(cursor_c2s.is_empty());
+
+    let s2c_voice = S2cMessage::VoiceData(S2cVoiceData {
+        speaker_uuid: [42u8; 16],
+        position: [100.5, 64.0, -200.5],
+        sequence: 42,
+        opus_frame: BoundedVec::new(vec![0xFC, 0x04, 0x05, 0x06]).unwrap(),
+    });
+    let mut buf_s2c = Vec::new();
+    encode_s2c(&s2c_voice, &mut buf_s2c);
+
+    let mut cursor_s2c = &buf_s2c[..];
+    let decoded_s2c =
+        decode_s2c(ConnectionPhase::Play, &mut cursor_s2c).expect("decode S2cMessage::VoiceData");
+    assert_eq!(s2c_voice, decoded_s2c);
+    assert!(cursor_s2c.is_empty());
 }
 
 proptest! {

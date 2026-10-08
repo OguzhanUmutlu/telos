@@ -1,8 +1,10 @@
 //! Core Audio Engine managing devices, playback channels, and spatial mixing.
 
 use crate::error::AudioError;
+use crate::occlusion::VoiceOcclusion;
 use crate::source::SoundBuffer;
 use crate::spatial::{Listener, calculate_spatial_gains};
+use crate::stream::{SpatialVoicePlayer, SpatialVoiceSource};
 use crate::synth::{
     SYNTH_SAMPLE_RATE, synthesize_advancement_chime, synthesize_arrow_hit, synthesize_block_break,
     synthesize_block_place, synthesize_bow_shoot, synthesize_chest_close, synthesize_chest_open,
@@ -13,6 +15,7 @@ use glam::Vec3;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
 use rodio::{Player, Source};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use telos_content::sound::SoundCategory;
 use tracing::{info, warn};
 
@@ -22,9 +25,12 @@ const CATEGORY_COUNT: usize = 10;
 pub struct AudioEngine {
     sink: Option<MixerDeviceSink>,
     listener: Listener,
+    shared_listener: Arc<Mutex<Listener>>,
     master_volume: f32,
     category_volumes: [f32; CATEGORY_COUNT],
+    voice_chat_volume: f32,
     active_players: Vec<Player>,
+    voice_players: HashMap<[u8; 16], (Arc<Mutex<SpatialVoicePlayer>>, Player)>,
     ambient_rain_player: Option<Player>,
     cached_buffers: HashMap<String, SoundBuffer>,
 }
@@ -51,12 +57,18 @@ impl AudioEngine {
         category_volumes[SoundCategory::Blocks as usize] = 0.95;
         category_volumes[SoundCategory::Players as usize] = 1.0;
 
+        let listener = Listener::default();
+        let shared_listener = Arc::new(Mutex::new(listener));
+
         Self {
             sink,
-            listener: Listener::default(),
+            listener,
+            shared_listener,
             master_volume: 1.0,
             category_volumes,
+            voice_chat_volume: 1.0,
             active_players: Vec::with_capacity(32),
+            voice_players: HashMap::new(),
             ambient_rain_player: None,
             cached_buffers: HashMap::new(),
         }
@@ -65,12 +77,18 @@ impl AudioEngine {
     /// Creates an audio engine in explicit mock mode without requesting audio hardware.
     #[must_use]
     pub fn mock() -> Self {
+        let listener = Listener::default();
+        let shared_listener = Arc::new(Mutex::new(listener));
+
         Self {
             sink: None,
-            listener: Listener::default(),
+            listener,
+            shared_listener,
             master_volume: 1.0,
             category_volumes: [1.0f32; CATEGORY_COUNT],
+            voice_chat_volume: 1.0,
             active_players: Vec::new(),
+            voice_players: HashMap::new(),
             ambient_rain_player: None,
             cached_buffers: HashMap::new(),
         }
@@ -85,6 +103,9 @@ impl AudioEngine {
     /// Updates the 3D listener position, forward view vector, and up vector.
     pub fn set_listener(&mut self, position: Vec3, forward: Vec3, up: Vec3) {
         self.listener = Listener::new(position, forward, up);
+        if let Ok(mut l) = self.shared_listener.lock() {
+            *l = self.listener;
+        }
     }
 
     /// Sets the master volume multiplier `[0.0, 1.0+]`.
@@ -96,6 +117,71 @@ impl AudioEngine {
     #[must_use]
     pub fn master_volume(&self) -> f32 {
         self.master_volume
+    }
+
+    /// Sets the voice chat volume multiplier `[0.0, 1.0+]`.
+    pub fn set_voice_chat_volume(&mut self, volume: f32) {
+        self.voice_chat_volume = volume.max(0.0);
+        let eff_vol = self.master_volume * self.voice_chat_volume;
+        for (player_arc, _) in self.voice_players.values() {
+            if let Ok(mut p) = player_arc.lock() {
+                p.set_volume(eff_vol);
+            }
+        }
+    }
+
+    /// Returns the voice chat volume.
+    #[must_use]
+    pub fn voice_chat_volume(&self) -> f32 {
+        self.voice_chat_volume
+    }
+
+    /// Dispatches an incoming voice packet for a remote speaker.
+    pub fn play_voice_packet(
+        &mut self,
+        speaker_uuid: [u8; 16],
+        sequence: u64,
+        data: Vec<u8>,
+        pos: Vec3,
+        occlusion: VoiceOcclusion,
+    ) {
+        let eff_vol = self.master_volume * self.voice_chat_volume;
+        if eff_vol <= 0.0 {
+            return;
+        }
+
+        if let Some((player_arc, _)) = self.voice_players.get(&speaker_uuid) {
+            if let Ok(mut p) = player_arc.lock() {
+                p.push_voice_packet(sequence, data, pos);
+                p.update_acoustics(pos, occlusion);
+                p.set_volume(eff_vol);
+            }
+            return;
+        }
+
+        let Some(sink) = &self.sink else {
+            return;
+        };
+
+        if let Ok(mut player) = SpatialVoicePlayer::new(1.5, 32.0) {
+            player.push_voice_packet(sequence, data, pos);
+            player.update_acoustics(pos, occlusion);
+            player.set_volume(eff_vol);
+
+            let player_arc = Arc::new(Mutex::new(player));
+            let source = SpatialVoiceSource::new(player_arc.clone(), self.shared_listener.clone());
+
+            let rodio_player = Player::connect_new(sink.mixer());
+            rodio_player.append(source);
+
+            self.voice_players
+                .insert(speaker_uuid, (player_arc, rodio_player));
+        }
+    }
+
+    /// Removes a speaker voice stream when disconnected or despawned.
+    pub fn remove_voice_player(&mut self, speaker_uuid: &[u8; 16]) {
+        self.voice_players.remove(speaker_uuid);
     }
 
     /// Sets the volume multiplier for a specific category `[0.0, 1.0+]`.
@@ -126,6 +212,7 @@ impl AudioEngine {
     /// Removes completed sound players to prevent unbounded memory growth.
     pub fn cleanup_finished_players(&mut self) {
         self.active_players.retain(|player| !player.empty());
+        self.voice_players.retain(|_, (_, p)| !p.empty());
     }
 
     /// Returns the count of currently active playing sound channels.

@@ -177,6 +177,8 @@ pub struct HudState {
     pub active_effects: Vec<HudEffectDisplay>,
     /// Active advancement toast notification sliding banner.
     pub active_toast: Option<ToastState>,
+    /// Whether voice chat is actively transmitting audio.
+    pub voice_transmitting: bool,
 }
 
 /// Active advancement toast notification state displayed on the HUD.
@@ -250,6 +252,7 @@ impl Default for HudState {
             is_flying: true,
             active_effects: Vec::new(),
             active_toast: None,
+            voice_transmitting: false,
         }
     }
 }
@@ -484,6 +487,36 @@ pub fn render_hud_styled(
     // 9. Active Advancement Toast Notification (sliding top-right banner)
     if let Some(toast) = &state.active_toast {
         render_toast(toast, layers, font, screen_width, gui_scale, out);
+    }
+
+    // 10. Voice transmission indicator badge (Phase 72)
+    if state.voice_transmitting {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        {
+            let badge_w = 46.0;
+            let badge_h = 14.0;
+            let badge_x = 10.0;
+            let badge_y = (sh as f32 / gui_scale as f32) - 36.0;
+            let px_x = to_physical_pixels(badge_x as i32, gui_scale);
+            let px_y = to_physical_pixels(badge_y as i32, gui_scale);
+            let px_w = to_physical_pixels(badge_w as i32, gui_scale) as u16;
+            let px_h = to_physical_pixels(badge_h as i32, gui_scale) as u16;
+
+            out.push(UiQuad::solid(
+                [px_x, px_y],
+                [px_w, px_h],
+                UiQuad::rgba(18, 55, 24, 220),
+            ));
+            font.layout_text(
+                "VOICE",
+                badge_x + 8.0,
+                badge_y + 3.0,
+                UiQuad::rgba(80, 255, 100, 255),
+                true,
+                gui_scale,
+                out,
+            );
+        }
     }
 }
 

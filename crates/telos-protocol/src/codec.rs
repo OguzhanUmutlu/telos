@@ -11,14 +11,14 @@ use crate::messages::login::{C2sLoginProof, C2sLoginStart, S2cLoginChallenge, S2
 use crate::messages::play::{
     C2sBlockAction, C2sChatMessage, C2sCloseContainer, C2sCommandSuggest, C2sInteractEntity,
     C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse, C2sPlayerCommand, C2sPlayerInput,
-    C2sPlayerPosition, C2sTeleportAck, S2cAdvancementToast, S2cAdvancementUpdate,
+    C2sPlayerPosition, C2sTeleportAck, C2sVoiceData, S2cAdvancementToast, S2cAdvancementUpdate,
     S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
     S2cCloseContainer, S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity,
     S2cEntityEffect, S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk,
     S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
     S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck,
     S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
-    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, S2cVoiceData,
 };
 use crate::messages::{C2sMessage, ConnectionPhase, MSG_ID_DISCONNECT, S2cMessage};
 use crate::varint::{decode_varint, encode_varint};
@@ -282,6 +282,7 @@ pub fn decode_c2s(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<C2sMessa
                 9 => C2sMessage::TeleportAck(C2sTeleportAck::decode(&mut frame_cur)?),
                 10 => C2sMessage::CloseContainer(C2sCloseContainer::decode(&mut frame_cur)?),
                 11 => C2sMessage::ModalFormResponse(C2sModalFormResponse::decode(&mut frame_cur)?),
+                12 => C2sMessage::VoiceData(C2sVoiceData::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }
@@ -410,6 +411,7 @@ pub fn decode_s2c(phase: ConnectionPhase, cursor: &mut &[u8]) -> Result<S2cMessa
                 34 => {
                     S2cMessage::RemoveEntityEffect(S2cRemoveEntityEffect::decode(&mut frame_cur)?)
                 }
+                35 => S2cMessage::VoiceData(S2cVoiceData::decode(&mut frame_cur)?),
                 id => return Err(ProtocolError::UnknownMessageId { phase: "Play", id }),
             },
         }

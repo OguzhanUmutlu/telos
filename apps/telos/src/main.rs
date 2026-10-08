@@ -39,8 +39,8 @@ use telos_protocol::messages::{
     AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sClientSettings,
     C2sCloseContainer, C2sCommandSuggest, C2sConfigAck, C2sHello, C2sInteractEntity,
     C2sInventoryClick, C2sLoginProof, C2sLoginStart, C2sMessage, C2sModalFormResponse,
-    C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, ChunkPayload, ConnectionPhase, InputFrame,
-    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent,
+    C2sPlayerCommand, C2sPlayerInput, C2sTeleportAck, C2sVoiceData, ChunkPayload, ConnectionPhase,
+    InputFrame, NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cMessage, S2cParticleEvent,
     S2cPlayerMovementAck, input_buttons,
 };
 use telos_sim::particle::{ParticleGpu, ParticleSystem};
@@ -1525,6 +1525,12 @@ struct App {
     audio_step_dist: f32,
     last_audio_pos: Vec3,
 
+    // Spatial Voice Chat (Phase 72)
+    voice_encoder: telos_audio::OpusVoiceEncoder,
+    voice_sequence: u64,
+    push_to_talk_pressed: bool,
+    last_voice_transmit_time: Instant,
+
     // Menu System, Settings & Physics (Phase 33)
     current_screen: AppScreen,
     main_menu: MainMenuScreen,
@@ -2028,6 +2034,12 @@ impl App {
             audio: telos_audio::AudioEngine::new(),
             audio_step_dist: 0.0,
             last_audio_pos: spawn_pos,
+
+            voice_encoder: telos_audio::OpusVoiceEncoder::new()
+                .expect("Failed to initialize Opus voice encoder"),
+            voice_sequence: 0,
+            push_to_talk_pressed: false,
+            last_voice_transmit_time: Instant::now(),
 
             current_screen,
             main_menu,
@@ -2705,6 +2717,42 @@ impl App {
         } else {
             BlockStateId::AIR
         }
+    }
+
+    fn count_intervening_solid_voxels(&self, from: Vec3, to: Vec3) -> usize {
+        let diff = to - from;
+        let dist = diff.length();
+        if dist < 0.5 {
+            return 0;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (dist * 2.0).min(64.0) as usize;
+        let step_vec = diff / (steps as f32);
+        let mut last_block = None;
+        let mut solid_count = 0;
+
+        for i in 1..steps {
+            let p = from + step_vec * (i as f32);
+            let bpos = BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            if last_block == Some(bpos) {
+                continue;
+            }
+            last_block = Some(bpos);
+
+            let state = self.get_block_at(bpos);
+            if state != BlockStateId::AIR
+                && !self
+                    .block_registry
+                    .flags(state)
+                    .contains(telos_voxel::state::StateFlags::AIR)
+            {
+                solid_count += 1;
+                if solid_count >= 8 {
+                    break;
+                }
+            }
+        }
+        solid_count
     }
 
     fn resolve_block_sound_material(&self, id: BlockStateId) -> &'static str {
@@ -3430,6 +3478,25 @@ impl App {
                         } else {
                             self.toast_queue.push_back(new_toast);
                         }
+                    }
+                    S2cMessage::VoiceData(voice)
+                        if self.settings_screen.settings.audio.voice_chat_enabled =>
+                    {
+                        let listener_pos = self.camera.position;
+                        let speaker_pos =
+                            Vec3::new(voice.position[0], voice.position[1], voice.position[2]);
+                        let blocking_voxels =
+                            self.count_intervening_solid_voxels(listener_pos, speaker_pos);
+                        let occlusion =
+                            telos_audio::VoiceOcclusion::from_blocking_voxels(blocking_voxels);
+
+                        self.audio.play_voice_packet(
+                            voice.speaker_uuid,
+                            voice.sequence,
+                            voice.opus_frame.to_vec(),
+                            speaker_pos,
+                            occlusion,
+                        );
                     }
                     _ => {}
                 },
@@ -4515,6 +4582,49 @@ impl App {
             .max(self.weather_thunder_level * 0.85);
         self.audio.update_ambient_rain(rain_intensity);
         self.audio.cleanup_finished_players();
+
+        // Spatial Voice Chat Transmission (Phase 72)
+        self.audio
+            .set_voice_chat_volume(self.settings_screen.settings.audio.voice_chat_volume);
+
+        let is_voice_enabled = self.settings_screen.settings.audio.voice_chat_enabled;
+        let should_transmit = is_voice_enabled
+            && self.client_phase == ConnectionPhase::Play
+            && if self.settings_screen.settings.audio.push_to_talk {
+                self.push_to_talk_pressed
+            } else {
+                true
+            };
+        self.hud_state.voice_transmitting = should_transmit;
+
+        if should_transmit
+            && now.duration_since(self.last_voice_transmit_time) >= Duration::from_millis(20)
+        {
+            self.last_voice_transmit_time = now;
+            let mut pcm_frame = [0.0f32; 960];
+            #[allow(clippy::cast_precision_loss)]
+            let time_base = (self.voice_sequence as f32) * 0.02;
+            for (i, sample) in pcm_frame.iter_mut().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let t = time_base + (i as f32) / 48000.0;
+                *sample = (t * 220.0 * std::f32::consts::TAU).sin() * 0.15;
+            }
+            self.voice_encoder
+                .set_vad_threshold(self.settings_screen.settings.audio.mic_sensitivity);
+            let mut opus_buf = [0u8; 1024];
+            if let Ok(Some(len)) = self.voice_encoder.encode(&pcm_frame, &mut opus_buf) {
+                self.voice_sequence = self.voice_sequence.wrapping_add(1);
+                if let Ok(bounded_opus) = BoundedVec::new(opus_buf[..len].to_vec()) {
+                    let voice_msg = C2sMessage::VoiceData(C2sVoiceData {
+                        sequence: self.voice_sequence,
+                        opus_frame: bounded_opus,
+                    });
+                    let _ = self
+                        .client_conn
+                        .send(Lane::Unreliable, Payload::Msg(voice_msg));
+                }
+            }
+        }
 
         // Advance smooth client time of day (20 ticks per second)
         self.client_time_of_day =
@@ -10555,6 +10665,9 @@ impl ApplicationHandler for App {
                 if kb.matches(KeyAction::Sprint, key) {
                     self.controller.sprint = pressed;
                 }
+                if kb.matches(KeyAction::PushToTalk, key) {
+                    self.push_to_talk_pressed = pressed;
+                }
 
                 if pressed {
                     if kb.matches(KeyAction::Drop, key) {
@@ -10564,6 +10677,7 @@ impl ApplicationHandler for App {
                         });
                         let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
                     } else if kb.matches(KeyAction::Inventory, key) {
+                        self.push_to_talk_pressed = false;
                         self.inventory_open = true;
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -10583,6 +10697,7 @@ impl ApplicationHandler for App {
                             &self.gui_style.inventory,
                         );
                     } else if kb.matches(KeyAction::Advancements, key) {
+                        self.push_to_talk_pressed = false;
                         self.advancements_open = true;
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -10594,6 +10709,7 @@ impl ApplicationHandler for App {
                         self.controller.down = false;
                         self.controller.sprint = false;
                     } else if kb.matches(KeyAction::Chat, key) {
+                        self.push_to_talk_pressed = false;
                         self.chat_state.open(None);
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -10604,6 +10720,7 @@ impl ApplicationHandler for App {
                         self.controller.up = false;
                         self.controller.down = false;
                     } else if kb.matches(KeyAction::Command, key) {
+                        self.push_to_talk_pressed = false;
                         self.chat_state.open(Some("/"));
                         self.controller.mouse_captured = false;
                         self.set_cursor_captured(false);
@@ -10764,6 +10881,7 @@ impl ApplicationHandler for App {
                                 self.controller.up = false;
                                 self.controller.down = false;
                                 self.controller.sprint = false;
+                                self.push_to_talk_pressed = false;
                             }
                             _ => {}
                         }
@@ -10865,6 +10983,7 @@ impl ApplicationHandler for App {
                     self.controller.up = false;
                     self.controller.down = false;
                     self.controller.sprint = false;
+                    self.push_to_talk_pressed = false;
                     if self.current_screen == AppScreen::InGame
                         && !self.inventory_open
                         && !self.advancements_open

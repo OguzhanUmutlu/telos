@@ -17,16 +17,17 @@ pub use login::{AuthMode, C2sLoginProof, C2sLoginStart, S2cLoginChallenge, S2cLo
 pub use play::{
     AdvancementProgressWire, BlockActionKind, C2sBlockAction, C2sChatMessage, C2sCloseContainer,
     C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sKeepAlive, C2sModalFormResponse,
-    C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, CONTAINER_KIND_ANVIL,
-    CONTAINER_KIND_CHEST, CONTAINER_KIND_CRAFTING_TABLE, CONTAINER_KIND_FURNACE, ChunkPayload,
-    InputFrame, LodPayload, NetworkEffect, ParticleEffectKind, PlayerCommandKind,
-    S2cAdvancementToast, S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate,
-    S2cChatMessage, S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions,
-    S2cContainerProperty, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove, S2cEntityStatus,
-    S2cGameMode, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData,
-    S2cLodNodeUnload, S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent,
-    S2cPlayerMovementAck, S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem,
-    S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    C2sPlayerCommand, C2sPlayerInput, C2sPlayerPosition, C2sTeleportAck, C2sVoiceData,
+    CONTAINER_KIND_ANVIL, CONTAINER_KIND_CHEST, CONTAINER_KIND_CRAFTING_TABLE,
+    CONTAINER_KIND_FURNACE, ChunkPayload, InputFrame, LodPayload, NetworkEffect,
+    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
+    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
+    S2cCloseContainer, S2cCommandSuggestions, S2cContainerProperty, S2cDespawnEntity,
+    S2cEntityEffect, S2cEntityMove, S2cEntityStatus, S2cGameMode, S2cInventoryBulk,
+    S2cInventorySlot, S2cJoinGame, S2cKeepAlive, S2cLodNodeData, S2cLodNodeUnload,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck,
+    S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
+    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, S2cVoiceData, SlotData,
     decode_chunk_snapshot, encode_chunk_snapshot, input_buttons,
 };
 
@@ -121,6 +122,8 @@ pub enum C2sMessage {
     CloseContainer(C2sCloseContainer),
     /// Play phase response to server-driven modal form dialog.
     ModalFormResponse(C2sModalFormResponse),
+    /// Play phase client voice chat audio packet.
+    VoiceData(C2sVoiceData),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -148,7 +151,8 @@ impl C2sMessage {
             | Self::PlayerInput(_)
             | Self::TeleportAck(_)
             | Self::CloseContainer(_)
-            | Self::ModalFormResponse(_) => Some(ConnectionPhase::Play),
+            | Self::ModalFormResponse(_)
+            | Self::VoiceData(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -172,6 +176,7 @@ impl C2sMessage {
             Self::TeleportAck(_) => 9,
             Self::CloseContainer(_) => 10,
             Self::ModalFormResponse(_) => 11,
+            Self::VoiceData(_) => 12,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -197,6 +202,7 @@ impl C2sMessage {
             Self::TeleportAck(m) => m.encode(buf),
             Self::CloseContainer(m) => m.encode(buf),
             Self::ModalFormResponse(m) => m.encode(buf),
+            Self::VoiceData(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }
@@ -290,6 +296,8 @@ pub enum S2cMessage {
     EntityEffect(S2cEntityEffect),
     /// Play phase single entity status effect removed or expired.
     RemoveEntityEffect(S2cRemoveEntityEffect),
+    /// Play phase spatial voice chat audio frame broadcast.
+    VoiceData(S2cVoiceData),
     /// Termination message valid in any connection phase.
     Disconnect(Disconnect),
 }
@@ -341,7 +349,8 @@ impl S2cMessage {
             | Self::AdvancementUpdate(_)
             | Self::AdvancementToast(_)
             | Self::EntityEffect(_)
-            | Self::RemoveEntityEffect(_) => Some(ConnectionPhase::Play),
+            | Self::RemoveEntityEffect(_)
+            | Self::VoiceData(_) => Some(ConnectionPhase::Play),
             Self::Disconnect(_) => None, // Valid in all phases
         }
     }
@@ -388,6 +397,7 @@ impl S2cMessage {
             Self::AdvancementToast(_) => 32,
             Self::EntityEffect(_) => 33,
             Self::RemoveEntityEffect(_) => 34,
+            Self::VoiceData(_) => 35,
             Self::Disconnect(_) => MSG_ID_DISCONNECT,
         }
     }
@@ -437,6 +447,7 @@ impl S2cMessage {
             Self::AdvancementToast(m) => m.encode(buf),
             Self::EntityEffect(m) => m.encode(buf),
             Self::RemoveEntityEffect(m) => m.encode(buf),
+            Self::VoiceData(m) => m.encode(buf),
             Self::Disconnect(m) => m.encode(buf),
         }
     }

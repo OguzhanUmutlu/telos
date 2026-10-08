@@ -453,6 +453,65 @@ impl SettingsScreen {
                     "%",
                     false,
                 ));
+
+                let on_str = catalog.translate("options.on");
+                let off_str = catalog.translate("options.off");
+
+                let vc_val = if self.settings.audio.voice_chat_enabled {
+                    on_str
+                } else {
+                    off_str
+                };
+                self.toggle_buttons.push(MenuButton::new(
+                    210,
+                    col2_x,
+                    start_y + 12.0 + row_h * 2.0,
+                    col_w,
+                    22.0,
+                    format!("Voice Chat: {vc_val}"),
+                ));
+
+                self.sliders.push(MenuSlider::new(
+                    16,
+                    col1_x,
+                    start_y + 12.0 + row_h * 3.0,
+                    col_w,
+                    22.0,
+                    "Voice Volume",
+                    0.0,
+                    2.0,
+                    self.settings.audio.voice_chat_volume,
+                    "%",
+                    false,
+                ));
+
+                let ptt_val = if self.settings.audio.push_to_talk {
+                    "PTT (V)"
+                } else {
+                    "Open Mic"
+                };
+                self.toggle_buttons.push(MenuButton::new(
+                    211,
+                    col2_x,
+                    start_y + 12.0 + row_h * 3.0,
+                    col_w,
+                    22.0,
+                    format!("Mic Mode: {ptt_val}"),
+                ));
+
+                self.sliders.push(MenuSlider::new(
+                    17,
+                    col1_x,
+                    start_y + 12.0 + row_h * 4.0,
+                    col_w,
+                    22.0,
+                    "Mic Sensitivity",
+                    0.005,
+                    0.20,
+                    self.settings.audio.mic_sensitivity,
+                    "%",
+                    false,
+                ));
             }
             SettingsTab::Controls => {
                 // Controls tab supports scrollable keybind list
@@ -491,6 +550,7 @@ impl SettingsScreen {
                     (KeyCategory::Movement, "Movement Controls"),
                     (KeyCategory::Gameplay, "Gameplay & Interaction"),
                     (KeyCategory::Hotbar, "Hotbar Slots"),
+                    (KeyCategory::Multiplayer, "Multiplayer & Voice"),
                     (KeyCategory::System, "System & Debug"),
                 ];
 
@@ -717,6 +777,13 @@ impl SettingsScreen {
                         self.settings.video.volumetric_clouds =
                             !self.settings.video.volumetric_clouds;
                     }
+                    210 => {
+                        self.settings.audio.voice_chat_enabled =
+                            !self.settings.audio.voice_chat_enabled;
+                    }
+                    211 => {
+                        self.settings.audio.push_to_talk = !self.settings.audio.push_to_talk;
+                    }
                     301 => self.settings.gameplay.language = "en_us".to_string(),
                     302 => self.settings.gameplay.language = "es_es".to_string(),
                     303 => self.settings.gameplay.language = "de_de".to_string(),
@@ -778,6 +845,8 @@ impl SettingsScreen {
                 13 => self.settings.audio.weather_volume = s.value,
                 14 => self.settings.audio.blocks_volume = s.value,
                 15 => self.settings.audio.entities_volume = s.value,
+                16 => self.settings.audio.voice_chat_volume = s.value,
+                17 => self.settings.audio.mic_sensitivity = s.value,
                 21 => self.settings.controls.mouse_sensitivity = s.value,
                 _ => {}
             }

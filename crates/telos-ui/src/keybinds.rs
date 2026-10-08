@@ -58,6 +58,8 @@ pub enum KeyAction {
     Hotbar8,
     /// Select hotbar slot 9.
     Hotbar9,
+    /// Push-to-talk voice transmission.
+    PushToTalk,
 }
 
 /// Category grouping for display in settings panels.
@@ -69,6 +71,8 @@ pub enum KeyCategory {
     Gameplay,
     /// Direct slot selection 1 through 9.
     Hotbar,
+    /// Multiplayer, voice chat, and communication.
+    Multiplayer,
     /// Debug overlays, screenshots, game modes, and tools.
     System,
 }
@@ -103,6 +107,7 @@ impl KeyAction {
             Self::Hotbar7 => "Hotbar Slot 7",
             Self::Hotbar8 => "Hotbar Slot 8",
             Self::Hotbar9 => "Hotbar Slot 9",
+            Self::PushToTalk => "Push to Talk (V)",
         }
     }
 
@@ -129,6 +134,7 @@ impl KeyAction {
             | Self::Hotbar7
             | Self::Hotbar8
             | Self::Hotbar9 => KeyCategory::Hotbar,
+            Self::PushToTalk => KeyCategory::Multiplayer,
             Self::Screenshot | Self::ToggleF3 | Self::ToggleGameMode | Self::ReloadShaders => {
                 KeyCategory::System
             }
@@ -151,6 +157,7 @@ impl KeyAction {
             Self::Drop,
             Self::Chat,
             Self::Command,
+            Self::PushToTalk,
             Self::Hotbar1,
             Self::Hotbar2,
             Self::Hotbar3,
@@ -353,6 +360,7 @@ pub struct KeybindSettings {
     pub hotbar_7: InputKey,
     pub hotbar_8: InputKey,
     pub hotbar_9: InputKey,
+    pub push_to_talk: InputKey,
 }
 
 impl Default for KeybindSettings {
@@ -383,6 +391,7 @@ impl Default for KeybindSettings {
             hotbar_7: InputKey::Digit7,
             hotbar_8: InputKey::Digit8,
             hotbar_9: InputKey::Digit9,
+            push_to_talk: InputKey::KeyV,
         }
     }
 }
@@ -417,6 +426,7 @@ impl KeybindSettings {
             KeyAction::Hotbar7 => self.hotbar_7,
             KeyAction::Hotbar8 => self.hotbar_8,
             KeyAction::Hotbar9 => self.hotbar_9,
+            KeyAction::PushToTalk => self.push_to_talk,
         }
     }
 
@@ -448,6 +458,7 @@ impl KeybindSettings {
             KeyAction::Hotbar7 => self.hotbar_7 = key,
             KeyAction::Hotbar8 => self.hotbar_8 = key,
             KeyAction::Hotbar9 => self.hotbar_9 = key,
+            KeyAction::PushToTalk => self.push_to_talk = key,
         }
     }
 

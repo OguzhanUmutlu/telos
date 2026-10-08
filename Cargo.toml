@@ -57,6 +57,7 @@ telos-sdk = { version = "0.1.0", path = "crates/telos-sdk" }
 
 # Audio & spatial sound
 rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis", "wav"] }
+opus = "0.4.0"
 
 # ECS & Gameplay
 bevy_ecs = { version = "0.15", default-features = false }

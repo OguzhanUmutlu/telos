@@ -28,6 +28,14 @@ const fn default_true() -> bool {
     true
 }
 
+const fn default_one_f32() -> f32 {
+    1.0
+}
+
+const fn default_mic_sensitivity() -> f32 {
+    0.05
+}
+
 /// Video and display settings.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +107,18 @@ pub struct AudioSettings {
     pub blocks_volume: f32,
     /// Entity and mob footsteps/cries (0.0..=1.0).
     pub entities_volume: f32,
+    /// Whether proximity 3D voice chat is enabled.
+    #[serde(default = "default_true")]
+    pub voice_chat_enabled: bool,
+    /// Voice chat incoming playback volume multiplier (0.0..=2.0).
+    #[serde(default = "default_one_f32")]
+    pub voice_chat_volume: f32,
+    /// Whether push-to-talk is required to transmit voice (if false, uses open mic VAD).
+    #[serde(default = "default_true")]
+    pub push_to_talk: bool,
+    /// Microphone input sensitivity threshold for VAD (0.001..=0.5).
+    #[serde(default = "default_mic_sensitivity")]
+    pub mic_sensitivity: f32,
 }
 
 impl Default for AudioSettings {
@@ -109,6 +129,10 @@ impl Default for AudioSettings {
             weather_volume: 0.85,
             blocks_volume: 0.95,
             entities_volume: 1.0,
+            voice_chat_enabled: true,
+            voice_chat_volume: 1.0,
+            push_to_talk: true,
+            mic_sensitivity: 0.05,
         }
     }
 }
@@ -203,6 +227,8 @@ impl GameSettings {
         self.audio.weather_volume = self.audio.weather_volume.clamp(0.0, 1.0);
         self.audio.blocks_volume = self.audio.blocks_volume.clamp(0.0, 1.0);
         self.audio.entities_volume = self.audio.entities_volume.clamp(0.0, 1.0);
+        self.audio.voice_chat_volume = self.audio.voice_chat_volume.clamp(0.0, 2.0);
+        self.audio.mic_sensitivity = self.audio.mic_sensitivity.clamp(0.001, 0.5);
 
         self.controls.mouse_sensitivity = self.controls.mouse_sensitivity.clamp(0.1, 3.0);
 
@@ -249,6 +275,10 @@ mod tests {
                 weather_volume: 1.5,
                 blocks_volume: -0.1,
                 entities_volume: 0.5,
+                voice_chat_enabled: true,
+                voice_chat_volume: 3.5,
+                push_to_talk: true,
+                mic_sensitivity: 0.9,
             },
             controls: ControlSettings {
                 mouse_sensitivity: 10.0,
@@ -266,6 +296,8 @@ mod tests {
         assert_eq!(settings.video.gui_scale, 4);
         assert_eq!(settings.audio.master_volume, 1.0);
         assert_eq!(settings.audio.music_volume, 0.0);
+        assert_eq!(settings.audio.voice_chat_volume, 2.0);
+        assert_eq!(settings.audio.mic_sensitivity, 0.5);
         assert_eq!(settings.controls.mouse_sensitivity, 3.0);
     }
 }

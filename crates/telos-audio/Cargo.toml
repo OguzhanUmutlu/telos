@@ -17,6 +17,7 @@ glam = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 rodio = { workspace = true }
+opus = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

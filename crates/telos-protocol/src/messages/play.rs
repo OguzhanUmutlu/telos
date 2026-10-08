@@ -3441,6 +3441,82 @@ impl S2cRemoveEntityEffect {
     }
 }
 
+/// Client transmits an encoded Opus audio frame over unreliable datagrams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct C2sVoiceData {
+    /// Monotonically increasing frame sequence number for jitter buffer sequencing and loss detection.
+    pub sequence: u64,
+    /// Compressed Opus audio payload (typically 20-120 bytes for 20 ms frame).
+    pub opus_frame: BoundedVec<u8, 1024>,
+}
+
+impl C2sVoiceData {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varlong(self.sequence, buf);
+        self.opus_frame.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        let sequence = decode_varlong(cursor)?;
+        let opus_frame = BoundedVec::decode(cursor)?;
+        Ok(Self {
+            sequence,
+            opus_frame,
+        })
+    }
+}
+
+/// Server broadcasts a spatial voice audio frame to listeners within audible range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct S2cVoiceData {
+    /// Unique 16-byte UUID of the speaking player.
+    pub speaker_uuid: [u8; 16],
+    /// World-space coordinates of the speaker's mouth `[x, y, z]`.
+    pub position: [f32; 3],
+    /// Monotonically increasing frame sequence number from speaker.
+    pub sequence: u64,
+    /// Compressed Opus audio payload.
+    pub opus_frame: BoundedVec<u8, 1024>,
+}
+
+impl S2cVoiceData {
+    /// Encodes into wire buffer.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.speaker_uuid);
+        buf.extend_from_slice(&self.position[0].to_le_bytes());
+        buf.extend_from_slice(&self.position[1].to_le_bytes());
+        buf.extend_from_slice(&self.position[2].to_le_bytes());
+        encode_varlong(self.sequence, buf);
+        self.opus_frame.encode(buf);
+    }
+
+    /// Decodes from wire buffer.
+    pub fn decode(cursor: &mut &[u8]) -> Result<Self> {
+        if cursor.len() < 16 + 12 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let mut speaker_uuid = [0u8; 16];
+        speaker_uuid.copy_from_slice(&cursor[..16]);
+        *cursor = &cursor[16..];
+
+        let x = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+        let y = f32::from_le_bytes(cursor[4..8].try_into().unwrap());
+        let z = f32::from_le_bytes(cursor[8..12].try_into().unwrap());
+        *cursor = &cursor[12..];
+
+        let sequence = decode_varlong(cursor)?;
+        let opus_frame = BoundedVec::decode(cursor)?;
+        Ok(Self {
+            speaker_uuid,
+            position: [x, y, z],
+            sequence,
+            opus_frame,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3831,5 +3907,32 @@ mod tests {
             S2cRemoveEntityEffect::decode(&mut cursor4).expect("decode S2cRemoveEntityEffect");
         assert_eq!(remove_msg, decoded_remove);
         assert!(cursor4.is_empty());
+    }
+
+    #[test]
+    fn test_voice_data_codec_round_trip() {
+        let c2s_voice = C2sVoiceData {
+            sequence: 12345,
+            opus_frame: BoundedVec::new(vec![1, 2, 3, 4, 5]).unwrap(),
+        };
+        let mut buf_c2s = Vec::new();
+        c2s_voice.encode(&mut buf_c2s);
+        let mut cursor_c2s = &buf_c2s[..];
+        let decoded_c2s = C2sVoiceData::decode(&mut cursor_c2s).expect("decode C2sVoiceData");
+        assert_eq!(c2s_voice, decoded_c2s);
+        assert!(cursor_c2s.is_empty());
+
+        let s2c_voice = S2cVoiceData {
+            speaker_uuid: [7u8; 16],
+            position: [12.5, 64.0, -32.25],
+            sequence: 12345,
+            opus_frame: BoundedVec::new(vec![10, 20, 30]).unwrap(),
+        };
+        let mut buf_s2c = Vec::new();
+        s2c_voice.encode(&mut buf_s2c);
+        let mut cursor_s2c = &buf_s2c[..];
+        let decoded_s2c = S2cVoiceData::decode(&mut cursor_s2c).expect("decode S2cVoiceData");
+        assert_eq!(s2c_voice, decoded_s2c);
+        assert!(cursor_s2c.is_empty());
     }
 }

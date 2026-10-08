@@ -13,6 +13,10 @@ pub enum AudioError {
     #[error("Failed to decode audio: {0}")]
     Decode(String),
 
+    /// Opus codec error.
+    #[error("Opus codec error: {0}")]
+    Codec(String),
+
     /// Standard I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

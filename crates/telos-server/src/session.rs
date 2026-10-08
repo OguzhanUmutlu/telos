@@ -79,6 +79,10 @@ pub struct PlayerSession {
     pub last_chat_tick: u64,
     /// Number of chat messages sent in current burst window.
     pub chat_burst_count: u32,
+    /// Tick count when voice rate limit window started.
+    pub last_voice_window_tick: u64,
+    /// Number of voice frames received in current 1-second window.
+    pub voice_frames_in_window: u32,
     /// Authoritative movement physics state.
     pub move_state: MoveState,
     /// Pending client movement inputs awaiting simulation.
@@ -200,6 +204,8 @@ impl PlayerSession {
             username: format!("Player{session_id}"),
             last_chat_tick: 0,
             chat_burst_count: 0,
+            last_voice_window_tick: 0,
+            voice_frames_in_window: 0,
             move_state,
             pending_inputs: VecDeque::with_capacity(16),
             last_processed_client_tick: 0,

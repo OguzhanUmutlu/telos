@@ -22,18 +22,19 @@ use telos_protocol::bounded::{BoundedString, BoundedVec};
 use telos_protocol::messages::{
     AdvancementProgressWire, AuthMode, BlockActionKind, C2sBlockAction, C2sChatMessage,
     C2sCloseContainer, C2sCommandSuggest, C2sInteractEntity, C2sInventoryClick, C2sMessage,
-    C2sModalFormResponse, C2sPlayerCommand, ChunkPayload, ConnectionPhase, CustomBlockDefWire,
-    CustomFuelWire, CustomItemDefWire, CustomShapedRecipeWire, CustomShapelessRecipeWire,
-    CustomSmeltingRecipeWire, Disconnect, DisconnectReason, LodPayload, NetworkEffect,
-    ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast, S2cAdvancementUpdate,
-    S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage, S2cChunkData, S2cChunkUnload,
-    S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone, S2cContainerProperty,
-    S2cContentManifest, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove, S2cEntityStatus,
-    S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame, S2cLodNodeData,
-    S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage, S2cModalFormRequest,
-    S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck, S2cRecipeManifest, S2cRegistryData,
-    S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity, S2cSpawnItem, S2cUniformChunk,
-    S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime, S2cUpdateWeather, SlotData,
+    C2sModalFormResponse, C2sPlayerCommand, C2sVoiceData, ChunkPayload, ConnectionPhase,
+    CustomBlockDefWire, CustomFuelWire, CustomItemDefWire, CustomShapedRecipeWire,
+    CustomShapelessRecipeWire, CustomSmeltingRecipeWire, Disconnect, DisconnectReason, LodPayload,
+    NetworkEffect, ParticleEffectKind, PlayerCommandKind, S2cAdvancementToast,
+    S2cAdvancementUpdate, S2cBlockActionAck, S2cBlockEvent, S2cBlockUpdate, S2cChatMessage,
+    S2cChunkData, S2cChunkUnload, S2cCloseContainer, S2cCommandSuggestions, S2cConfigDone,
+    S2cContainerProperty, S2cContentManifest, S2cDespawnEntity, S2cEntityEffect, S2cEntityMove,
+    S2cEntityStatus, S2cGameMode, S2cHelloReply, S2cInventoryBulk, S2cInventorySlot, S2cJoinGame,
+    S2cLodNodeData, S2cLodNodeUnload, S2cLoginChallenge, S2cLoginSuccess, S2cMessage,
+    S2cModalFormRequest, S2cOpenContainer, S2cParticleEvent, S2cPlayerMovementAck,
+    S2cRecipeManifest, S2cRegistryData, S2cRemoveEntityEffect, S2cSpawnArrow, S2cSpawnEntity,
+    S2cSpawnItem, S2cUniformChunk, S2cUpdateEffects, S2cUpdateStats, S2cUpdateTime,
+    S2cUpdateWeather, S2cVoiceData, SlotData,
 };
 use telos_sim::command::{
     ArgumentType, CommandContext, CommandDispatcher, CommandNode, CommandOutput, register_builtins,
@@ -63,6 +64,9 @@ use crate::multi_world::{MultiWorldManager, WorldError};
 use crate::session::{ActiveContainerSession, PlayerSession};
 use crate::usercache::{IdentityConflictError, UserCache};
 use crate::world::ServerWorld;
+
+/// Maximum audible radius in blocks for 3D positional voice chat.
+pub const VOICE_MAX_RADIUS: f64 = 32.0;
 
 #[inline]
 const fn stack_to_slot(stack: ItemStack) -> SlotData {
@@ -2539,6 +2543,7 @@ impl Server {
         let mut chat_messages: Vec<(u64, C2sChatMessage)> = Vec::new();
         let mut command_suggests: Vec<(u64, C2sCommandSuggest)> = Vec::new();
         let mut modal_form_responses: Vec<(u64, C2sModalFormResponse)> = Vec::new();
+        let mut voice_data_packets: Vec<(u64, C2sVoiceData)> = Vec::new();
 
         for (session_id, session) in &mut self.sessions {
             while let Ok(Some(incoming)) = session.connection.try_recv() {
@@ -3159,6 +3164,9 @@ impl Server {
                         }
                         C2sMessage::ModalFormResponse(resp) => {
                             modal_form_responses.push((*session_id, resp));
+                        }
+                        C2sMessage::VoiceData(voice) => {
+                            voice_data_packets.push((*session_id, voice));
                         }
                         C2sMessage::Disconnect(_) => {
                             disconnected.push(*session_id);
@@ -4171,6 +4179,70 @@ impl Server {
                                 .send(Lane::Control, Payload::Msg(chat_msg.clone()));
                         }
                     }
+                }
+            }
+        }
+
+        // 4.5. Process voice chat datagrams and proximity spatial routing
+        for (session_id, voice) in voice_data_packets {
+            let Some((speaker_world_pos, speaker_world, voice_msg)) =
+                self.sessions.get_mut(&session_id).and_then(|session| {
+                    // Security & anti-flood: max 60 voice frames/second (20 ticks) per client
+                    if self
+                        .tick_count
+                        .saturating_sub(session.last_voice_window_tick)
+                        >= 20
+                    {
+                        session.last_voice_window_tick = self.tick_count;
+                        session.voice_frames_in_window = 0;
+                    }
+                    session.voice_frames_in_window += 1;
+                    if session.voice_frames_in_window > 60 {
+                        debug!(
+                            session_id,
+                            "Voice chat frame rate limit exceeded (max 60/sec)"
+                        );
+                        return None;
+                    }
+
+                    let speaker_uuid = if session.player_uuid == [0u8; 16] {
+                        let mut u = [0u8; 16];
+                        u[..8].copy_from_slice(&session.session_id.to_le_bytes());
+                        u
+                    } else {
+                        session.player_uuid
+                    };
+                    #[allow(clippy::cast_possible_truncation)]
+                    let speaker_pos = [
+                        session.position.x as f32,
+                        (session.position.y + 1.62) as f32,
+                        session.position.z as f32,
+                    ];
+                    let speaker_world_pos = session.position;
+                    let speaker_world = session.world_name.clone();
+
+                    let voice_msg = S2cMessage::VoiceData(S2cVoiceData {
+                        speaker_uuid,
+                        position: speaker_pos,
+                        sequence: voice.sequence,
+                        opus_frame: voice.opus_frame,
+                    });
+                    Some((speaker_world_pos, speaker_world, voice_msg))
+                })
+            else {
+                continue;
+            };
+
+            for (other_id, other_session) in &mut self.sessions {
+                if *other_id != session_id
+                    && other_session.phase == ConnectionPhase::Play
+                    && other_session.world_name == speaker_world
+                    && other_session.position.distance_squared(speaker_world_pos)
+                        <= VOICE_MAX_RADIUS * VOICE_MAX_RADIUS
+                {
+                    let _ = other_session
+                        .connection
+                        .send(Lane::Unreliable, Payload::Msg(voice_msg.clone()));
                 }
             }
         }
