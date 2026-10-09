@@ -30,6 +30,12 @@ void main() {
         face_shade = 0.75;
     }
 
+    // Smoothly attenuate harsh stair-step face contrast on distant sub-pixel LOD voxels
+    // As distance increases beyond near LOD threshold, interpolate face_shade toward neutral 1.0
+    // to eliminate high-frequency pixel popping and shimmering during camera locomotion (SKILL.md §12)
+    float shimmer_attenuation = clamp((v_distance - 64.0) / 160.0, 0.0, 1.0);
+    face_shade = mix(face_shade, 1.0, shimmer_attenuation * 0.75);
+
     // Unpack light
     float ao_raw = v_light.x;    // 0..3
     float sky_raw = v_light.y;   // 0..15

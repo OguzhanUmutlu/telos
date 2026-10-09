@@ -75,6 +75,9 @@ pub struct VideoSettings {
     /// Enable ACES filmic tonemapping.
     #[serde(default = "default_true")]
     pub tonemapping: bool,
+    /// Enable Fast Approximate Anti-Aliasing (FXAA).
+    #[serde(default = "default_true")]
+    pub fxaa: bool,
 }
 
 impl Default for VideoSettings {
@@ -94,6 +97,7 @@ impl Default for VideoSettings {
             volumetric_fog: true,
             volumetric_clouds: true,
             tonemapping: true,
+            fxaa: true,
         }
     }
 }
@@ -273,6 +277,7 @@ mod tests {
                 volumetric_fog: true,
                 volumetric_clouds: true,
                 tonemapping: true,
+                fxaa: true,
             },
             audio: AudioSettings {
                 master_volume: 5.0,

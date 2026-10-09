@@ -6514,6 +6514,19 @@ impl App {
                     screen_size,
                 };
 
+                let fxaa_pc = if self.game_settings.video.fxaa {
+                    Some(telos_gpu::FxaaPushConstants {
+                        texel_size: [1.0 / screen_size[0], 1.0 / screen_size[1]],
+                        flags: 1,
+                        subpix: 0.75,
+                        edge_threshold: 0.125,
+                        edge_threshold_min: 0.0312,
+                        padding: [0.0; 2],
+                    })
+                } else {
+                    None
+                };
+
                 pp.record_postprocess(
                     device,
                     cmd,
@@ -6522,6 +6535,7 @@ impl App {
                     depth_buffer.raw(),
                     &ssao_pc,
                     &composite_pc,
+                    fxaa_pc.as_ref(),
                 );
             }
 
@@ -9461,6 +9475,7 @@ impl ApplicationHandler for App {
         let post_ssao_spv = include_bytes!(concat!(env!("OUT_DIR"), "/post_ssao.frag.spv"));
         let post_composite_spv =
             include_bytes!(concat!(env!("OUT_DIR"), "/post_composite.frag.spv"));
+        let post_fxaa_spv = include_bytes!(concat!(env!("OUT_DIR"), "/post_fxaa.frag.spv"));
 
         let postprocess = if let Some(csm_ref) = &csm {
             match PostProcessFrameGraph::new(
@@ -9474,6 +9489,7 @@ impl ApplicationHandler for App {
                 post_fullscreen_spv,
                 post_ssao_spv,
                 post_composite_spv,
+                post_fxaa_spv,
             ) {
                 Ok(pp) => {
                     info!("PostProcessFrameGraph successfully initialized");

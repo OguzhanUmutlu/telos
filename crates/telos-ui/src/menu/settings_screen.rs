@@ -190,14 +190,19 @@ impl SettingsScreen {
 
         match self.active_tab {
             SettingsTab::Video => {
-                self.scroll_y = 0.0;
-                self.max_scroll_y = 0.0;
+                let total_unscrolled_h = 328.0;
+                let visible_h = height_gui - 36.0;
+                self.max_scroll_y = (total_unscrolled_h - visible_h).max(0.0);
+                self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y);
+
+                let start_y = 66.0 - self.scroll_y;
+                let row_h = 26.0;
 
                 // Card 1: Display & Camera
                 self.sliders.push(MenuSlider::new(
                     1,
                     col1_x,
-                    start_y + 12.0,
+                    start_y + 10.0,
                     col_w,
                     22.0,
                     "Render Dist",
@@ -210,7 +215,7 @@ impl SettingsScreen {
                 self.sliders.push(MenuSlider::new(
                     2,
                     col2_x,
-                    start_y + 12.0,
+                    start_y + 10.0,
                     col_w,
                     22.0,
                     "Vertical Dist",
@@ -223,7 +228,7 @@ impl SettingsScreen {
                 self.sliders.push(MenuSlider::new(
                     3,
                     col1_x,
-                    start_y + 12.0 + row_h,
+                    start_y + 10.0 + row_h,
                     col_w,
                     22.0,
                     "FOV",
@@ -236,7 +241,7 @@ impl SettingsScreen {
                 self.sliders.push(MenuSlider::new(
                     4,
                     col2_x,
-                    start_y + 12.0 + row_h,
+                    start_y + 10.0 + row_h,
                     col_w,
                     22.0,
                     "FPS Limit",
@@ -248,6 +253,7 @@ impl SettingsScreen {
                 ));
 
                 // Card 2: Graphics & Performance
+                let card2_start_y = start_y + 68.0;
                 let on_str = catalog.translate("options.on");
                 let off_str = catalog.translate("options.off");
 
@@ -260,7 +266,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     201,
                     col1_x,
-                    start_y + 12.0 + row_h * 2.0 + 10.0,
+                    card2_start_y + 10.0,
                     col_w,
                     22.0,
                     vsync_str,
@@ -275,7 +281,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     202,
                     col2_x,
-                    start_y + 12.0 + row_h * 2.0 + 10.0,
+                    card2_start_y + 10.0,
                     col_w,
                     22.0,
                     cull_str,
@@ -289,7 +295,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     203,
                     col1_x,
-                    start_y + 12.0 + row_h * 3.0 + 10.0,
+                    card2_start_y + 10.0 + row_h,
                     col_w,
                     22.0,
                     gui_str,
@@ -297,7 +303,7 @@ impl SettingsScreen {
                 self.sliders.push(MenuSlider::new(
                     5,
                     col2_x,
-                    start_y + 12.0 + row_h * 3.0 + 10.0,
+                    card2_start_y + 10.0 + row_h,
                     col_w,
                     22.0,
                     "Sim Dist",
@@ -309,7 +315,7 @@ impl SettingsScreen {
                 ));
 
                 // Card 3: Post-Processing Pipeline
-                let card3_row_y = 234.0;
+                let card3_row_y = card2_start_y + 68.0 + 10.0;
                 let pp_val = if self.settings.video.post_processing {
                     on_str
                 } else {
@@ -398,6 +404,21 @@ impl SettingsScreen {
                     col_w,
                     22.0,
                     shadows_str,
+                ));
+
+                let fxaa_val = if self.settings.video.fxaa {
+                    on_str
+                } else {
+                    off_str
+                };
+                let fxaa_str = format!("FXAA: {fxaa_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    213,
+                    col1_x,
+                    card3_row_y + row_h * 3.0,
+                    col_w,
+                    22.0,
+                    fxaa_str,
                 ));
             }
             SettingsTab::Audio => {
@@ -796,6 +817,9 @@ impl SettingsScreen {
                     212 => {
                         self.settings.video.shadows = !self.settings.video.shadows;
                     }
+                    213 => {
+                        self.settings.video.fxaa = !self.settings.video.fxaa;
+                    }
                     210 => {
                         self.settings.audio.voice_chat_enabled =
                             !self.settings.audio.voice_chat_enabled;
@@ -951,12 +975,16 @@ impl SettingsScreen {
 
         match self.active_tab {
             SettingsTab::Video => {
+                let card1_y = 66.0 - self.scroll_y;
+                let card2_y = card1_y + 68.0;
+                let card3_y = card2_y + 68.0;
+
                 // Card 1: Display & Camera
                 render_card(
                     card_x,
-                    70.0,
+                    card1_y,
                     card_w,
-                    66.0,
+                    62.0,
                     "DISPLAY & CAMERA",
                     font,
                     scale,
@@ -965,9 +993,9 @@ impl SettingsScreen {
                 // Card 2: Graphics & Performance
                 render_card(
                     card_x,
-                    144.0,
+                    card2_y,
                     card_w,
-                    66.0,
+                    62.0,
                     "GRAPHICS & PERFORMANCE",
                     font,
                     scale,
@@ -976,9 +1004,9 @@ impl SettingsScreen {
                 // Card 3: Shaders & Post-Processing
                 render_card(
                     card_x,
-                    218.0,
+                    card3_y,
                     card_w,
-                    96.0,
+                    116.0,
                     "SHADERS & POST-PROCESSING",
                     font,
                     scale,
@@ -1068,37 +1096,6 @@ impl SettingsScreen {
                 {
                     self.reset_keybinds_button.render(font, scale, out);
                 }
-
-                // Scrollbar indicator if scrollable
-                if self.max_scroll_y > 0.0 {
-                    let track_x = center_x + card_w * 0.5 + 8.0;
-                    let track_y = 74.0;
-                    let track_h = height_gui - track_y - 36.0;
-                    let px_tx = snap_to_physical(track_x, scale);
-                    let px_ty = snap_to_physical(track_y, scale);
-                    let px_tw = snap_to_physical(4.0, scale) as u16;
-                    let px_th = snap_to_physical(track_h, scale) as u16;
-
-                    // Track
-                    out.push(UiQuad::solid(
-                        [px_tx, px_ty],
-                        [px_tw, px_th],
-                        UiQuad::rgba(30, 36, 48, 200),
-                    ));
-
-                    // Thumb
-                    let frac = (self.scroll_y / self.max_scroll_y).clamp(0.0, 1.0);
-                    let thumb_h = (track_h * (visible_ratio(self.max_scroll_y, track_h))).max(16.0);
-                    let thumb_y = track_y + frac * (track_h - thumb_h);
-                    let px_sy = snap_to_physical(thumb_y, scale);
-                    let px_sh = snap_to_physical(thumb_h, scale) as u16;
-
-                    out.push(UiQuad::solid(
-                        [px_tx, px_sy],
-                        [px_tw, px_sh],
-                        UiQuad::rgba(94, 234, 212, 240),
-                    ));
-                }
             }
             SettingsTab::Language => {
                 // Card 1: Language Selection
@@ -1113,6 +1110,37 @@ impl SettingsScreen {
                     out,
                 );
             }
+        }
+
+        // Scrollbar indicator if scrollable
+        if self.max_scroll_y > 0.0 {
+            let track_x = center_x + card_w * 0.5 + 8.0;
+            let track_y = 74.0;
+            let track_h = height_gui - track_y - 36.0;
+            let px_tx = snap_to_physical(track_x, scale);
+            let px_ty = snap_to_physical(track_y, scale);
+            let px_tw = snap_to_physical(4.0, scale) as u16;
+            let px_th = snap_to_physical(track_h, scale) as u16;
+
+            // Track
+            out.push(UiQuad::solid(
+                [px_tx, px_ty],
+                [px_tw, px_th],
+                UiQuad::rgba(30, 36, 48, 200),
+            ));
+
+            // Thumb
+            let frac = (self.scroll_y / self.max_scroll_y).clamp(0.0, 1.0);
+            let thumb_h = (track_h * (visible_ratio(self.max_scroll_y, track_h))).max(16.0);
+            let thumb_y = track_y + frac * (track_h - thumb_h);
+            let px_sy = snap_to_physical(thumb_y, scale);
+            let px_sh = snap_to_physical(thumb_h, scale) as u16;
+
+            out.push(UiQuad::solid(
+                [px_tx, px_sy],
+                [px_tw, px_sh],
+                UiQuad::rgba(94, 234, 212, 240),
+            ));
         }
 
         // Sliders & toggle buttons (clipped to visible area)

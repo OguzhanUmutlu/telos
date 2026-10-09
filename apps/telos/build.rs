@@ -39,6 +39,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../shaders/post_composite.frag");
     println!("cargo:rerun-if-changed=../../shaders/shadow.vert");
     println!("cargo:rerun-if-changed=../../shaders/shadow.frag");
+    println!("cargo:rerun-if-changed=../../shaders/post_fxaa.frag");
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = Path::new(&out_dir);
@@ -91,6 +92,7 @@ fn main() {
         ),
         ("../../shaders/shadow.vert", "shadow.vert.spv"),
         ("../../shaders/shadow.frag", "shadow.frag.spv"),
+        ("../../shaders/post_fxaa.frag", "post_fxaa.frag.spv"),
     ];
 
     for (src, dst) in shaders {

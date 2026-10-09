@@ -36,7 +36,8 @@ pub use instance::Instance;
 pub use opengl::{GlBuffer, GlContext, GlProgram, GlTexture2d, GlTextureArray};
 pub use pipeline::{GraphicsPipeline, ShaderModule};
 pub use postprocess::{
-    CascadeUniforms, PostCompositePushConstants, PostProcessFrameGraph, SsaoPushConstants,
+    CascadeUniforms, FxaaPushConstants, PostCompositePushConstants, PostProcessFrameGraph,
+    SsaoPushConstants,
 };
 pub use reloader::ShaderCompiler;
 pub use rhi::{RenderBackendType, RenderCaps};

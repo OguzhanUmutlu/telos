@@ -28,6 +28,39 @@ pub struct SsaoPushConstants {
     pub bias: f32,
 }
 
+/// Push constants for the Fast Approximate Anti-Aliasing (FXAA 3.11 Quality) pass.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FxaaPushConstants {
+    /// Texel size: (1.0 / width, 1.0 / height).
+    pub texel_size: [f32; 2],
+    /// Enabled feature flags: bit 0 = FXAA active (1 = on, 0 = passthrough).
+    pub flags: u32,
+    /// Subpixel antialiasing quality / sharpness (default: 0.75).
+    pub subpix: f32,
+    /// Edge detection contrast threshold (default: 0.125).
+    pub edge_threshold: f32,
+    /// Minimum edge detection threshold for dark areas (default: 0.0312).
+    pub edge_threshold_min: f32,
+    /// Alignment padding to 32 bytes (std430 layout).
+    pub padding: [f32; 2],
+}
+
+const _: () = assert!(std::mem::size_of::<FxaaPushConstants>() == 32);
+
+impl Default for FxaaPushConstants {
+    fn default() -> Self {
+        Self {
+            texel_size: [0.0, 0.0],
+            flags: 1,
+            subpix: 0.75,
+            edge_threshold: 0.125,
+            edge_threshold_min: 0.0312,
+            padding: [0.0; 2],
+        }
+    }
+}
+
 /// Push constants for the composite pass with atmospheric fog, SSAO blending, and tonemapping.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -104,6 +137,7 @@ impl CascadeUniforms {
 pub struct PostProcessFrameGraph {
     scene_color: GpuTexture2d,
     ssao_target: GpuTexture2d,
+    composite_target: GpuTexture2d,
     cascade_ubo: crate::buffer::GpuBuffer,
     extent: vk::Extent2D,
     color_format: vk::Format,
@@ -119,6 +153,10 @@ pub struct PostProcessFrameGraph {
     composite_descriptor_pool: vk::DescriptorPool,
     composite_descriptor_set: vk::DescriptorSet,
 
+    fxaa_descriptor_set_layout: vk::DescriptorSetLayout,
+    fxaa_descriptor_pool: vk::DescriptorPool,
+    fxaa_descriptor_set: vk::DescriptorSet,
+
     ssao_pipeline: GraphicsPipeline,
     ssao_vert_module: ShaderModule,
     ssao_frag_module: ShaderModule,
@@ -126,6 +164,10 @@ pub struct PostProcessFrameGraph {
     composite_pipeline: GraphicsPipeline,
     composite_vert_module: ShaderModule,
     composite_frag_module: ShaderModule,
+
+    fxaa_pipeline: GraphicsPipeline,
+    fxaa_vert_module: ShaderModule,
+    fxaa_frag_module: ShaderModule,
 }
 
 impl PostProcessFrameGraph {
@@ -142,6 +184,7 @@ impl PostProcessFrameGraph {
         fullscreen_vert_spv: &[u8],
         ssao_frag_spv: &[u8],
         composite_frag_spv: &[u8],
+        fxaa_frag_spv: &[u8],
     ) -> Result<Self, GpuError> {
         let scene_color = GpuTexture2d::new_empty(
             device,
@@ -159,6 +202,16 @@ impl PostProcessFrameGraph {
             extent.width,
             extent.height,
             vk::Format::R8_UNORM,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            vk::Filter::LINEAR,
+        )?;
+
+        let composite_target = GpuTexture2d::new_empty(
+            device,
+            allocator,
+            extent.width,
+            extent.height,
+            color_format,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::Filter::LINEAR,
         )?;
@@ -268,22 +321,48 @@ impl PostProcessFrameGraph {
         let composite_descriptor_set =
             unsafe { device.allocate_descriptor_sets(&comp_alloc_info)?[0] };
 
+        // 3. FXAA Descriptors (binding 0: composite target)
+        let fxaa_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let fxaa_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(std::slice::from_ref(&fxaa_binding));
+        let fxaa_descriptor_set_layout =
+            unsafe { device.create_descriptor_set_layout(&fxaa_layout_info, None)? };
+
+        let fxaa_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(2);
+        let fxaa_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(std::slice::from_ref(&fxaa_pool_size));
+        let fxaa_descriptor_pool = unsafe { device.create_descriptor_pool(&fxaa_pool_info, None)? };
+
+        let fxaa_alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(fxaa_descriptor_pool)
+            .set_layouts(std::slice::from_ref(&fxaa_descriptor_set_layout));
+        let fxaa_descriptor_set = unsafe { device.allocate_descriptor_sets(&fxaa_alloc_info)?[0] };
+
         // Write Initial Descriptors
         Self::write_descriptors_internal(
             device,
             ssao_descriptor_set,
             composite_descriptor_set,
+            fxaa_descriptor_set,
             scene_color.view(),
             depth_view,
             ssao_target.view(),
             shadow_view,
             shadow_sampler,
             cascade_ubo.raw(),
+            composite_target.view(),
             sampler_linear,
             sampler_nearest,
         );
 
-        // 3. SSAO Pipeline
+        // 4. SSAO Pipeline
         let ssao_vert_module = ShaderModule::from_spv(device, fullscreen_vert_spv)?;
         let ssao_frag_module = ShaderModule::from_spv(device, ssao_frag_spv)?;
 
@@ -304,7 +383,7 @@ impl PostProcessFrameGraph {
             &[ssao_pc_range],
         )?;
 
-        // 4. Composite Pipeline
+        // 5. Composite Pipeline
         let composite_vert_module = ShaderModule::from_spv(device, fullscreen_vert_spv)?;
         let composite_frag_module = ShaderModule::from_spv(device, composite_frag_spv)?;
 
@@ -325,15 +404,37 @@ impl PostProcessFrameGraph {
             &[comp_pc_range],
         )?;
 
+        // 6. FXAA Pipeline
+        let fxaa_vert_module = ShaderModule::from_spv(device, fullscreen_vert_spv)?;
+        let fxaa_frag_module = ShaderModule::from_spv(device, fxaa_frag_spv)?;
+
+        let fxaa_pc_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(std::mem::size_of::<FxaaPushConstants>() as u32);
+
+        let fxaa_pipeline = GraphicsPipeline::create_dynamic(
+            device,
+            fxaa_vert_module.raw(),
+            fxaa_frag_module.raw(),
+            color_format,
+            None,
+            vk::CullModeFlags::NONE,
+            vk::FrontFace::COUNTER_CLOCKWISE,
+            &[fxaa_descriptor_set_layout],
+            &[fxaa_pc_range],
+        )?;
+
         info!(
             width = extent.width,
             height = extent.height,
-            "Post-processing frame graph initialized"
+            "Post-processing frame graph initialized with FXAA"
         );
 
         Ok(Self {
             scene_color,
             ssao_target,
+            composite_target,
             cascade_ubo,
             extent,
             color_format,
@@ -345,12 +446,18 @@ impl PostProcessFrameGraph {
             composite_descriptor_set_layout,
             composite_descriptor_pool,
             composite_descriptor_set,
+            fxaa_descriptor_set_layout,
+            fxaa_descriptor_pool,
+            fxaa_descriptor_set,
             ssao_pipeline,
             ssao_vert_module,
             ssao_frag_module,
             composite_pipeline,
             composite_vert_module,
             composite_frag_module,
+            fxaa_pipeline,
+            fxaa_vert_module,
+            fxaa_frag_module,
         })
     }
 
@@ -359,12 +466,14 @@ impl PostProcessFrameGraph {
         device: &ash::Device,
         ssao_set: vk::DescriptorSet,
         comp_set: vk::DescriptorSet,
+        fxaa_set: vk::DescriptorSet,
         color_view: vk::ImageView,
         depth_view: vk::ImageView,
         ssao_view: vk::ImageView,
         shadow_view: vk::ImageView,
         shadow_sampler: vk::Sampler,
         cascade_buffer: vk::Buffer,
+        composite_view: vk::ImageView,
         linear_sampler: vk::Sampler,
         nearest_sampler: vk::Sampler,
     ) {
@@ -392,6 +501,11 @@ impl PostProcessFrameGraph {
             .buffer(cascade_buffer)
             .offset(0)
             .range(std::mem::size_of::<CascadeUniforms>() as vk::DeviceSize)];
+
+        let fxaa_color_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(composite_view)
+            .sampler(linear_sampler)];
 
         let writes = [
             // SSAO binding 0: depth
@@ -430,6 +544,12 @@ impl PostProcessFrameGraph {
                 .dst_binding(4)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&cascade_buf_info),
+            // FXAA binding 0: composite target
+            vk::WriteDescriptorSet::default()
+                .dst_set(fxaa_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&fxaa_color_info),
         ];
 
         unsafe {
@@ -465,6 +585,7 @@ impl PostProcessFrameGraph {
 
         self.scene_color.destroy(device, allocator);
         self.ssao_target.destroy(device, allocator);
+        self.composite_target.destroy(device, allocator);
 
         self.scene_color = GpuTexture2d::new_empty(
             device,
@@ -486,18 +607,30 @@ impl PostProcessFrameGraph {
             vk::Filter::LINEAR,
         )?;
 
+        self.composite_target = GpuTexture2d::new_empty(
+            device,
+            allocator,
+            new_extent.width,
+            new_extent.height,
+            self.color_format,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            vk::Filter::LINEAR,
+        )?;
+
         self.extent = new_extent;
 
         Self::write_descriptors_internal(
             device,
             self.ssao_descriptor_set,
             self.composite_descriptor_set,
+            self.fxaa_descriptor_set,
             self.scene_color.view(),
             depth_view,
             self.ssao_target.view(),
             shadow_view,
             shadow_sampler,
             self.cascade_ubo.raw(),
+            self.composite_target.view(),
             self.sampler_linear,
             self.sampler_nearest,
         );
@@ -521,10 +654,12 @@ impl PostProcessFrameGraph {
         let vert_path = shaders_dir.join("post_fullscreen.vert");
         let ssao_path = shaders_dir.join("post_ssao.frag");
         let comp_path = shaders_dir.join("post_composite.frag");
+        let fxaa_path = shaders_dir.join("post_fxaa.frag");
 
         let new_vert = ShaderCompiler::compile_module(device, &vert_path)?;
         let new_ssao = ShaderCompiler::compile_module(device, &ssao_path)?;
         let new_comp = ShaderCompiler::compile_module(device, &comp_path)?;
+        let new_fxaa = ShaderCompiler::compile_module(device, &fxaa_path)?;
 
         let ssao_pc_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
@@ -560,6 +695,23 @@ impl PostProcessFrameGraph {
             &[comp_pc_range],
         )?;
 
+        let fxaa_pc_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(std::mem::size_of::<FxaaPushConstants>() as u32);
+
+        let new_fxaa_pipeline = GraphicsPipeline::create_dynamic(
+            device,
+            new_vert.raw(),
+            new_fxaa.raw(),
+            self.color_format,
+            None,
+            vk::CullModeFlags::NONE,
+            vk::FrontFace::COUNTER_CLOCKWISE,
+            &[self.fxaa_descriptor_set_layout],
+            &[fxaa_pc_range],
+        )?;
+
         // Destroy previous pipelines and modules
         self.ssao_pipeline.destroy(device);
         self.ssao_vert_module.destroy(device);
@@ -568,6 +720,10 @@ impl PostProcessFrameGraph {
         self.composite_pipeline.destroy(device);
         self.composite_vert_module.destroy(device);
         self.composite_frag_module.destroy(device);
+
+        self.fxaa_pipeline.destroy(device);
+        self.fxaa_vert_module.destroy(device);
+        self.fxaa_frag_module.destroy(device);
 
         self.ssao_pipeline = new_ssao_pipeline;
         self.ssao_vert_module = new_vert;
@@ -578,11 +734,16 @@ impl PostProcessFrameGraph {
         self.composite_vert_module = comp_vert;
         self.composite_frag_module = new_comp;
 
+        let fxaa_vert = ShaderCompiler::compile_module(device, &vert_path)?;
+        self.fxaa_pipeline = new_fxaa_pipeline;
+        self.fxaa_vert_module = fxaa_vert;
+        self.fxaa_frag_module = new_fxaa;
+
         info!("Post-processing shaders reloaded successfully");
         Ok(())
     }
 
-    /// Records the SSAO pass and composite pass into the command buffer.
+    /// Records the SSAO pass, composite pass, and optional FXAA pass into the command buffer.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn record_postprocess(
         &self,
@@ -593,9 +754,13 @@ impl PostProcessFrameGraph {
         depth_image: vk::Image,
         ssao_pc: &SsaoPushConstants,
         composite_pc: &PostCompositePushConstants,
+        fxaa_pc: Option<&FxaaPushConstants>,
     ) {
-        // 1. Barrier: transition scene_color -> SHADER_READ_ONLY_OPTIMAL, depth -> DEPTH_READ_ONLY_OPTIMAL, ssao -> COLOR_ATTACHMENT_OPTIMAL
-        let barriers_before = [
+        let use_fxaa = fxaa_pc.is_some();
+
+        // 1. Barrier: transition scene_color -> SHADER_READ_ONLY_OPTIMAL, depth -> DEPTH_READ_ONLY_OPTIMAL,
+        // ssao_target -> COLOR_ATTACHMENT_OPTIMAL, and if FXAA is active, composite_target -> COLOR_ATTACHMENT_OPTIMAL.
+        let mut barriers_before = vec![
             vk::ImageMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                 .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -639,6 +804,25 @@ impl PostProcessFrameGraph {
                         .layer_count(1),
                 ),
         ];
+
+        if use_fxaa {
+            barriers_before.push(
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .image(self.composite_target.image())
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1),
+                    ),
+            );
+        }
 
         let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers_before);
         unsafe {
@@ -703,8 +887,9 @@ impl PostProcessFrameGraph {
             device.cmd_end_rendering(cmd);
         }
 
-        // 3. Transition ssao_target -> SHADER_READ_ONLY_OPTIMAL and target_image -> COLOR_ATTACHMENT_OPTIMAL
-        let barriers_mid = [
+        // 3. Transition ssao_target -> SHADER_READ_ONLY_OPTIMAL
+        // If FXAA is disabled, also transition target_image -> COLOR_ATTACHMENT_OPTIMAL
+        let mut barriers_mid = vec![
             vk::ImageMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                 .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -719,30 +904,41 @@ impl PostProcessFrameGraph {
                         .level_count(1)
                         .layer_count(1),
                 ),
-            vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-                .src_access_mask(vk::AccessFlags2::empty())
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image(target_image)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .level_count(1)
-                        .layer_count(1),
-                ),
         ];
+
+        if !use_fxaa {
+            barriers_mid.push(
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .image(target_image)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1),
+                    ),
+            );
+        }
 
         let dep_mid = vk::DependencyInfo::default().image_memory_barriers(&barriers_mid);
         unsafe {
             device.cmd_pipeline_barrier2(cmd, &dep_mid);
         }
 
-        // 4. Render Composite Pass directly into swapchain target
+        // 4. Render Composite Pass (either into composite_target or target_view)
+        let comp_target_view = if use_fxaa {
+            self.composite_target.view()
+        } else {
+            target_view
+        };
+
         let comp_color_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(target_view)
+            .image_view(comp_target_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE);
@@ -798,7 +994,105 @@ impl PostProcessFrameGraph {
             device.cmd_end_rendering(cmd);
         }
 
-        // 5. Transition scene_color back to COLOR_ATTACHMENT_OPTIMAL and depth back to DEPTH_ATTACHMENT_OPTIMAL for next frame
+        // 5. If FXAA is enabled, run the FXAA pass
+        if let Some(fxaa_pc) = fxaa_pc {
+            // Barrier: transition composite_target -> SHADER_READ_ONLY_OPTIMAL and target_image -> COLOR_ATTACHMENT_OPTIMAL
+            let barriers_fxaa = [
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(self.composite_target.image())
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1),
+                    ),
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .image(target_image)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1),
+                    ),
+            ];
+
+            let dep_fxaa = vk::DependencyInfo::default().image_memory_barriers(&barriers_fxaa);
+            unsafe {
+                device.cmd_pipeline_barrier2(cmd, &dep_fxaa);
+            }
+
+            // FXAA rendering into swapchain target
+            let fxaa_color_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(target_view)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .store_op(vk::AttachmentStoreOp::STORE);
+
+            let fxaa_rendering_info = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: self.extent,
+                })
+                .layer_count(1)
+                .color_attachments(std::slice::from_ref(&fxaa_color_attachment));
+
+            unsafe {
+                device.cmd_begin_rendering(cmd, &fxaa_rendering_info);
+
+                let viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(self.extent.width as f32)
+                    .height(self.extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                device.cmd_set_viewport(cmd, 0, &[viewport]);
+
+                let scissor = vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: self.extent,
+                };
+                device.cmd_set_scissor(cmd, 0, &[scissor]);
+
+                device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.fxaa_pipeline.raw(),
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.fxaa_pipeline.layout(),
+                    0,
+                    &[self.fxaa_descriptor_set],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    self.fxaa_pipeline.layout(),
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(fxaa_pc),
+                );
+
+                device.cmd_draw(cmd, 3, 1, 0, 0);
+                device.cmd_end_rendering(cmd);
+            }
+        }
+
+        // 6. Transition scene_color back to COLOR_ATTACHMENT_OPTIMAL and depth back to DEPTH_ATTACHMENT_OPTIMAL for next frame
         let barriers_after = [
             vk::ImageMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
@@ -846,6 +1140,10 @@ impl PostProcessFrameGraph {
         self.composite_vert_module.destroy(device);
         self.composite_frag_module.destroy(device);
 
+        self.fxaa_pipeline.destroy(device);
+        self.fxaa_vert_module.destroy(device);
+        self.fxaa_frag_module.destroy(device);
+
         unsafe {
             if self.ssao_descriptor_pool != vk::DescriptorPool::null() {
                 device.destroy_descriptor_pool(self.ssao_descriptor_pool, None);
@@ -859,6 +1157,12 @@ impl PostProcessFrameGraph {
             if self.composite_descriptor_set_layout != vk::DescriptorSetLayout::null() {
                 device.destroy_descriptor_set_layout(self.composite_descriptor_set_layout, None);
             }
+            if self.fxaa_descriptor_pool != vk::DescriptorPool::null() {
+                device.destroy_descriptor_pool(self.fxaa_descriptor_pool, None);
+            }
+            if self.fxaa_descriptor_set_layout != vk::DescriptorSetLayout::null() {
+                device.destroy_descriptor_set_layout(self.fxaa_descriptor_set_layout, None);
+            }
             if self.sampler_linear != vk::Sampler::null() {
                 device.destroy_sampler(self.sampler_linear, None);
             }
@@ -870,5 +1174,6 @@ impl PostProcessFrameGraph {
         self.cascade_ubo.destroy(device, allocator);
         self.scene_color.destroy(device, allocator);
         self.ssao_target.destroy(device, allocator);
+        self.composite_target.destroy(device, allocator);
     }
 }
