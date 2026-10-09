@@ -734,6 +734,112 @@ impl GraphicsPipeline {
         })
     }
 
+    /// Builds a dynamic rendering graphics pipeline specifically for depth-only passes (e.g. cascaded shadow maps).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_dynamic_depth_only(
+        device: &ash::Device,
+        vert_shader: vk::ShaderModule,
+        frag_shader: Option<vk::ShaderModule>,
+        depth_format: vk::Format,
+        cull_mode: vk::CullModeFlags,
+        front_face: vk::FrontFace,
+        depth_bias: bool,
+        depth_bias_constant: f32,
+        depth_bias_slope: f32,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        push_constant_ranges: &[vk::PushConstantRange],
+    ) -> Result<Self, GpuError> {
+        let entry_point = c"main";
+
+        let mut shader_stages = vec![
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader)
+                .name(entry_point),
+        ];
+
+        if let Some(frag) = frag_shader {
+            shader_stages.push(
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(frag)
+                    .name(entry_point),
+            );
+        }
+
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(cull_mode)
+            .front_face(front_face)
+            .depth_bias_enable(depth_bias)
+            .depth_bias_constant_factor(depth_bias_constant)
+            .depth_bias_slope_factor(depth_bias_slope);
+
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let color_blending = vk::PipelineColorBlendStateCreateInfo::default();
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(push_constant_ranges);
+
+        let layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };
+
+        let mut rendering_info =
+            vk::PipelineRenderingCreateInfo::default().depth_attachment_format(depth_format);
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .depth_stencil_state(&depth_stencil)
+            .dynamic_state(&dynamic_state_info)
+            .layout(layout)
+            .push_next(&mut rendering_info);
+
+        let pipelines = unsafe {
+            device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|(_, err)| GpuError::Vk(err))?
+        };
+
+        info!("Dynamic rendering depth-only shadow pipeline compiled successfully");
+
+        Ok(Self {
+            pipeline: pipelines[0],
+            layout,
+        })
+    }
+
     /// Returns the raw `vk::Pipeline` handle.
     #[must_use]
     pub fn raw(&self) -> vk::Pipeline {

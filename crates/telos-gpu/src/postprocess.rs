@@ -50,10 +50,61 @@ pub struct PostCompositePushConstants {
     pub screen_size: [f32; 2],
 }
 
+/// Uniform buffer data for cascaded shadow mapping in the composite pass.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CascadeUniforms {
+    /// Light view-projection matrix for each cascade (0..=3).
+    pub light_view_proj: [[f32; 16]; 4],
+    /// Split distance along view Z for each cascade.
+    pub cascade_splits: [f32; 4],
+    /// Depth bias to prevent self-shadowing acne.
+    pub shadow_bias: f32,
+    /// Normal bias along surface normal.
+    pub normal_bias: f32,
+    /// 64-bit alignment padding.
+    pub padding: [f32; 2],
+}
+
+impl Default for CascadeUniforms {
+    fn default() -> Self {
+        Self {
+            light_view_proj: [[0.0; 16]; 4],
+            cascade_splits: [16.0, 48.0, 112.0, 224.0],
+            shadow_bias: 0.0015,
+            normal_bias: 0.04,
+            padding: [0.0; 2],
+        }
+    }
+}
+
+impl CascadeUniforms {
+    /// Constructs `CascadeUniforms` from calculated `CascadeMatrices`.
+    #[must_use]
+    pub fn from_cascade_matrices(
+        cascades: &crate::shadow::CascadeMatrices,
+        shadow_bias: f32,
+        normal_bias: f32,
+    ) -> Self {
+        let mut light_view_proj = [[0.0; 16]; 4];
+        for (i, mat) in cascades.light_view_proj.iter().enumerate() {
+            light_view_proj[i] = mat.to_cols_array();
+        }
+        Self {
+            light_view_proj,
+            cascade_splits: cascades.split_depths,
+            shadow_bias,
+            normal_bias,
+            padding: [0.0; 2],
+        }
+    }
+}
+
 /// Post-processing frame graph runner managing offscreen targets, descriptors, and pipelines.
 pub struct PostProcessFrameGraph {
     scene_color: GpuTexture2d,
     ssao_target: GpuTexture2d,
+    cascade_ubo: crate::buffer::GpuBuffer,
     extent: vk::Extent2D,
     color_format: vk::Format,
 
@@ -86,6 +137,8 @@ impl PostProcessFrameGraph {
         extent: vk::Extent2D,
         color_format: vk::Format,
         depth_view: vk::ImageView,
+        shadow_view: vk::ImageView,
+        shadow_sampler: vk::Sampler,
         fullscreen_vert_spv: &[u8],
         ssao_frag_spv: &[u8],
         composite_frag_spv: &[u8],
@@ -109,6 +162,17 @@ impl PostProcessFrameGraph {
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::Filter::LINEAR,
         )?;
+
+        let mut cascade_ubo = crate::buffer::GpuBuffer::new(
+            device,
+            allocator,
+            "cascade_ubo",
+            std::mem::size_of::<CascadeUniforms>() as vk::DeviceSize,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        )?;
+        let default_uniforms = CascadeUniforms::default();
+        cascade_ubo.write_bytes(bytemuck::bytes_of(&default_uniforms))?;
 
         // Samplers
         let sampler_linear_info = vk::SamplerCreateInfo::default()
@@ -151,7 +215,7 @@ impl PostProcessFrameGraph {
             .set_layouts(std::slice::from_ref(&ssao_descriptor_set_layout));
         let ssao_descriptor_set = unsafe { device.allocate_descriptor_sets(&ssao_alloc_info)?[0] };
 
-        // 2. Composite Descriptors (binding 0: color, binding 1: depth, binding 2: ssao)
+        // 2. Composite Descriptors (binding 0: color, binding 1: depth, binding 2: ssao, binding 3: shadow map, binding 4: cascade ubo)
         let comp_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -168,15 +232,30 @@ impl PostProcessFrameGraph {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let comp_layout_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&comp_bindings);
         let composite_descriptor_set_layout =
             unsafe { device.create_descriptor_set_layout(&comp_layout_info, None)? };
 
-        let comp_pool_sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(4)];
+        let comp_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(6),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(2),
+        ];
         let comp_pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
             .pool_sizes(&comp_pool_sizes);
@@ -197,6 +276,9 @@ impl PostProcessFrameGraph {
             scene_color.view(),
             depth_view,
             ssao_target.view(),
+            shadow_view,
+            shadow_sampler,
+            cascade_ubo.raw(),
             sampler_linear,
             sampler_nearest,
         );
@@ -252,6 +334,7 @@ impl PostProcessFrameGraph {
         Ok(Self {
             scene_color,
             ssao_target,
+            cascade_ubo,
             extent,
             color_format,
             sampler_linear,
@@ -279,6 +362,9 @@ impl PostProcessFrameGraph {
         color_view: vk::ImageView,
         depth_view: vk::ImageView,
         ssao_view: vk::ImageView,
+        shadow_view: vk::ImageView,
+        shadow_sampler: vk::Sampler,
+        cascade_buffer: vk::Buffer,
         linear_sampler: vk::Sampler,
         nearest_sampler: vk::Sampler,
     ) {
@@ -296,6 +382,16 @@ impl PostProcessFrameGraph {
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(ssao_view)
             .sampler(linear_sampler)];
+
+        let shadow_info = [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(shadow_view)
+            .sampler(shadow_sampler)];
+
+        let cascade_buf_info = [vk::DescriptorBufferInfo::default()
+            .buffer(cascade_buffer)
+            .offset(0)
+            .range(std::mem::size_of::<CascadeUniforms>() as vk::DeviceSize)];
 
         let writes = [
             // SSAO binding 0: depth
@@ -322,6 +418,18 @@ impl PostProcessFrameGraph {
                 .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&ssao_info),
+            // Composite binding 3: shadow map
+            vk::WriteDescriptorSet::default()
+                .dst_set(comp_set)
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&shadow_info),
+            // Composite binding 4: cascade ubo
+            vk::WriteDescriptorSet::default()
+                .dst_set(comp_set)
+                .dst_binding(4)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&cascade_buf_info),
         ];
 
         unsafe {
@@ -348,6 +456,8 @@ impl PostProcessFrameGraph {
         allocator: &GpuAllocator,
         new_extent: vk::Extent2D,
         depth_view: vk::ImageView,
+        shadow_view: vk::ImageView,
+        shadow_sampler: vk::Sampler,
     ) -> Result<(), GpuError> {
         if self.extent == new_extent {
             return Ok(());
@@ -385,11 +495,19 @@ impl PostProcessFrameGraph {
             self.scene_color.view(),
             depth_view,
             self.ssao_target.view(),
+            shadow_view,
+            shadow_sampler,
+            self.cascade_ubo.raw(),
             self.sampler_linear,
             self.sampler_nearest,
         );
 
         Ok(())
+    }
+
+    /// Uploads cascade matrices and split depths into the GPU uniform buffer for the composite shader.
+    pub fn update_cascade_uniforms(&mut self, uniforms: &CascadeUniforms) -> Result<(), GpuError> {
+        self.cascade_ubo.write_bytes(bytemuck::bytes_of(uniforms))
     }
 
     /// Recompiles shaders from disk and recreates post-processing pipelines on the fly.
@@ -749,6 +867,7 @@ impl PostProcessFrameGraph {
             }
         }
 
+        self.cascade_ubo.destroy(device, allocator);
         self.scene_color.destroy(device, allocator);
         self.ssao_target.destroy(device, allocator);
     }

@@ -3533,6 +3533,7 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "glam",
  "glow",
  "glutin",
  "glutin-winit",

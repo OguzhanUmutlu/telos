@@ -63,6 +63,9 @@ pub struct VideoSettings {
     /// Enable screen-space ambient occlusion (SSAO).
     #[serde(default = "default_true")]
     pub ssao: bool,
+    /// Enable dynamic cascaded shadow maps (CSM).
+    #[serde(default = "default_true")]
+    pub shadows: bool,
     /// Enable volumetric horizon distance fog & scattering.
     #[serde(default = "default_true")]
     pub volumetric_fog: bool,
@@ -87,6 +90,7 @@ impl Default for VideoSettings {
             fps_limit: 144,
             post_processing: true,
             ssao: true,
+            shadows: true,
             volumetric_fog: true,
             volumetric_clouds: true,
             tonemapping: true,
@@ -265,6 +269,7 @@ mod tests {
                 fps_limit: 144,
                 post_processing: true,
                 ssao: true,
+                shadows: true,
                 volumetric_fog: true,
                 volumetric_clouds: true,
                 tonemapping: true,

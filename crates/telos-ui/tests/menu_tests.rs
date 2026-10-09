@@ -373,3 +373,55 @@ fn test_settings_screen_volumetric_clouds_toggle() {
     );
     assert!(screen.settings.video.volumetric_clouds);
 }
+
+#[test]
+fn test_settings_screen_shadows_toggle() {
+    use telos_core::i18n::LanguageCatalog;
+    use telos_ui::menu::settings_screen::{SettingsScreen, SettingsTab};
+
+    let catalog = LanguageCatalog::with_default_embedded();
+    let mut screen = SettingsScreen::new(GameSettings::default());
+    screen.active_tab = SettingsTab::Video;
+    screen.update_layout_i18n(800.0, 600.0, &catalog);
+
+    assert!(screen.settings.video.shadows);
+
+    // Locate button 212 (Shadows toggle)
+    let shadows_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 212)
+        .expect("Shadows toggle button 212 not found")
+        .clone();
+
+    assert!(shadows_btn.label.contains("ON"));
+
+    // Click to toggle off
+    screen.handle_mouse_click_i18n(
+        shadows_btn.x + 5.0,
+        shadows_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert!(!screen.settings.video.shadows);
+
+    // Re-check layout
+    let updated_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 212)
+        .expect("Shadows toggle button 212 not found")
+        .clone();
+    assert!(updated_btn.label.contains("OFF"));
+
+    // Click to toggle back on
+    screen.handle_mouse_click_i18n(
+        updated_btn.x + 5.0,
+        updated_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert!(screen.settings.video.shadows);
+}

@@ -29,9 +29,11 @@ use telos_core::{
     raycast_voxels,
 };
 use telos_gpu::{
-    ComputePipeline, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
-    GraphicsPipeline, HiZPyramid, MemoryLocation, PostCompositePushConstants,
-    PostProcessFrameGraph, ShaderModule, SsaoPushConstants, TextureMipRegion, ash, vk,
+    CascadeMatrices, CascadeUniforms, CascadedShadowMap, ComputePipeline, DEFAULT_CASCADE_SPLITS,
+    DEFAULT_SHADOW_MAP_EXTENT, DepthBuffer, GpuBuffer, GpuContext, GpuTexture2d, GpuTextureArray,
+    GraphicsPipeline, HiZPyramid, MemoryLocation, NUM_CASCADES, PostCompositePushConstants,
+    PostProcessFrameGraph, ShaderModule, ShadowPipeline, ShadowPushConstants, SsaoPushConstants,
+    TextureMipRegion, ash, vk,
 };
 use telos_net::{Connection, Lane, MemoryConnection, Payload};
 use telos_protocol::bounded::{BoundedString, BoundedVec};
@@ -1565,6 +1567,11 @@ struct App {
     // Extensible post-processing framework & custom shader pipeline (Phase 41)
     postprocess: Option<PostProcessFrameGraph>,
 
+    // Cascaded shadow maps & dynamic directional sunlight shadows (Phase 73)
+    csm: Option<CascadedShadowMap>,
+    shadow_pipeline: Option<ShadowPipeline>,
+    csm_needs_init: bool,
+
     // Active rendering backend and OpenGL fallback resources (Phase 44)
     active_backend: telos_gpu::rhi::RenderBackendType,
     gl_context: Option<telos_gpu::opengl::GlContext>,
@@ -2065,6 +2072,9 @@ impl App {
             client_effects: Vec::new(),
             js_particle_hook,
             postprocess: None,
+            csm: None,
+            shadow_pipeline: None,
+            csm_needs_init: true,
 
             active_backend: telos_gpu::rhi::RenderBackendType::Vulkan,
             gl_context: None,
@@ -6282,6 +6292,176 @@ impl App {
             device.cmd_end_rendering(cmd);
 
             // ==========================================
+            // PHASE 2.25: CASCADED SHADOW MAPS (CSM) (Phase 73)
+            // ==========================================
+            let mut rendered_shadows = false;
+            let sun_angle = (self.client_time_of_day / 24000.0) * std::f32::consts::TAU;
+            let sun_dir = [sun_angle.sin(), sun_angle.cos(), 0.2];
+
+            if self.game_settings.video.shadows
+                && self.current_screen == AppScreen::InGame
+                && let (Some(csm), Some(shadow_pipeline)) = (&self.csm, &self.shadow_pipeline)
+            {
+                let sun_vec = Vec3::new(sun_dir[0], sun_dir[1], sun_dir[2]);
+                let cascade_matrices = CascadeMatrices::compute(
+                    self.camera.position,
+                    self.camera.forward(),
+                    self.camera.up(),
+                    self.camera.fov_y,
+                    aspect,
+                    self.camera.z_near,
+                    DEFAULT_CASCADE_SPLITS,
+                    sun_vec,
+                    csm.extent(),
+                );
+
+                if let Some(pp) = &mut self.postprocess {
+                    let cascade_uniforms =
+                        CascadeUniforms::from_cascade_matrices(&cascade_matrices, 0.0015, 0.04);
+                    let _ = pp.update_cascade_uniforms(&cascade_uniforms);
+                }
+
+                // Transition all 4 shadow layers from previous layout to DEPTH_ATTACHMENT_OPTIMAL
+                let shadow_barrier_before = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(if self.csm_needs_init {
+                        vk::PipelineStageFlags2::TOP_OF_PIPE
+                    } else {
+                        vk::PipelineStageFlags2::FRAGMENT_SHADER
+                    })
+                    .src_access_mask(if self.csm_needs_init {
+                        vk::AccessFlags2::NONE
+                    } else {
+                        vk::AccessFlags2::SHADER_SAMPLED_READ
+                    })
+                    .dst_stage_mask(
+                        vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                            | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                    )
+                    .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .old_layout(if self.csm_needs_init {
+                        vk::ImageLayout::UNDEFINED
+                    } else {
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                    })
+                    .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .image(csm.image())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: NUM_CASCADES as u32,
+                    });
+                let dep_before = vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&shadow_barrier_before));
+                device.cmd_pipeline_barrier2(cmd, &dep_before);
+                self.csm_needs_init = false;
+
+                let shadow_viewport = vk::Viewport::default()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(csm.extent() as f32)
+                    .height(csm.extent() as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0);
+                let shadow_scissor = vk::Rect2D::default()
+                    .offset(vk::Offset2D { x: 0, y: 0 })
+                    .extent(vk::Extent2D {
+                        width: csm.extent(),
+                        height: csm.extent(),
+                    });
+
+                for (c, &split_dist) in DEFAULT_CASCADE_SPLITS.iter().enumerate() {
+                    let depth_attachment = vk::RenderingAttachmentInfo::default()
+                        .image_view(csm.layer_view(c))
+                        .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        });
+
+                    let shadow_rendering_info = vk::RenderingInfo::default()
+                        .render_area(vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: vk::Extent2D {
+                                width: csm.extent(),
+                                height: csm.extent(),
+                            },
+                        })
+                        .layer_count(1)
+                        .depth_attachment(&depth_attachment);
+
+                    device.cmd_begin_rendering(cmd, &shadow_rendering_info);
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        shadow_pipeline.raw(),
+                    );
+                    device.cmd_set_viewport(cmd, 0, &[shadow_viewport]);
+                    device.cmd_set_scissor(cmd, 0, &[shadow_scissor]);
+
+                    let max_dist = split_dist + 48.0;
+                    let max_dist_sq = max_dist * max_dist;
+                    let cascade_proj = cascade_matrices.light_view_proj[c].to_cols_array();
+
+                    for mesh in self.chunk_meshes.values() {
+                        if let Some(layer) = &mesh.opaque
+                            && layer.quad_count > 0
+                        {
+                            let center = (mesh.min_aabb + mesh.max_aabb) * 0.5;
+                            if center.distance_squared(self.camera.position) > max_dist_sq {
+                                continue;
+                            }
+                            let pc = ShadowPushConstants {
+                                light_view_proj: cascade_proj,
+                                vertex_addr: layer.buffer.device_address(),
+                                chunk_x: mesh.pos[0],
+                                chunk_y: mesh.pos[1],
+                                chunk_z: mesh.pos[2],
+                                padding: 0,
+                            };
+                            device.cmd_push_constants(
+                                cmd,
+                                shadow_pipeline.layout(),
+                                vk::ShaderStageFlags::VERTEX,
+                                0,
+                                bytemuck::bytes_of(&pc),
+                            );
+                            device.cmd_draw(cmd, layer.quad_count * 6, 1, 0, 0);
+                        }
+                    }
+
+                    device.cmd_end_rendering(cmd);
+                }
+
+                // Transition all 4 shadow layers from DEPTH_ATTACHMENT_OPTIMAL to SHADER_READ_ONLY_OPTIMAL
+                let shadow_barrier_after = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+                    .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .old_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(csm.image())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: NUM_CASCADES as u32,
+                    });
+                let dep_after = vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&shadow_barrier_after));
+                device.cmd_pipeline_barrier2(cmd, &dep_after);
+
+                rendered_shadows = true;
+            }
+
+            // ==========================================
             // PHASE 2.5: POST-PROCESSING (SSAO, FOG, TONEMAP)
             // ==========================================
             if use_postprocess {
@@ -6302,9 +6482,6 @@ impl App {
                     bias: 0.025,
                 };
 
-                let sun_angle = (self.client_time_of_day / 24000.0) * std::f32::consts::TAU;
-                let sun_dir = [sun_angle.sin(), sun_angle.cos(), 0.2];
-
                 let mut flags = 0u32;
                 if self.current_screen == AppScreen::InGame {
                     if self.game_settings.video.ssao {
@@ -6312,6 +6489,9 @@ impl App {
                     }
                     if self.game_settings.video.volumetric_fog {
                         flags |= 2;
+                    }
+                    if rendered_shadows {
+                        flags |= 16;
                     }
                 }
                 if self.game_settings.video.tonemapping {
@@ -9242,33 +9422,75 @@ impl ApplicationHandler for App {
         self.descriptor_set_layout = Some(descriptor_set_layout);
         self.descriptor_set = Some(descriptor_set);
 
+        let shadow_vert_spv = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.vert.spv"));
+        let shadow_frag_spv = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.frag.spv"));
+
+        let csm = match CascadedShadowMap::new(
+            gpu_context.device().raw(),
+            gpu_context.allocator(),
+            DEFAULT_SHADOW_MAP_EXTENT,
+        ) {
+            Ok(c) => {
+                info!("CascadedShadowMap successfully initialized (2048x2048, 4 cascades)");
+                Some(c)
+            }
+            Err(err) => {
+                warn!("Failed to initialize CascadedShadowMap: {err}");
+                None
+            }
+        };
+
+        let shadow_pipeline = if csm.is_some() {
+            match ShadowPipeline::new(
+                gpu_context.device().raw(),
+                shadow_vert_spv,
+                Some(shadow_frag_spv),
+            ) {
+                Ok(p) => Some(p),
+                Err(err) => {
+                    warn!("Failed to initialize ShadowPipeline: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let post_fullscreen_spv =
             include_bytes!(concat!(env!("OUT_DIR"), "/post_fullscreen.vert.spv"));
         let post_ssao_spv = include_bytes!(concat!(env!("OUT_DIR"), "/post_ssao.frag.spv"));
         let post_composite_spv =
             include_bytes!(concat!(env!("OUT_DIR"), "/post_composite.frag.spv"));
 
-        let postprocess = match PostProcessFrameGraph::new(
-            gpu_context.device().raw(),
-            gpu_context.allocator(),
-            gpu_context.extent(),
-            gpu_context.swapchain().format(),
-            self.depth_buffer.as_ref().unwrap().view(),
-            post_fullscreen_spv,
-            post_ssao_spv,
-            post_composite_spv,
-        ) {
-            Ok(pp) => {
-                info!("PostProcessFrameGraph successfully initialized");
-                Some(pp)
+        let postprocess = if let Some(csm_ref) = &csm {
+            match PostProcessFrameGraph::new(
+                gpu_context.device().raw(),
+                gpu_context.allocator(),
+                gpu_context.extent(),
+                gpu_context.swapchain().format(),
+                self.depth_buffer.as_ref().unwrap().view(),
+                csm_ref.array_view(),
+                csm_ref.sampler(),
+                post_fullscreen_spv,
+                post_ssao_spv,
+                post_composite_spv,
+            ) {
+                Ok(pp) => {
+                    info!("PostProcessFrameGraph successfully initialized");
+                    Some(pp)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to initialize PostProcessFrameGraph: {err}; continuing without post-processing"
+                    );
+                    None
+                }
             }
-            Err(err) => {
-                tracing::warn!(
-                    "Failed to initialize PostProcessFrameGraph: {err}; continuing without post-processing"
-                );
-                None
-            }
+        } else {
+            None
         };
+        self.csm = csm;
+        self.shadow_pipeline = shadow_pipeline;
         self.postprocess = postprocess;
 
         let mdi_buffers = match MdiBuffers::new(&gpu_context) {
@@ -10949,12 +11171,15 @@ impl ApplicationHandler for App {
                             width: physical_size.width,
                             height: physical_size.height,
                         };
-                        if let (Some(pp), Some(depth)) = (&mut self.postprocess, &self.depth_buffer)
+                        if let (Some(pp), Some(depth), Some(csm)) =
+                            (&mut self.postprocess, &self.depth_buffer, &self.csm)
                             && let Err(err) = pp.resize(
                                 gpu_context.device().raw(),
                                 gpu_context.allocator(),
                                 extent,
                                 depth.view(),
+                                csm.array_view(),
+                                csm.sampler(),
                             )
                         {
                             tracing::error!("Failed to resize post-process frame graph: {err}");
@@ -11201,6 +11426,14 @@ impl ApplicationHandler for App {
 
             if let Some(mut pp) = self.postprocess.take() {
                 pp.destroy(device, allocator);
+            }
+
+            if let Some(mut csm) = self.csm.take() {
+                csm.destroy(device, allocator);
+            }
+
+            if let Some(mut sp) = self.shadow_pipeline.take() {
+                sp.destroy(device);
             }
 
             if let Some(mut pipeline) = self.sky_pipeline.take() {

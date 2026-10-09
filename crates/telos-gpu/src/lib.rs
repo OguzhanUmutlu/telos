@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod postprocess;
 pub mod reloader;
 pub mod rhi;
+pub mod shadow;
 pub mod swapchain;
 pub mod texture;
 
@@ -34,9 +35,15 @@ pub use hiz::HiZPyramid;
 pub use instance::Instance;
 pub use opengl::{GlBuffer, GlContext, GlProgram, GlTexture2d, GlTextureArray};
 pub use pipeline::{GraphicsPipeline, ShaderModule};
-pub use postprocess::{PostCompositePushConstants, PostProcessFrameGraph, SsaoPushConstants};
+pub use postprocess::{
+    CascadeUniforms, PostCompositePushConstants, PostProcessFrameGraph, SsaoPushConstants,
+};
 pub use reloader::ShaderCompiler;
 pub use rhi::{RenderBackendType, RenderCaps};
+pub use shadow::{
+    CascadeMatrices, CascadedShadowMap, DEFAULT_CASCADE_SPLITS, DEFAULT_SHADOW_MAP_EXTENT,
+    NUM_CASCADES, ShadowPipeline, ShadowPushConstants,
+};
 pub use swapchain::Swapchain;
 pub use texture::{GpuTexture2d, GpuTextureArray, TextureMipRegion};
 

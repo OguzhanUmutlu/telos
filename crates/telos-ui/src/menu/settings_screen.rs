@@ -309,6 +309,7 @@ impl SettingsScreen {
                 ));
 
                 // Card 3: Post-Processing Pipeline
+                let card3_row_y = 234.0;
                 let pp_val = if self.settings.video.post_processing {
                     on_str
                 } else {
@@ -318,7 +319,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     205,
                     col1_x,
-                    start_y + 12.0 + row_h * 4.0 + 20.0,
+                    card3_row_y,
                     col_w,
                     22.0,
                     pp_str,
@@ -333,7 +334,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     206,
                     col2_x,
-                    start_y + 12.0 + row_h * 4.0 + 20.0,
+                    card3_row_y,
                     col_w,
                     22.0,
                     ssao_str,
@@ -348,7 +349,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     207,
                     col1_x,
-                    start_y + 12.0 + row_h * 5.0 + 20.0,
+                    card3_row_y + row_h,
                     col_w,
                     22.0,
                     fog_str,
@@ -363,7 +364,7 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     208,
                     col2_x,
-                    start_y + 12.0 + row_h * 5.0 + 20.0,
+                    card3_row_y + row_h,
                     col_w,
                     22.0,
                     tone_str,
@@ -378,10 +379,25 @@ impl SettingsScreen {
                 self.toggle_buttons.push(MenuButton::new(
                     209,
                     col1_x,
-                    start_y + 12.0 + row_h * 6.0 + 20.0,
+                    card3_row_y + row_h * 2.0,
                     col_w,
                     22.0,
                     clouds_str,
+                ));
+
+                let shadows_val = if self.settings.video.shadows {
+                    on_str
+                } else {
+                    off_str
+                };
+                let shadows_str = format!("Shadows: {shadows_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    212,
+                    col2_x,
+                    card3_row_y + row_h * 2.0,
+                    col_w,
+                    22.0,
+                    shadows_str,
                 ));
             }
             SettingsTab::Audio => {
@@ -777,6 +793,9 @@ impl SettingsScreen {
                         self.settings.video.volumetric_clouds =
                             !self.settings.video.volumetric_clouds;
                     }
+                    212 => {
+                        self.settings.video.shadows = !self.settings.video.shadows;
+                    }
                     210 => {
                         self.settings.audio.voice_chat_enabled =
                             !self.settings.audio.voice_chat_enabled;
@@ -959,7 +978,7 @@ impl SettingsScreen {
                     card_x,
                     218.0,
                     card_w,
-                    66.0,
+                    96.0,
                     "SHADERS & POST-PROCESSING",
                     font,
                     scale,
