@@ -1516,6 +1516,15 @@ pub enum PlayerCommandKind {
         /// Number of ticks the bow was charged before release.
         charge_ticks: u16,
     },
+    /// Steer or dismount currently ridden vehicle (e.g. Boat).
+    SteerVehicle {
+        /// Forward throttle in [-1.0, 1.0].
+        forward: f32,
+        /// Turning input in [-1.0, 1.0].
+        turn: f32,
+        /// If true, requests to unmount / dismount the vehicle.
+        unmount: bool,
+    },
 }
 
 /// Server synchronizes weather condition, rain/thunder levels, and lightning flash to clients.
@@ -1898,6 +1907,16 @@ impl C2sPlayerCommand {
                 buf.push(13);
                 encode_varint(u32::from(charge_ticks), buf);
             }
+            PlayerCommandKind::SteerVehicle {
+                forward,
+                turn,
+                unmount,
+            } => {
+                buf.push(14);
+                buf.extend_from_slice(&forward.to_le_bytes());
+                buf.extend_from_slice(&turn.to_le_bytes());
+                buf.push(u8::from(unmount));
+            }
         }
     }
 
@@ -1983,10 +2002,10 @@ impl C2sPlayerCommand {
                 let y = f64::from_le_bytes(cursor[9..17].try_into().unwrap());
                 let z = f64::from_le_bytes(cursor[17..25].try_into().unwrap());
                 *cursor = &cursor[25..];
-                if mob_type == 0 || mob_type > 7 {
+                if mob_type == 0 || mob_type > 8 {
                     return Err(ProtocolError::InvalidValue {
                         field: "player_command.spawn_mob.mob_type",
-                        reason: "Mob type must be 1..=7".to_string(),
+                        reason: "Mob type must be 1..=8".to_string(),
                     });
                 }
                 if !x.is_finite() || !y.is_finite() || !z.is_finite() {
@@ -2052,6 +2071,26 @@ impl C2sPlayerCommand {
                 #[allow(clippy::cast_possible_truncation)]
                 let charge_ticks = charge_raw as u16;
                 PlayerCommandKind::ShootBow { charge_ticks }
+            }
+            14 => {
+                if cursor.len() < 9 {
+                    return Err(ProtocolError::UnexpectedEof);
+                }
+                let forward = f32::from_le_bytes(cursor[..4].try_into().unwrap());
+                let turn = f32::from_le_bytes(cursor[4..8].try_into().unwrap());
+                let unmount = cursor[8] != 0;
+                *cursor = &cursor[9..];
+                if !forward.is_finite() || !turn.is_finite() {
+                    return Err(ProtocolError::InvalidValue {
+                        field: "player_command.steer_vehicle.inputs",
+                        reason: "Steering inputs must be finite".to_string(),
+                    });
+                }
+                PlayerCommandKind::SteerVehicle {
+                    forward: forward.clamp(-1.0, 1.0),
+                    turn: turn.clamp(-1.0, 1.0),
+                    unmount,
+                }
             }
             other => {
                 return Err(ProtocolError::InvalidDiscriminant {
@@ -3790,6 +3829,20 @@ mod tests {
         let decoded_cmd =
             C2sPlayerCommand::decode(&mut cursor).expect("failed to decode C2sPlayerCommand");
         assert_eq!(cmd_effect, decoded_cmd);
+
+        let cmd_steer = C2sPlayerCommand {
+            command: PlayerCommandKind::SteerVehicle {
+                forward: 1.0,
+                turn: -0.5,
+                unmount: false,
+            },
+        };
+        let mut buf = Vec::new();
+        cmd_steer.encode(&mut buf);
+        let mut cursor = &buf[..];
+        let decoded_steer =
+            C2sPlayerCommand::decode(&mut cursor).expect("failed to decode SteerVehicle");
+        assert_eq!(cmd_steer, decoded_steer);
     }
 
     #[test]

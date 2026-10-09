@@ -3746,6 +3746,7 @@ dependencies = [
  "arc-swap",
  "bitflags 2.13.2",
  "criterion",
+ "glam",
  "hashbrown 0.15.5",
  "proptest",
  "telos-core",

@@ -493,6 +493,7 @@ impl ClientEntityStore {
                 EntityType::Cow => 2,
                 EntityType::Squid => 3,
                 EntityType::Fish => 4,
+                EntityType::Boat => 5,
             };
 
             match entity.entity_type {
@@ -542,6 +543,17 @@ impl ClientEntityStore {
                 }
                 EntityType::Fish => {
                     build_fish_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
+                }
+                EntityType::Boat => {
+                    build_boat_mesh(
                         entity,
                         sky,
                         block,
@@ -1186,6 +1198,201 @@ fn build_fish_mesh(
     );
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn build_boat_mesh(
+    entity: &ClientEntity,
+    sky: u8,
+    block: u8,
+    layer: u32,
+    hurt_tint: f32,
+    body_roll: f32,
+    out: &mut Vec<EntityVertexGpu>,
+) {
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians());
+
+    let death_lift = (entity.death_timer / 0.5) * 0.4;
+
+    // Bobbing in water
+    let bob_y = (entity.walk_time * 2.0).sin() * 0.02;
+    let boat_pos = entity.pos + DVec3::new(0.0, f64::from(bob_y), 0.0);
+
+    // 1. Boat Bottom / Hull Floor: 28x2x16 pixels centered horizontally
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(-14.0 * S, 0.0 * S, -8.0 * S),
+        Vec3::new(14.0 * S, 2.0 * S, 8.0 * S),
+        (0.0, 0.0, 28.0, 2.0, 16.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 2. Port Wall (Left): 28x6x2 pixels along +Z side
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(-14.0 * S, 2.0 * S, 6.0 * S),
+        Vec3::new(14.0 * S, 8.0 * S, 8.0 * S),
+        (0.0, 20.0, 28.0, 6.0, 2.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 3. Starboard Wall (Right): 28x6x2 pixels along -Z side
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(-14.0 * S, 2.0 * S, -8.0 * S),
+        Vec3::new(14.0 * S, 8.0 * S, -6.0 * S),
+        (0.0, 28.0, 28.0, 6.0, 2.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 4. Bow Wall (Front): 2x6x12 pixels along +X side
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(12.0 * S, 2.0 * S, -6.0 * S),
+        Vec3::new(14.0 * S, 8.0 * S, 6.0 * S),
+        (0.0, 36.0, 2.0, 6.0, 12.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 5. Stern Wall (Back): 2x6x12 pixels along -X side
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(-14.0 * S, 2.0 * S, -6.0 * S),
+        Vec3::new(-12.0 * S, 8.0 * S, 6.0 * S),
+        (0.0, 44.0, 2.0, 6.0, 12.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 6. Bench Seat (Center): 4x1x12 pixels across middle
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::new(-2.0 * S, 2.0 * S, -6.0 * S),
+        Vec3::new(2.0 * S, 3.0 * S, 6.0 * S),
+        (0.0, 52.0, 4.0, 1.0, 12.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // Dynamic rowing animations for oars
+    let paddle_cycle = entity.walk_time * 6.0;
+    let oar_angle_l = paddle_cycle.sin() * 20.0;
+    let oar_angle_r = (paddle_cycle + 0.3).sin() * 20.0;
+
+    // 7. Left Paddle / Oar Arm: 2x2x14 pixels pivoting at port gunwale
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 7.0 * S, 7.0 * S),
+        Vec3::new(0.0, oar_angle_l, -15.0),
+        Vec3::new(-S, -S, 0.0),
+        Vec3::new(1.0 * S, 1.0 * S, 14.0 * S),
+        (30.0, 0.0, 2.0, 2.0, 14.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 8. Left Paddle Blade: 1x4x6 pixels at paddle tip
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 7.0 * S, 7.0 * S),
+        Vec3::new(0.0, oar_angle_l, -15.0),
+        Vec3::new(-0.5 * S, -2.0 * S, 14.0 * S),
+        Vec3::new(0.5 * S, 2.0 * S, 20.0 * S),
+        (30.0, 16.0, 1.0, 4.0, 6.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 9. Right Paddle / Oar Arm: 2x2x14 pixels pivoting at starboard gunwale
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 7.0 * S, -7.0 * S),
+        Vec3::new(0.0, -oar_angle_r, 15.0),
+        Vec3::new(-S, -S, -14.0 * S),
+        Vec3::new(1.0 * S, 1.0 * S, 0.0),
+        (30.0, 26.0, 2.0, 2.0, 14.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 10. Right Paddle Blade: 1x4x6 pixels at paddle tip
+    emit_cuboid(
+        boat_pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 7.0 * S, -7.0 * S),
+        Vec3::new(0.0, -oar_angle_r, 15.0),
+        Vec3::new(-0.5 * S, -2.0 * S, -20.0 * S),
+        Vec3::new(0.5 * S, 2.0 * S, -14.0 * S),
+        (30.0, 42.0, 1.0, 4.0, 6.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+}
+
 // ----------------------------------------------------------------------------
 // Low-level cuboid face emitter
 // ----------------------------------------------------------------------------
@@ -1621,5 +1828,35 @@ mod tests {
         let fish_verts = vertices.iter().filter(|v| v.layer == 4).count();
         assert_eq!(squid_verts, 324);
         assert_eq!(fish_verts, 144);
+    }
+
+    #[test]
+    fn test_boat_mesh_generation() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn(S2cSpawnEntity {
+            net_id: 105,
+            entity_type: EntityType::Boat.to_u8(),
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            head_yaw: 0.0,
+            health: 4.0,
+            max_health: 4.0,
+        });
+
+        assert_eq!(store.count(), 1);
+        store.update(0.1);
+
+        let mut vertices = Vec::new();
+        store.build_mesh(|_| (15, 0), &mut vertices);
+
+        // Boat: 10 cuboids * 36 vertices = 360 vertices
+        assert_eq!(vertices.len(), 360);
+
+        // All boat vertices use layer 5
+        assert!(vertices.iter().all(|v| v.layer == 5));
     }
 }

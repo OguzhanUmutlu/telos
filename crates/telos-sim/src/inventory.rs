@@ -183,6 +183,14 @@ pub const ITEM_INK_SAC: u32 = 94;
 pub const ITEM_COD: u32 = 95;
 /// Cooked cod item identifier (96).
 pub const ITEM_COOKED_COD: u32 = 96;
+/// Oak boat item identifier (97).
+pub const ITEM_OAK_BOAT: u32 = 97;
+
+/// Returns true if the item is a boat.
+#[must_use]
+pub const fn is_boat(item: u32) -> bool {
+    item == ITEM_OAK_BOAT
+}
 
 /// Returns true if the item is a sword.
 #[must_use]

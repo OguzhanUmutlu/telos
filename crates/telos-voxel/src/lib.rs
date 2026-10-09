@@ -29,7 +29,7 @@ pub use block_entity::{
 };
 pub use chunk::{Chunk, ChunkSnapshot};
 pub use coords::{CHUNK_SIZE, CHUNK_VOLUME, LocalIdx, split_block_pos, to_block_pos};
-pub use fluid::{FluidKind, FluidState};
+pub use fluid::{FluidKind, FluidState, calculate_fluid_flow};
 pub use light::{ChunkHeightmap, ChunkLight, ColumnHeights, LightBfs, LightLayer};
 pub use map::{ChunkHandle, ChunkMap};
 pub use occupancy::{Occupancy, transpose_32x32};

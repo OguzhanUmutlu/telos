@@ -561,8 +561,10 @@ impl LanguageCatalog {
             ("item.telos.ink_sac", "Ink Sac"),
             ("item.telos.cod", "Raw Cod"),
             ("item.telos.cooked_cod", "Cooked Cod"),
+            ("item.telos.oak_boat", "Oak Boat"),
             ("entity.telos.squid", "Squid"),
             ("entity.telos.fish", "Fish"),
+            ("entity.telos.boat", "Boat"),
         ];
 
         for (k, v) in en_pairs {

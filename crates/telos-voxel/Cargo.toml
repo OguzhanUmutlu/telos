@@ -10,6 +10,7 @@ description = "Canonical in-memory voxel data model: 32³ paletted chunks, occup
 
 [dependencies]
 telos-core = { workspace = true }
+glam = { workspace = true }
 bitflags = { workspace = true }
 arc-swap = { workspace = true }
 hashbrown = { workspace = true }

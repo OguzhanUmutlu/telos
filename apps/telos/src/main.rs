@@ -1405,6 +1405,7 @@ struct App {
     client_tick: u32,
     sim_time_acc: f32,
     last_acked_server_tick: u32,
+    riding_vehicle_id: Option<u32>,
 
     // MDI & Compute Culling
     mdi_buffers: Option<MdiBuffers>,
@@ -1927,6 +1928,7 @@ impl App {
             client_tick: 0,
             sim_time_acc: 0.0,
             last_acked_server_tick: 0,
+            riding_vehicle_id: None,
 
             mdi_buffers: None,
             chunk_slots: SlotAllocator::new(MAX_CHUNK_CANDIDATES as u32),
@@ -3874,6 +3876,51 @@ impl App {
             let _ = self
                 .client_conn
                 .send(Lane::Control, Payload::Msg(input_msg));
+        }
+
+        if let Some(vehicle_id) = self.riding_vehicle_id {
+            if let Some(boat_ent) = self.entity_store.get(vehicle_id) {
+                // Keep camera locked to boat seat
+                self.camera.position = boat_ent.pos.as_vec3() + Vec3::new(0.0, 0.45, 0.0);
+
+                if self.controller.down {
+                    // Sneak to dismount vehicle
+                    let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                        command: PlayerCommandKind::SteerVehicle {
+                            forward: 0.0,
+                            turn: 0.0,
+                            unmount: true,
+                        },
+                    });
+                    let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                    self.riding_vehicle_id = None;
+                } else {
+                    let mut forward = 0.0f32;
+                    let mut turn = 0.0f32;
+                    if self.controller.forward {
+                        forward += 1.0;
+                    }
+                    if self.controller.backward {
+                        forward -= 1.0;
+                    }
+                    if self.controller.left {
+                        turn -= 1.0;
+                    }
+                    if self.controller.right {
+                        turn += 1.0;
+                    }
+                    let cmd = C2sMessage::PlayerCommand(C2sPlayerCommand {
+                        command: PlayerCommandKind::SteerVehicle {
+                            forward,
+                            turn,
+                            unmount: false,
+                        },
+                    });
+                    let _ = self.client_conn.send(Lane::Control, Payload::Msg(cmd));
+                }
+            } else {
+                self.riding_vehicle_id = None;
+            }
         }
     }
 
@@ -10269,7 +10316,7 @@ impl ApplicationHandler for App {
                             ) {
                                 let interact_msg = C2sMessage::InteractEntity(C2sInteractEntity {
                                     target_net_id,
-                                    action: 1, // Attack
+                                    action: 0, // Attack
                                 });
                                 let _ = self
                                     .client_conn
@@ -10344,6 +10391,59 @@ impl ApplicationHandler for App {
                             }
                         }
                         MouseButton::Right => {
+                            // Check interaction with entities (e.g. boarding boat)
+                            let origin = self.camera.position;
+                            let forward = self.camera.forward();
+                            if let Some((target_net_id, _dist)) = self.entity_store.raycast(
+                                glam::DVec3::new(
+                                    f64::from(origin.x),
+                                    f64::from(origin.y),
+                                    f64::from(origin.z),
+                                ),
+                                forward,
+                                3.5,
+                            ) {
+                                let interact_msg = C2sMessage::InteractEntity(C2sInteractEntity {
+                                    target_net_id,
+                                    action: 1, // Interact / Board
+                                });
+                                let _ = self
+                                    .client_conn
+                                    .send(Lane::Control, Payload::Msg(interact_msg));
+                                if self.riding_vehicle_id == Some(target_net_id) {
+                                    self.riding_vehicle_id = None;
+                                } else {
+                                    self.riding_vehicle_id = Some(target_net_id);
+                                }
+                                return;
+                            }
+
+                            if let (true, Some(hit)) = (
+                                telos_sim::is_boat(self.inventory_sim.selected_item().item),
+                                self.targeted_block,
+                            ) {
+                                self.action_sequence += 1;
+                                let msg = C2sMessage::BlockAction(C2sBlockAction {
+                                    sequence: self.action_sequence,
+                                    action: BlockActionKind::Place {
+                                        state_id: BlockStateId::new(telos_sim::ITEM_OAK_BOAT),
+                                        hit_face: hit.face as u8,
+                                    },
+                                    x: hit.pos.x(),
+                                    y: hit.pos.y(),
+                                    z: hit.pos.z(),
+                                    input_tick: self.frame_counter,
+                                });
+                                let _ = self.client_conn.send(Lane::Control, Payload::Msg(msg));
+                                let hit_pos_f = Vec3::new(
+                                    hit.pos.x() as f32 + 0.5,
+                                    hit.pos.y() as f32 + 0.5,
+                                    hit.pos.z() as f32 + 0.5,
+                                );
+                                self.audio.play_procedural_place(hit_pos_f, 1.0);
+                                return;
+                            }
+
                             if self.inventory_sim.selected_item().item == telos_sim::ITEM_BOW {
                                 self.bow_charging = true;
                                 self.bow_charge_ticks = 0;
@@ -12194,7 +12294,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
 
     // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for registered items)
-    let item_textures: [(u32, &str, [u8; 4]); 60] = [
+    let item_textures: [(u32, &str, [u8; 4]); 61] = [
         (1, "textures/block/stone.png", [128, 128, 128, 255]),
         (2, "textures/block/dirt.png", [134, 96, 67, 255]),
         (3, "textures/block/grass_block_side.png", [90, 160, 60, 255]),
@@ -12271,6 +12371,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         (94, "textures/item/ink_sac.png", [20, 20, 25, 255]),
         (95, "textures/item/cod.png", [180, 150, 120, 255]),
         (96, "textures/item/cooked_cod.png", [190, 130, 90, 255]),
+        (97, "textures/item/oak_boat.png", [150, 110, 60, 255]),
     ];
 
     let copy_icon =
@@ -12891,7 +12992,7 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
 )]
 fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
     const ENTITY_RES: u32 = 64;
-    const LAYER_COUNT: u32 = 5;
+    const LAYER_COUNT: u32 = 6;
 
     let mut pixel_data = vec![0u8; (ENTITY_RES * ENTITY_RES * 4 * LAYER_COUNT) as usize];
 
@@ -13064,6 +13165,38 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
     };
     copy_to_layer(&mut pixel_data, 4, &fish_img);
 
+    // Layer 5: Oak Boat
+    let boat_img = if let Some(img) = stack
+        .find_texture("textures/entity/boat/oak.png")
+        .or_else(|| stack.find_texture("textures/entity/chest_boat/oak.png"))
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
+            img
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                let plank_grain = ((x / 4) + (y / 2)) % 3;
+                let (r, g, b) = match plank_grain {
+                    0 => (162, 130, 78),
+                    1 => (140, 110, 64),
+                    _ => (120, 92, 52),
+                };
+                img.data[idx] = r;
+                img.data[idx + 1] = g;
+                img.data[idx + 2] = b;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer(&mut pixel_data, 5, &boat_img);
+
     let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
         .map(|layer| TextureMipRegion {
             buffer_offset: u64::from(layer * ENTITY_RES * ENTITY_RES * 4),
@@ -13077,7 +13210,7 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
     let texture_array =
         gpu_context.create_texture_array(ENTITY_RES, LAYER_COUNT, 1, &pixel_data, &regions)?;
 
-    info!("Entity texture array loaded (3 layers: Zombie, Pig, Cow, 64x64)");
+    info!("Entity texture array loaded (6 layers: Zombie, Pig, Cow, Squid, Fish, Boat, 64x64)");
 
     Ok(texture_array)
 }

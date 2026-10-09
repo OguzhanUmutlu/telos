@@ -382,6 +382,14 @@ impl RecipeRegistry {
             ItemStack::new(crate::inventory::ITEM_CHEST, 1),
         ));
 
+        // 5 Planks in U-shape (3x2) -> 1 Oak Boat (97)
+        reg.register_shaped(ShapedRecipe::new(
+            3,
+            2,
+            vec![7, 0, 7, 7, 7, 7],
+            ItemStack::new(crate::inventory::ITEM_OAK_BOAT, 1),
+        ));
+
         // 8 Cobblestone surrounding empty center (3x3) -> 1 Furnace (64)
         reg.register_shaped(ShapedRecipe::new(
             3,

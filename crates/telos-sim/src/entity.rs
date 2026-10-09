@@ -35,6 +35,8 @@ pub enum EntityType {
     Squid = 6,
     /// Passive aquatic fish mob.
     Fish = 7,
+    /// Watercraft vehicle entity.
+    Boat = 8,
 }
 
 impl EntityType {
@@ -50,6 +52,7 @@ impl EntityType {
             5 => Some(Self::Arrow),
             6 => Some(Self::Squid),
             7 => Some(Self::Fish),
+            8 => Some(Self::Boat),
             _ => None,
         }
     }
@@ -72,6 +75,7 @@ impl EntityType {
             Self::Arrow => "Arrow",
             Self::Squid => "Squid",
             Self::Fish => "Fish",
+            Self::Boat => "Boat",
         }
     }
 
@@ -110,6 +114,10 @@ impl EntityType {
             Self::Fish => EntityAabb {
                 half_size: Vec3::new(0.2, 0.125, 0.2),
                 y_offset: 0.125,
+            },
+            Self::Boat => EntityAabb {
+                half_size: Vec3::new(0.7, 0.3, 0.7),
+                y_offset: 0.3,
             },
         }
     }
@@ -198,6 +206,47 @@ pub fn tick_item_physics_step(
         pos.x = next_x;
         pos.y = next_y;
         pos.z = next_z;
+    }
+}
+
+/// Performs a single-tick physics simulation step for a dropped item entity supporting fluid buoyancy and water currents.
+#[allow(clippy::cast_possible_truncation)]
+pub fn tick_item_physics_step_fluid(
+    pos: &mut DVec3,
+    vel: &mut Vec3,
+    mut is_solid: impl FnMut(i32, i32, i32) -> bool,
+    in_water: bool,
+    flow_vec: Vec3,
+) {
+    if in_water {
+        // Floating buoyancy (items rise to surface) and water current acceleration
+        vel.y = (vel.y + 0.035).min(0.12);
+        vel.x += flow_vec.x * 0.04;
+        vel.z += flow_vec.z * 0.04;
+
+        // Fluid drag
+        vel.x *= 0.88;
+        vel.y *= 0.88;
+        vel.z *= 0.88;
+
+        let next_x = pos.x + f64::from(vel.x);
+        let next_y = pos.y + f64::from(vel.y);
+        let next_z = pos.z + f64::from(vel.z);
+
+        let block_x = next_x.floor() as i32;
+        let block_y = next_y.floor() as i32;
+        let block_z = next_z.floor() as i32;
+
+        if is_solid(block_x, block_y, block_z) {
+            vel.x = 0.0;
+            vel.z = 0.0;
+        } else {
+            pos.x = next_x;
+            pos.y = next_y;
+            pos.z = next_z;
+        }
+    } else {
+        tick_item_physics_step(pos, vel, is_solid);
     }
 }
 
@@ -822,6 +871,75 @@ impl MobBundle {
             attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
         }
     }
+
+    /// Creates a new Boat entity bundle.
+    #[must_use]
+    pub fn new_boat(net_id: u32, pos: DVec3) -> Self {
+        Self {
+            net: NetEntity {
+                net_id,
+                entity_type: EntityType::Boat,
+            },
+            pos: Position(pos),
+            rot: Rotation::default(),
+            vel: Velocity::default(),
+            aabb: EntityType::Boat.default_aabb(),
+            health: Health::new(4.0),
+            combat: CombatTracker::default(),
+            hurt_time: HurtTime::default(),
+            mob: Mob::new_passive(0),
+            path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
+        }
+    }
+}
+
+/// Component attached to Boat entities representing rowboat physics, rowing paddle animations, and passenger state.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct BoatEntity {
+    /// Left paddle rowing animation angle / phase in radians.
+    pub paddle_left_time: f32,
+    /// Right paddle rowing animation angle / phase in radians.
+    pub paddle_right_time: f32,
+    /// Forward throttle input in [-1.0, 1.0].
+    pub forward_input: f32,
+    /// Turning input in [-1.0, 1.0].
+    pub turn_input: f32,
+    /// Whether the boat is currently submerged in or resting upon water.
+    pub in_water: bool,
+    /// Visual rock/shake timer on impact or boarding (ticks remaining).
+    pub rock_ticks: u16,
+    /// Network entity ID or session ID of the controlling driver, if occupied.
+    pub driver_id: Option<u32>,
+}
+
+impl BoatEntity {
+    /// Creates a new default unoccupied `BoatEntity`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            paddle_left_time: 0.0,
+            paddle_right_time: 0.0,
+            forward_input: 0.0,
+            turn_input: 0.0,
+            in_water: false,
+            rock_ticks: 0,
+            driver_id: None,
+        }
+    }
+}
+
+impl Default for BoatEntity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Component attached to a passenger entity (player or mob) indicating they are seated inside a vehicle entity.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Riding {
+    /// Network ID of the host vehicle entity (e.g. Boat).
+    pub vehicle_net_id: u32,
 }
 
 /// Component marking an aquatic mob with swimming physics, undulating thrust, and suffocation.
@@ -875,7 +993,11 @@ pub fn mob_ai_system(
             &Position,
             Option<&mut AttackCooldown>,
         ),
-        (Without<SimulationFrozen>, Without<AquaticMob>),
+        (
+            Without<SimulationFrozen>,
+            Without<AquaticMob>,
+            Without<BoatEntity>,
+        ),
     >,
     players: Option<Res<PlayerPositions>>,
 ) {
@@ -1255,7 +1377,11 @@ pub fn mob_ai_system(
 pub fn mob_movement_system(
     mut query: Query<
         (&mut Position, &mut Velocity),
-        (Without<SimulationFrozen>, Without<AquaticMob>),
+        (
+            Without<SimulationFrozen>,
+            Without<AquaticMob>,
+            Without<BoatEntity>,
+        ),
     >,
 ) {
     for (mut pos, mut vel) in &mut query {
@@ -1361,6 +1487,72 @@ pub fn aquatic_movement_system(
     }
 }
 
+/// System that handles rowboat physics, floating buoyancy, water current drifting, and player steering.
+#[allow(
+    clippy::type_complexity,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+pub fn boat_movement_system(
+    mut query: Query<
+        (
+            &mut Position,
+            &mut Velocity,
+            &mut Rotation,
+            &mut BoatEntity,
+            &Health,
+        ),
+        Without<SimulationFrozen>,
+    >,
+) {
+    for (mut pos, mut vel, mut rot, mut boat, _health) in &mut query {
+        let forward_yaw_rad = (-rot.yaw).to_radians();
+        let forward_dir = Vec3::new(-forward_yaw_rad.sin(), 0.0, -forward_yaw_rad.cos());
+
+        // Player steering and paddle mechanics
+        if boat.driver_id.is_some() {
+            // Turning: yaw changes with turn_input (A/D)
+            rot.yaw += boat.turn_input * 4.5;
+
+            // Forward thrust (W/S)
+            let thrust_speed = if boat.in_water { 0.045 } else { 0.012 };
+            vel.0 += forward_dir * (boat.forward_input * thrust_speed);
+
+            // Animate oars / paddles
+            if boat.forward_input > 0.05 || boat.turn_input < -0.05 {
+                boat.paddle_left_time += 0.25;
+            }
+            if boat.forward_input > 0.05 || boat.turn_input > 0.05 {
+                boat.paddle_right_time += 0.25;
+            }
+        }
+
+        if boat.in_water {
+            // Floating buoyancy: boat bobs gently on water surface
+            vel.0.y = (vel.0.y + 0.035).min(0.18);
+
+            // Low forward friction (glides smoothly), higher lateral resistance
+            vel.0.x *= 0.94;
+            vel.0.z *= 0.94;
+            vel.0.y *= 0.82;
+        } else {
+            // Land physics: gravity + ground friction
+            vel.0.y = (vel.0.y - 0.08).max(-2.0);
+            vel.0.x *= 0.60;
+            vel.0.z *= 0.60;
+        }
+
+        // Integrate velocity
+        pos.0.x += f64::from(vel.0.x);
+        pos.0.y += f64::from(vel.0.y);
+        pos.0.z += f64::from(vel.0.z);
+
+        if boat.rock_ticks > 0 {
+            boat.rock_ticks -= 1;
+        }
+    }
+}
+
 /// System that counts down entity hurt animation and triggers panic flee on passive mobs.
 pub fn mob_hurt_decay_system(
     mut query: Query<(&mut HurtTime, &mut Mob, &Position), Without<SimulationFrozen>>,
@@ -1397,17 +1589,71 @@ mod tests {
         assert_eq!(EntityType::from_u8(5), Some(EntityType::Arrow));
         assert_eq!(EntityType::from_u8(6), Some(EntityType::Squid));
         assert_eq!(EntityType::from_u8(7), Some(EntityType::Fish));
-        assert_eq!(EntityType::from_u8(8), None);
+        assert_eq!(EntityType::from_u8(8), Some(EntityType::Boat));
+        assert_eq!(EntityType::from_u8(9), None);
         assert_eq!(EntityType::Zombie.to_u8(), 1);
         assert_eq!(EntityType::Item.to_u8(), 4);
         assert_eq!(EntityType::Arrow.to_u8(), 5);
         assert_eq!(EntityType::Squid.to_u8(), 6);
         assert_eq!(EntityType::Fish.to_u8(), 7);
+        assert_eq!(EntityType::Boat.to_u8(), 8);
         assert_eq!(EntityType::Pig.name(), "Pig");
         assert_eq!(EntityType::Squid.name(), "Squid");
         assert_eq!(EntityType::Fish.name(), "Fish");
+        assert_eq!(EntityType::Boat.name(), "Boat");
         assert_eq!(EntityType::Item.name(), "Item");
         assert_eq!(EntityType::Arrow.name(), "Arrow");
+    }
+
+    #[test]
+    fn test_boat_buoyancy_and_steering() {
+        let mut world = bevy_ecs::world::World::new();
+        let boat_bundle = MobBundle::new_boat(1, DVec3::new(10.0, 62.0, 10.0));
+        let mut boat_comp = BoatEntity::new();
+        boat_comp.in_water = true;
+        boat_comp.driver_id = Some(42);
+        boat_comp.forward_input = 1.0;
+        boat_comp.turn_input = 0.5;
+
+        let e = world.spawn((boat_bundle, boat_comp)).id();
+
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(boat_movement_system);
+
+        schedule.run(&mut world);
+
+        let boat = world.get::<BoatEntity>(e).unwrap();
+        assert!(
+            boat.paddle_left_time > 0.0,
+            "Left paddle should animate on forward move"
+        );
+        assert!(
+            boat.paddle_right_time > 0.0,
+            "Right paddle should animate on forward move"
+        );
+
+        let rot = world.get::<Rotation>(e).unwrap();
+        assert!(rot.yaw > 0.0, "Boat yaw should change with turn input");
+
+        let vel = world.get::<Velocity>(e).unwrap();
+        assert!(vel.0.y > 0.0, "Buoyancy should push boat upward in water");
+    }
+
+    #[test]
+    fn test_item_fluid_physics() {
+        let mut pos = DVec3::new(10.0, 60.0, 10.0);
+        let mut vel = Vec3::ZERO;
+        let flow = Vec3::new(1.0, 0.0, 0.0);
+
+        // Run in water with flow
+        tick_item_physics_step_fluid(&mut pos, &mut vel, |_, _, _| false, true, flow);
+
+        assert!(vel.y > 0.0, "Item should have upward buoyancy in water");
+        assert!(
+            vel.x > 0.0,
+            "Item should accelerate along water flow current"
+        );
+        assert!(pos.x > 10.0);
     }
 
     #[test]

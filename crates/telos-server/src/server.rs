@@ -44,15 +44,16 @@ use telos_sim::{
     ARMOR_SLOTS, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_PICKUP_RADIUS,
     AiState, AquaticMob, ArrowEntity, ArrowStepOutcome, AttackCooldown, AttributeKind, Attributes,
     BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
-    CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience, GameMode,
-    Health, Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
-    ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack, Mob, MobBundle, MoveMode, NetEntity,
-    PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position, PotionType, Rotation, SimParams,
-    SimulationFrozen, StatusEffectKind, StatusEffectRegistry, StatusEffects, TargetablePlayer,
-    Velocity, WeatherKind, WeatherState, apply_mitigated_damage, block_to_drop_item,
-    build_sim_schedule, calculate_total_epf, merge_item_stacks, tick_arrow_physics_step,
-    tick_item_physics_step,
+    BoatEntity, CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience,
+    GameMode, Health, Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS,
+    ITEM_MERGE_RADIUS, ITEM_OAK_BOAT, ITEM_PICKUP_RADIUS, Inventory, ItemEntity, ItemStack, Mob,
+    MobBundle, MoveMode, NetEntity, PLAYER_DROP_PICKUP_DELAY, PlayerPositions, Position,
+    PotionType, Riding, Rotation, SimParams, SimulationFrozen, StatusEffectKind,
+    StatusEffectRegistry, StatusEffects, TargetablePlayer, Velocity, WeatherKind, WeatherState,
+    apply_mitigated_damage, block_to_drop_item, build_sim_schedule, calculate_total_epf, is_boat,
+    merge_item_stacks, tick_arrow_physics_step, tick_item_physics_step_fluid,
 };
+use telos_voxel::fluid::{FluidKind, FluidState, calculate_fluid_flow};
 use telos_voxel::state::BlockStateId;
 use telos_voxel::storage::Blocks;
 use tracing::{debug, info};
@@ -487,13 +488,14 @@ impl Server {
             .default_world()
             .seed()
             .wrapping_add(u64::from(net_id));
-        let (bundle, is_aquatic) = match entity_type {
-            EntityType::Pig => (MobBundle::new_pig(net_id, pos, seed), false),
-            EntityType::Cow => (MobBundle::new_cow(net_id, pos, seed), false),
-            EntityType::Squid => (MobBundle::new_squid(net_id, pos, seed), true),
-            EntityType::Fish => (MobBundle::new_fish(net_id, pos, seed), true),
+        let (bundle, is_aquatic, is_boat) = match entity_type {
+            EntityType::Pig => (MobBundle::new_pig(net_id, pos, seed), false, false),
+            EntityType::Cow => (MobBundle::new_cow(net_id, pos, seed), false, false),
+            EntityType::Squid => (MobBundle::new_squid(net_id, pos, seed), true, false),
+            EntityType::Fish => (MobBundle::new_fish(net_id, pos, seed), true, false),
+            EntityType::Boat => (MobBundle::new_boat(net_id, pos), false, true),
             EntityType::Zombie | EntityType::Player | EntityType::Item | EntityType::Arrow => {
-                (MobBundle::new_zombie(net_id, pos, seed), false)
+                (MobBundle::new_zombie(net_id, pos, seed), false, false)
             }
         };
         let health = bundle.health.cur;
@@ -502,6 +504,9 @@ impl Server {
                 .spawn((bundle, Attributes::player_default(), StatusEffects::new()));
         if is_aquatic {
             entity_builder.insert(AquaticMob::new(entity_type));
+        }
+        if is_boat {
+            entity_builder.insert(BoatEntity::new());
         }
         let entity = entity_builder.id();
 
@@ -873,6 +878,7 @@ impl Server {
 
     /// Handles mob death transitions, broadcasting death animation and particles,
     /// awarding experience, dropping loot, and despawning the mob.
+    #[allow(clippy::too_many_lines)]
     pub fn handle_mob_death(&mut self, net_id: u32, killer_session_id: Option<u64>) {
         let Some(&entity) = self.tracked_mobs.get(&net_id) else {
             return;
@@ -927,6 +933,7 @@ impl Server {
             EntityType::Cow => (2, vec![("beef", count_1_to_3), ("leather", count_0_to_2)]),
             EntityType::Squid => (2, vec![("ink_sac", count_1_to_3)]),
             EntityType::Fish => (1, vec![("cod", 1)]),
+            EntityType::Boat => (0, vec![("oak_boat", 1)]),
             EntityType::Player | EntityType::Item | EntityType::Arrow => (0, Vec::new()),
         };
 
@@ -968,6 +975,22 @@ impl Server {
                         );
                     }
                 }
+            }
+        }
+
+        // 5b. Dismount any passengers riding this entity
+        {
+            let mut riders = Vec::new();
+            let mut query = self
+                .ecs_world
+                .query::<(bevy_ecs::entity::Entity, &Riding)>();
+            for (rider_ent, riding) in query.iter(&self.ecs_world) {
+                if riding.vehicle_net_id == net_id {
+                    riders.push(rider_ent);
+                }
+            }
+            for rider_ent in riders {
+                self.ecs_world.entity_mut(rider_ent).remove::<Riding>();
             }
         }
 
@@ -1028,7 +1051,7 @@ impl Server {
                 continue;
             }
 
-            // Physics step against world terrain
+            // Physics step against world terrain and water currents
             let world = self.worlds.default_world();
             let is_solid = |bx: i32, by: i32, bz: i32| -> bool {
                 let state = world.get_loaded_block(BlockPos::new(bx, by, bz));
@@ -1037,7 +1060,28 @@ impl Server {
 
             let mut cur_pos = pos.0;
             let mut cur_vel = vel.0;
-            tick_item_physics_step(&mut cur_pos, &mut cur_vel, is_solid);
+
+            #[allow(clippy::cast_possible_truncation)]
+            let item_block_pos = BlockPos::new(
+                cur_pos.x.floor() as i32,
+                cur_pos.y.floor() as i32,
+                cur_pos.z.floor() as i32,
+            );
+            let block_id = world.get_loaded_block(item_block_pos);
+            let in_water = self.registries.block_registry().is_water(block_id);
+            let flow_vec = if in_water {
+                calculate_fluid_flow(item_block_pos, |p| {
+                    let b = world.get_loaded_block(p);
+                    if self.registries.block_registry().is_water(b) {
+                        Some(FluidState::new(FluidKind::Water, 0, false))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                Vec3::ZERO
+            };
+            tick_item_physics_step_fluid(&mut cur_pos, &mut cur_vel, is_solid, in_water, flow_vec);
 
             // Write back updated components
             if let Ok(mut ent) = self.ecs_world.get_entity_mut(*entity) {
@@ -3253,6 +3297,14 @@ impl Server {
                     username: session.username.clone(),
                 });
                 if let Some(entity) = session.ecs_entity {
+                    if let Some(riding) = self.ecs_world.get::<Riding>(entity).copied()
+                        && let Some(&boat_ent) = self.tracked_mobs.get(&riding.vehicle_net_id)
+                        && let Some(mut boat) = self.ecs_world.get_mut::<BoatEntity>(boat_ent)
+                    {
+                        boat.driver_id = None;
+                        boat.forward_input = 0.0;
+                        boat.turn_input = 0.0;
+                    }
                     self.ecs_world.despawn(entity);
                 }
                 self.pending_forms.retain(|&(s_id, _), _| s_id != id);
@@ -3584,6 +3636,36 @@ impl Server {
                         !is_creative,
                     );
                 }
+                PlayerCommandKind::SteerVehicle {
+                    forward,
+                    turn,
+                    unmount,
+                } => {
+                    if let Some(player_entity) = entity {
+                        if unmount {
+                            if let Some(riding) =
+                                self.ecs_world.get::<Riding>(player_entity).copied()
+                            {
+                                if let Some(&boat_ent) =
+                                    self.tracked_mobs.get(&riding.vehicle_net_id)
+                                    && let Some(mut boat) =
+                                        self.ecs_world.get_mut::<BoatEntity>(boat_ent)
+                                {
+                                    boat.driver_id = None;
+                                    boat.forward_input = 0.0;
+                                    boat.turn_input = 0.0;
+                                }
+                                self.ecs_world.entity_mut(player_entity).remove::<Riding>();
+                            }
+                        } else if let Some(riding) = self.ecs_world.get::<Riding>(player_entity)
+                            && let Some(&boat_ent) = self.tracked_mobs.get(&riding.vehicle_net_id)
+                            && let Some(mut boat) = self.ecs_world.get_mut::<BoatEntity>(boat_ent)
+                        {
+                            boat.forward_input = forward.clamp(-1.0, 1.0);
+                            boat.turn_input = turn.clamp(-1.0, 1.0);
+                        }
+                    }
+                }
             }
         }
 
@@ -3703,6 +3785,40 @@ impl Server {
 
                 if is_dead {
                     self.handle_mob_death(interact.target_net_id, Some(session_id));
+                }
+            } else if interact.action == 1 {
+                // Action 1 = Interact / Board Vehicle
+                let player_entity = self.sessions.get(&session_id).and_then(|s| s.ecs_entity);
+                let player_net_id = self.sessions.get(&session_id).map(|s| s.entity_id);
+
+                if let Some(p_ent) = player_entity
+                    && let Some(p_net) = player_net_id
+                {
+                    let is_riding_this = self
+                        .ecs_world
+                        .get::<Riding>(p_ent)
+                        .is_some_and(|r| r.vehicle_net_id == interact.target_net_id);
+
+                    if is_riding_this {
+                        // Dismount from vehicle
+                        self.ecs_world.entity_mut(p_ent).remove::<Riding>();
+                        if let Some(mut boat) = self.ecs_world.get_mut::<BoatEntity>(target_entity)
+                        {
+                            boat.driver_id = None;
+                            boat.forward_input = 0.0;
+                            boat.turn_input = 0.0;
+                        }
+                    } else if let Some(mut boat) =
+                        self.ecs_world.get_mut::<BoatEntity>(target_entity)
+                        && boat.driver_id.is_none()
+                    {
+                        // Mount into vehicle
+                        boat.driver_id = Some(p_net);
+                        boat.rock_ticks = 10;
+                        self.ecs_world.entity_mut(p_ent).insert(Riding {
+                            vehicle_net_id: interact.target_net_id,
+                        });
+                    }
                 }
             }
         }
@@ -4694,6 +4810,46 @@ impl Server {
                     continue;
                 }
 
+                if let BlockActionKind::Place { state_id, .. } = action.action
+                    && (is_boat(state_id.as_u32()) || state_id.as_u32() == ITEM_OAK_BOAT)
+                {
+                    let spawn_pos = DVec3::new(
+                        f64::from(target_pos.x()) + 0.5,
+                        f64::from(target_pos.y()) + 0.2,
+                        f64::from(target_pos.z()) + 0.5,
+                    );
+                    self.spawn_mob(EntityType::Boat, spawn_pos);
+
+                    // If in survival, deduct 1 boat item from player hotbar
+                    if session_game_mode == GameMode::Survival
+                        && let Some(p_ent) =
+                            self.sessions.get(&session_id).and_then(|s| s.ecs_entity)
+                        && let Some(mut inv) = self.ecs_world.get_mut::<Inventory>(p_ent)
+                    {
+                        let slot_idx = self
+                            .sessions
+                            .get(&session_id)
+                            .map_or(0, |s| s.selected_slot as usize);
+                        if slot_idx < inv.slots.len()
+                            && (is_boat(inv.slots[slot_idx].item)
+                                || inv.slots[slot_idx].item == ITEM_OAK_BOAT)
+                        {
+                            inv.slots[slot_idx].count = inv.slots[slot_idx].count.saturating_sub(1);
+                            inv.slots[slot_idx].normalize();
+                            let slot_msg = S2cMessage::InventorySlot(S2cInventorySlot {
+                                slot: slot_idx as u16,
+                                item: inv.slots[slot_idx].item,
+                                count: inv.slots[slot_idx].count,
+                                enchantments: inv.slots[slot_idx].enchantments.0,
+                            });
+                            if let Some(s) = self.sessions.get_mut(&session_id) {
+                                let _ = s.connection.send(Lane::Control, Payload::Msg(slot_msg));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 if matches!(action.action, BlockActionKind::Break)
                     && !self.js_plugins.dispatch_block_break(
                         session_entity_id,
@@ -5429,6 +5585,52 @@ impl Server {
             }
         }
 
+        // Update boat entity water immersion status and current flow drifting
+        {
+            let boat_positions: Vec<(bevy_ecs::entity::Entity, BlockPos)> = {
+                let mut boat_query =
+                    self.ecs_world
+                        .query::<(bevy_ecs::entity::Entity, &Position, &BoatEntity)>();
+                boat_query
+                    .iter(&self.ecs_world)
+                    .map(|(entity, pos, _)| {
+                        (
+                            entity,
+                            BlockPos::new(
+                                pos.0.x.floor() as i32,
+                                (pos.0.y - 0.1).floor() as i32,
+                                pos.0.z.floor() as i32,
+                            ),
+                        )
+                    })
+                    .collect()
+            };
+
+            for (entity, block_pos) in boat_positions {
+                let block_id = self.worlds.default_world_mut().get_block(block_pos);
+                let in_water = self.registries.block_registry().is_water(block_id);
+                if let Some(mut boat) = self.ecs_world.get_mut::<BoatEntity>(entity) {
+                    boat.in_water = in_water;
+                }
+                if in_water {
+                    let flow = calculate_fluid_flow(block_pos, |p| {
+                        let b = self.worlds.default_world_mut().get_block(p);
+                        if self.registries.block_registry().is_water(b) {
+                            Some(FluidState::new(FluidKind::Water, 0, false))
+                        } else {
+                            None
+                        }
+                    });
+                    if flow != Vec3::ZERO
+                        && let Some(mut vel) = self.ecs_world.get_mut::<Velocity>(entity)
+                    {
+                        vel.0.x += flow.x * 0.02;
+                        vel.0.z += flow.z * 0.02;
+                    }
+                }
+            }
+        }
+
         self.sim_schedule.run(&mut self.ecs_world);
 
         // 5a. Authoritative mob melee attacks on survival players
@@ -5995,6 +6197,22 @@ impl Server {
                                 .send(Lane::Control, Payload::Msg(move_msg.clone()));
                         }
                     }
+                }
+            }
+        }
+
+        // Sync riding players to their vehicle's position
+        for session in self.sessions.values_mut() {
+            if session.phase == ConnectionPhase::Play
+                && let Some(p_ent) = session.ecs_entity
+                && let Some(riding) = self.ecs_world.get::<Riding>(p_ent)
+                && let Some(&boat_ent) = self.tracked_mobs.get(&riding.vehicle_net_id)
+                && let Some(boat_pos) = self.ecs_world.get::<Position>(boat_ent)
+            {
+                let seat_pos = boat_pos.0 + DVec3::new(0.0, 0.45, 0.0);
+                session.position = seat_pos;
+                if let Some(mut p_pos) = self.ecs_world.get_mut::<Position>(p_ent) {
+                    p_pos.0 = seat_pos;
                 }
             }
         }
