@@ -833,6 +833,20 @@ impl BlockRegistry {
             || matches!(self.shape(id), crate::shape::BlockShape::Fluid { .. })
     }
 
+    /// Returns `true` if the given block state represents a water fluid block (still, flowing, or falling).
+    #[inline]
+    #[must_use]
+    pub fn is_water(&self, id: BlockStateId) -> bool {
+        if let Some(state) = self.fluid_state(id) {
+            state.kind == crate::fluid::FluidKind::Water
+        } else {
+            self.identifier(id).is_some_and(|ident| {
+                let p = ident.path();
+                p == "water" || p.starts_with("flowing_water") || p == "falling_water"
+            })
+        }
+    }
+
     /// Returns `true` if the given block state represents a monster spawner.
     #[inline]
     #[must_use]
@@ -1009,6 +1023,7 @@ mod tests {
             .unwrap()
             .default_state();
         assert!(reg.is_fluid(water));
+        assert!(reg.is_water(water));
         let state = reg.fluid_state(water).unwrap();
         assert_eq!(state.kind, crate::fluid::FluidKind::Water);
         assert_eq!(state.level, 0);
@@ -1016,15 +1031,18 @@ mod tests {
         assert!(state.is_source());
 
         let flowing_water_3 = reg.fluid_state_id(crate::fluid::FluidKind::Water, 3, false);
+        assert!(reg.is_water(flowing_water_3));
         let s3 = reg.fluid_state(flowing_water_3).unwrap();
         assert_eq!(s3.level, 3);
         assert!(!s3.falling);
 
         let falling_water = reg.fluid_state_id(crate::fluid::FluidKind::Water, 1, true);
+        assert!(reg.is_water(falling_water));
         let sf = reg.fluid_state(falling_water).unwrap();
         assert!(sf.falling);
 
         let lava = reg.fluid_state_id(crate::fluid::FluidKind::Lava, 0, false);
+        assert!(!reg.is_water(lava));
         let sl = reg.fluid_state(lava).unwrap();
         assert_eq!(sl.kind, crate::fluid::FluidKind::Lava);
         assert_eq!(sl.level, 0);
@@ -1033,6 +1051,7 @@ mod tests {
             .get(&Identifier::new("telos", "cobblestone").unwrap())
             .unwrap()
             .default_state();
+        assert!(!reg.is_water(cobblestone));
         assert!(!reg.is_fluid(cobblestone));
         assert!(reg.flags(cobblestone).contains(StateFlags::OPAQUE_FULL));
 

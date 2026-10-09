@@ -64,11 +64,30 @@ void main() {
 
     vec4 tex_color = texture(u_textures, vec3(v_uv, float(layer)));
 
+    // Procedural wave normal perturbation for fluid surfaces
+    vec3 normal = v_normal;
+    if (v_material != 31u && v_material != 32u) {
+        float wave_time = float(pc.frame_tick) * 0.05;
+        vec2 p = v_world_pos.xz;
+        if (v_normal.y > 0.5) {
+            float dx = cos(p.x * 1.5 + wave_time * 1.2) * 1.5 * cos(p.y * 1.2 + wave_time * 0.9) * 0.035
+                     + cos((p.x + p.y) * 2.3 + wave_time * 1.8) * 2.3 * 0.02
+                     + cos(p.x * 3.8 - wave_time * 2.4) * 3.8 * 0.01;
+            float dz = -sin(p.x * 1.5 + wave_time * 1.2) * sin(p.y * 1.2 + wave_time * 0.9) * 1.2 * 0.035
+                     + cos((p.x + p.y) * 2.3 + wave_time * 1.8) * 2.3 * 0.02
+                     + cos(p.y * 3.6 + wave_time * 2.1) * 3.6 * 0.01;
+            normal = normalize(vec3(-dx * 1.6, 1.0, -dz * 1.6));
+        } else if (abs(v_normal.y) <= 0.5) {
+            float ripple = sin(v_world_pos.y * 4.0 + wave_time * 2.0) * 0.12;
+            normal = normalize(v_normal + vec3(0.0, ripple, 0.0));
+        }
+    }
+
     // Directional face shading factor
     float face_shade = 0.80;
-    if (v_normal.y > 0.5) {
+    if (normal.y > 0.5) {
         face_shade = 1.0;
-    } else if (v_normal.y < -0.5) {
+    } else if (normal.y < -0.5) {
         face_shade = 0.6;
     } else {
         face_shade = 0.80;
@@ -91,7 +110,33 @@ void main() {
     // Emissive glow for lava
     if (v_material == 31u || v_material == 32u) {
         total_light = max(total_light, vec3(1.0, 0.9, 0.7));
-    }
+        out_color = vec4(tex_color.rgb * fluid_tint * total_light, alpha);
+    } else {
+        vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
+        float NdotV = clamp(dot(normal, V), 0.0, 1.0);
 
-    out_color = vec4(tex_color.rgb * fluid_tint * total_light, alpha);
+        // Schlick Fresnel reflection factor: F = F0 + (1 - F0) * (1 - cos_theta)^5
+        float fresnel = 0.04 + 0.96 * pow(1.0 - NdotV, 5.0);
+
+        // Ambient sky dome & horizon reflection color based on sky light level
+        float sky_light_ratio = clamp(sky_raw / 15.0, 0.0, 1.0);
+        vec3 sky_reflection = mix(vec3(0.05, 0.08, 0.15), vec3(0.65, 0.82, 0.98), sky_light_ratio);
+
+        // Sun / celestial specular reflection highlight (Blinn-Phong NdotH^96)
+        vec3 sun_dir = normalize(vec3(0.5, 0.8, 0.3));
+        vec3 H = normalize(V + sun_dir);
+        float NdotH = max(0.0, dot(normal, H));
+        float specular = pow(NdotH, 96.0) * sky_light_ratio;
+        vec3 spec_color = vec3(1.0, 0.96, 0.88) * (specular * 1.2);
+
+        // Beer-Lambert chromatic depth absorption
+        float depth_est = mix(1.2, 6.0, 1.0 - NdotV);
+        vec3 absorption = exp(-vec3(0.15, 0.05, 0.02) * depth_est);
+
+        vec3 water_color = tex_color.rgb * fluid_tint * absorption * total_light;
+        vec3 final_rgb = mix(water_color, sky_reflection * total_light, fresnel * 0.65) + spec_color;
+        float final_alpha = clamp(mix(alpha, 0.90, fresnel), 0.0, 1.0);
+
+        out_color = vec4(final_rgb, final_alpha);
+    }
 }

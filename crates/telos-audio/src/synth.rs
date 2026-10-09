@@ -467,6 +467,110 @@ pub fn synthesize_advancement_chime() -> Arc<[f32]> {
     samples.into()
 }
 
+/// Synthesizes a procedural water splash sound (mono, 44.1 kHz, ~0.35s).
+///
+/// Features an initial turbulent impact slap followed by resonant bubbling chirps.
+#[must_use]
+pub fn synthesize_water_splash(pitch: f32) -> Arc<[f32]> {
+    let pitch = pitch.clamp(0.5, 2.0);
+    let duration_sec = 0.35 / pitch;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut rng = SimpleRng::new(0x3141);
+
+    let mut filtered_noise = 0.0f32;
+    let mut phase_chirp1 = 0.0f32;
+    let mut phase_chirp2 = 0.0f32;
+    let mut phase_slap = 0.0f32;
+
+    for i in 0..num_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+        let attack = (t / 0.003).min(1.0);
+        let slap_env = attack * (-32.0 * pitch * t).exp();
+        let bubble_env = attack * (-9.0 * pitch * t).exp();
+
+        // Turbulent fluid noise
+        let raw_noise = rng.next_f32();
+        filtered_noise += 0.35 * (raw_noise - filtered_noise);
+
+        // Initial impact slap (low-mid resonant thump)
+        let slap_freq = 140.0 * (0.6 + 1.4 * (-80.0 * t).exp()) * pitch;
+        phase_slap += 2.0 * std::f32::consts::PI * slap_freq / SYNTH_SAMPLE_RATE as f32;
+        let slap = phase_slap.sin() * slap_env * 0.45;
+
+        // Downward resonant bubble chirps
+        let chirp1_freq = (480.0 * (-12.0 * t).exp() + 180.0) * pitch;
+        phase_chirp1 += 2.0 * std::f32::consts::PI * chirp1_freq / SYNTH_SAMPLE_RATE as f32;
+        let bubble1 = phase_chirp1.sin() * 0.30;
+
+        let chirp2_freq = (720.0 * (-16.0 * t).exp() + 240.0) * pitch;
+        phase_chirp2 += 2.0 * std::f32::consts::PI * chirp2_freq / SYNTH_SAMPLE_RATE as f32;
+        let bubble2 = phase_chirp2.sin() * 0.20;
+
+        let bubble_layer = (bubble1 + bubble2) * bubble_env;
+        let noise_layer = filtered_noise * slap_env * 0.55;
+
+        let sample = (slap + bubble_layer + noise_layer) * 0.85;
+        samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    samples.into()
+}
+
+/// Synthesizes a seamlessly loopable deep underwater rumble ambience (mono, 44.1 kHz, ~2.0s).
+#[must_use]
+pub fn synthesize_underwater_ambience() -> Arc<[f32]> {
+    let duration_sec = 2.0f32;
+    let fade_duration = 0.05f32;
+    let num_samples = (duration_sec * SYNTH_SAMPLE_RATE as f32) as usize;
+    let fade_len = (fade_duration * SYNTH_SAMPLE_RATE as f32) as usize;
+    let total_samples = num_samples + fade_len;
+    let mut raw_samples = Vec::with_capacity(total_samples);
+    let mut rng = SimpleRng::new(0x2718);
+
+    let mut filtered_noise = 0.0f32;
+    let lpf_alpha = 0.06f32; // Heavy low-pass filtering (< 400 Hz)
+
+    for i in 0..total_samples {
+        let t = i as f32 / SYNTH_SAMPLE_RATE as f32;
+
+        // Sub-bass oceanic hum (42 Hz and 68 Hz)
+        let sub1 = (2.0 * std::f32::consts::PI * 42.0 * t).sin() * 0.40;
+        let sub2 = (2.0 * std::f32::consts::PI * 68.0 * t).sin() * 0.25;
+
+        // Muffled fluid noise
+        let raw_noise = rng.next_f32();
+        filtered_noise += lpf_alpha * (raw_noise - filtered_noise);
+
+        // Subtle slow swell modulation (0.5 Hz)
+        let swell = 0.75 + 0.25 * (2.0 * std::f32::consts::PI * 0.5 * t).sin();
+
+        // Occasional faint submerged bubble pulse
+        let bubble = if rng.next_u32().is_multiple_of(600) {
+            rng.next_f32() * 0.35
+        } else {
+            0.0
+        };
+
+        let sample = (sub1 + sub2 + filtered_noise * 0.6 + bubble) * swell * 0.65;
+        raw_samples.push(sample.clamp(-1.0, 1.0));
+    }
+
+    // Blend extra tail back into start for seamless looping without phase discontinuity
+    let mut samples = Vec::with_capacity(num_samples);
+    for i in 0..num_samples {
+        if i < fade_len {
+            let factor = i as f32 / fade_len as f32;
+            let extra = raw_samples[num_samples + i];
+            samples.push(extra * (1.0 - factor) + raw_samples[i] * factor);
+        } else {
+            samples.push(raw_samples[i]);
+        }
+    }
+
+    samples.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,5 +663,30 @@ mod tests {
             assert!(!s.is_nan());
             assert!((-1.0..=1.0).contains(&s));
         }
+    }
+
+    #[test]
+    fn test_water_splash_bounds() {
+        for &pitch in &[0.5, 1.0, 1.5, 2.0] {
+            let buf = synthesize_water_splash(pitch);
+            assert!(!buf.is_empty());
+            for &s in buf.iter() {
+                assert!(!s.is_nan());
+                assert!((-1.0..=1.0).contains(&s));
+            }
+        }
+    }
+
+    #[test]
+    fn test_underwater_ambience_seamless() {
+        let buf = synthesize_underwater_ambience();
+        assert!(!buf.is_empty());
+        for &s in buf.iter() {
+            assert!(!s.is_nan());
+            assert!((-1.0..=1.0).contains(&s));
+        }
+        // Verify start and end crossfade continuity
+        let diff = (buf[0] - buf[buf.len() - 1]).abs();
+        assert!(diff < 0.05);
     }
 }

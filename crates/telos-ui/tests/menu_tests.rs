@@ -472,3 +472,56 @@ fn test_settings_screen_fxaa_toggle() {
     );
     assert!(screen.settings.video.fxaa);
 }
+
+#[test]
+fn test_settings_screen_underwater_effects_toggle() {
+    use telos_core::i18n::LanguageCatalog;
+    use telos_ui::menu::settings_screen::{SettingsScreen, SettingsTab};
+
+    let catalog = LanguageCatalog::with_default_embedded();
+    let mut screen = SettingsScreen::new(GameSettings::default());
+    screen.active_tab = SettingsTab::Video;
+    screen.update_layout_i18n(800.0, 600.0, &catalog);
+
+    // underwater_effects defaults to true
+    assert!(screen.settings.video.underwater_effects);
+
+    // Locate button 214 (Underwater toggle)
+    let underwater_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 214)
+        .expect("Underwater toggle button 214 not found")
+        .clone();
+
+    assert!(underwater_btn.label.contains("ON"));
+
+    // Click to toggle off
+    screen.handle_mouse_click_i18n(
+        underwater_btn.x + 5.0,
+        underwater_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert!(!screen.settings.video.underwater_effects);
+
+    // Re-check layout
+    let updated_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 214)
+        .expect("Underwater toggle button 214 not found")
+        .clone();
+    assert!(updated_btn.label.contains("OFF"));
+
+    // Click to toggle back on
+    screen.handle_mouse_click_i18n(
+        updated_btn.x + 5.0,
+        updated_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert!(screen.settings.video.underwater_effects);
+}

@@ -148,12 +148,21 @@ void main() {
         + U_DIRS[dir] * corner_uv.x
         + V_DIRS[dir] * corner_uv.y;
 
+    vec3 chunk_pos = vec3(draw_info.chunk_x, draw_info.chunk_y, draw_info.chunk_z);
+
     // Slightly lower water top surface to avoid z-fighting with edges
     if (dir == 2u) {
         local_pos.y -= 0.08;
+        if (material != 31u && material != 32u) {
+            // Procedural sinusoidal wave displacement on fluid surfaces
+            float wave_time = float(pc.frame_tick) * 0.05;
+            vec2 wave_xz = chunk_pos.xz + local_pos.xz;
+            float wave = sin(wave_xz.x * 1.5 + wave_time * 1.2) * cos(wave_xz.y * 1.2 + wave_time * 0.9) * 0.035
+                       + sin((wave_xz.x + wave_xz.y) * 2.3 + wave_time * 1.8) * 0.02;
+            local_pos.y += wave;
+        }
     }
 
-    vec3 chunk_pos = vec3(draw_info.chunk_x, draw_info.chunk_y, draw_info.chunk_z);
     vec3 world_pos = chunk_pos + local_pos;
 
     gl_Position = pc.view_proj * vec4(world_pos, 1.0);

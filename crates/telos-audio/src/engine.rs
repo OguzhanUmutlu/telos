@@ -9,7 +9,7 @@ use crate::synth::{
     SYNTH_SAMPLE_RATE, synthesize_advancement_chime, synthesize_arrow_hit, synthesize_block_break,
     synthesize_block_place, synthesize_bow_shoot, synthesize_chest_close, synthesize_chest_open,
     synthesize_entity_hurt, synthesize_footstep, synthesize_item_pickup, synthesize_rain_loop,
-    synthesize_thunder,
+    synthesize_thunder, synthesize_underwater_ambience, synthesize_water_splash,
 };
 use glam::Vec3;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
@@ -32,6 +32,8 @@ pub struct AudioEngine {
     active_players: Vec<Player>,
     voice_players: HashMap<[u8; 16], (Arc<Mutex<SpatialVoicePlayer>>, Player)>,
     ambient_rain_player: Option<Player>,
+    ambient_underwater_player: Option<Player>,
+    is_underwater: bool,
     cached_buffers: HashMap<String, SoundBuffer>,
 }
 
@@ -70,6 +72,8 @@ impl AudioEngine {
             active_players: Vec::with_capacity(32),
             voice_players: HashMap::new(),
             ambient_rain_player: None,
+            ambient_underwater_player: None,
+            is_underwater: false,
             cached_buffers: HashMap::new(),
         }
     }
@@ -90,6 +94,8 @@ impl AudioEngine {
             active_players: Vec::new(),
             voice_players: HashMap::new(),
             ambient_rain_player: None,
+            ambient_underwater_player: None,
+            is_underwater: false,
             cached_buffers: HashMap::new(),
         }
     }
@@ -338,6 +344,65 @@ impl AudioEngine {
                 player.play();
             }
         }
+    }
+
+    /// Returns `true` if the listener / camera is currently submerged underwater.
+    #[must_use]
+    pub fn is_underwater(&self) -> bool {
+        self.is_underwater
+    }
+
+    /// Updates or transitions the ambient underwater soundscape and acoustics.
+    pub fn update_underwater(&mut self, is_underwater: bool) {
+        self.is_underwater = is_underwater;
+        let target_vol = if is_underwater {
+            self.effective_volume(SoundCategory::Weather) * 0.85
+        } else {
+            0.0
+        };
+
+        let Some(sink) = &self.sink else {
+            return;
+        };
+
+        if target_vol <= 1e-4 {
+            if let Some(player) = &self.ambient_underwater_player {
+                player.pause();
+                player.set_volume(0.0);
+            }
+            return;
+        }
+
+        if self.ambient_underwater_player.is_none() {
+            let player = Player::connect_new(sink.mixer());
+            let underwater_samples = synthesize_underwater_ambience();
+            let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, underwater_samples);
+            player.append(buffer.as_source().repeat_infinite());
+            player.play();
+            self.ambient_underwater_player = Some(player);
+        }
+
+        if let Some(player) = &self.ambient_underwater_player {
+            player.set_volume(target_vol);
+            if player.is_paused() {
+                player.play();
+            }
+        }
+    }
+
+    /// Dispatches a procedural water splash sound at the specified coordinates.
+    pub fn play_water_splash(&mut self, pos: Vec3, volume: f32) {
+        let samples = synthesize_water_splash(1.0);
+        let buffer = SoundBuffer::from_mono(SYNTH_SAMPLE_RATE, samples);
+        self.play_sound_3d(
+            SoundCategory::Players,
+            &buffer,
+            pos,
+            volume.clamp(0.1, 2.0),
+            1.0,
+            1.0,
+            24.0,
+        );
     }
 
     /// Dispatches a thunder strike explosion at lightning coordinates with distance falloff.

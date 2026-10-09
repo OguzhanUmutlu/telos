@@ -78,6 +78,9 @@ pub struct VideoSettings {
     /// Enable Fast Approximate Anti-Aliasing (FXAA).
     #[serde(default = "default_true")]
     pub fxaa: bool,
+    /// Enable realistic underwater optics and post-processing.
+    #[serde(default = "default_true")]
+    pub underwater_effects: bool,
 }
 
 impl Default for VideoSettings {
@@ -98,6 +101,7 @@ impl Default for VideoSettings {
             volumetric_clouds: true,
             tonemapping: true,
             fxaa: true,
+            underwater_effects: true,
         }
     }
 }
@@ -278,6 +282,7 @@ mod tests {
                 volumetric_clouds: true,
                 tonemapping: true,
                 fxaa: true,
+                underwater_effects: true,
             },
             audio: AudioSettings {
                 master_volume: 5.0,

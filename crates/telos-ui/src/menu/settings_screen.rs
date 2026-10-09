@@ -420,6 +420,21 @@ impl SettingsScreen {
                     22.0,
                     fxaa_str,
                 ));
+
+                let underwater_val = if self.settings.video.underwater_effects {
+                    on_str
+                } else {
+                    off_str
+                };
+                let underwater_str = format!("Underwater: {underwater_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    214,
+                    col2_x,
+                    card3_row_y + row_h * 3.0,
+                    col_w,
+                    22.0,
+                    underwater_str,
+                ));
             }
             SettingsTab::Audio => {
                 self.scroll_y = 0.0;
@@ -819,6 +834,10 @@ impl SettingsScreen {
                     }
                     213 => {
                         self.settings.video.fxaa = !self.settings.video.fxaa;
+                    }
+                    214 => {
+                        self.settings.video.underwater_effects =
+                            !self.settings.video.underwater_effects;
                     }
                     210 => {
                         self.settings.audio.voice_chat_enabled =

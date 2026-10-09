@@ -1522,10 +1522,11 @@ struct App {
     total_frames: u32,
     manual_screenshot_requested: bool,
 
-    // Audio Engine & Acoustics (Phase 27)
+    // Audio Engine & Acoustics (Phase 27, Phase 75)
     audio: telos_audio::AudioEngine,
     audio_step_dist: f32,
     last_audio_pos: Vec3,
+    is_underwater: bool,
 
     // Spatial Voice Chat (Phase 72)
     voice_encoder: telos_audio::OpusVoiceEncoder,
@@ -2041,6 +2042,7 @@ impl App {
             audio: telos_audio::AudioEngine::new(),
             audio_step_dist: 0.0,
             last_audio_pos: spawn_pos,
+            is_underwater: false,
 
             voice_encoder: telos_audio::OpusVoiceEncoder::new()
                 .expect("Failed to initialize Opus voice encoder"),
@@ -4586,6 +4588,21 @@ impl App {
             }
         }
 
+        // Underwater submersion detection & acoustics (Phase 75)
+        let eye_pos = BlockPos::new(
+            self.camera.position.x.floor() as i32,
+            self.camera.position.y.floor() as i32,
+            self.camera.position.z.floor() as i32,
+        );
+        let eye_block = self.get_block_at(eye_pos);
+        let was_underwater = self.is_underwater;
+        let is_underwater = self.block_registry.is_water(eye_block);
+        self.is_underwater = is_underwater;
+        if was_underwater != is_underwater {
+            self.audio.play_water_splash(self.camera.position, 0.85);
+        }
+        self.audio.update_underwater(is_underwater);
+
         // Ambient rain loop volume modulation & player cleanup
         let rain_intensity = self
             .weather_rain_level
@@ -6492,6 +6509,9 @@ impl App {
                     }
                     if rendered_shadows {
                         flags |= 16;
+                    }
+                    if self.is_underwater && self.game_settings.video.underwater_effects {
+                        flags |= 32;
                     }
                 }
                 if self.game_settings.video.tonemapping {

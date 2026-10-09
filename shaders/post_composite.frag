@@ -23,7 +23,7 @@ layout(push_constant) uniform PostCompositePushConstants {
     vec3 u_sun_dir;
     float u_view_distance;
     float u_fog_density;
-    uint u_flags; // bit 0: ssao, bit 1: volumetric_fog, bit 2: tonemapping, bit 3: vignette, bit 4: shadows
+    uint u_flags; // bit 0: ssao, bit 1: volumetric_fog, bit 2: tonemapping, bit 3: vignette, bit 4: shadows, bit 5: underwater
     vec2 u_screen_size;
 };
 
@@ -57,9 +57,20 @@ float sample_cascade_pcf(int c_idx, vec3 w_pos, vec3 norm, vec3 light_d) {
 }
 
 void main() {
-    vec4 scene_sample = texture(u_scene_color, v_uv);
+    vec2 sample_uv = v_uv;
+    // Bit 5: Underwater screen-space optical refraction & wobble
+    if ((u_flags & 32u) != 0u) {
+        float t = u_time_of_day * 0.05;
+        vec2 wobble = vec2(
+            sin(v_uv.y * 28.0 + t * 0.3) * 0.003 + cos(v_uv.x * 35.0 + t * 0.22) * 0.002,
+            cos(v_uv.x * 28.0 + t * 0.28) * 0.003 + sin(v_uv.y * 35.0 + t * 0.18) * 0.002
+        );
+        sample_uv = clamp(v_uv + wobble, 0.0, 1.0);
+    }
+
+    vec4 scene_sample = texture(u_scene_color, sample_uv);
     vec3 color = scene_sample.rgb;
-    float depth = texture(u_depth, v_uv).r;
+    float depth = texture(u_depth, sample_uv).r;
     bool is_sky = (depth <= 0.00001);
 
     // Fast 4-tap box blur on SSAO to soften ambient contact shadows
@@ -167,6 +178,33 @@ void main() {
             float horizon_haze = exp(-max(0.0, ray_dir.y) * 4.0) * 0.40;
             color = mix(color, base_fog_color, horizon_haze) + sun_glow * horizon_haze * 0.40;
         }
+    }
+
+    // Bit 5: Underwater volumetric absorption, screen-space caustics & pressure vignette
+    if ((u_flags & 32u) != 0u) {
+        float water_dist = min(dist, 40.0);
+        // Beer-Lambert wavelength-dependent absorption across submerged ray
+        vec3 water_transmittance = exp(-vec3(0.12, 0.04, 0.015) * water_dist);
+        vec3 underwater_ambient = vec3(0.03, 0.16, 0.26);
+
+        if (!is_sky) {
+            // Screen-space sunlight caustics projected on submerged geometry
+            float caustic_time = u_time_of_day * 0.06;
+            float c1 = sin(world_pos.x * 2.2 + world_pos.z * 1.8 + caustic_time * 1.5);
+            float c2 = cos(world_pos.x * 1.7 - world_pos.z * 2.4 - caustic_time * 1.3);
+            float caustic = max(0.0, c1 + c2 - 0.6) * 0.22;
+            caustic *= exp(-water_dist * 0.09);
+            color += vec3(0.12, 0.32, 0.42) * caustic;
+
+            color = color * water_transmittance + underwater_ambient * (vec3(1.0) - water_transmittance);
+        } else {
+            color = mix(color, underwater_ambient, 0.88);
+        }
+
+        // Underwater peripheral pressure vignette
+        vec2 vig_uv = (v_uv - 0.5) * 2.0;
+        float underwater_vig = clamp(1.0 - dot(vig_uv, vig_uv) * 0.35, 0.0, 1.0);
+        color *= mix(vec3(0.65, 0.85, 0.98), vec3(1.0), underwater_vig);
     }
 
     // Bit 2: Filmic ACES Tonemapping
