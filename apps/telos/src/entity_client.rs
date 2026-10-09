@@ -491,6 +491,8 @@ impl ClientEntityStore {
                 EntityType::Zombie | EntityType::Player | EntityType::Item | EntityType::Arrow => 0,
                 EntityType::Pig => 1,
                 EntityType::Cow => 2,
+                EntityType::Squid => 3,
+                EntityType::Fish => 4,
             };
 
             match entity.entity_type {
@@ -518,6 +520,28 @@ impl ClientEntityStore {
                 }
                 EntityType::Cow => {
                     build_cow_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
+                }
+                EntityType::Squid => {
+                    build_squid_mesh(
+                        entity,
+                        sky,
+                        block,
+                        layer,
+                        hurt_tint,
+                        body_roll,
+                        out_vertices,
+                    );
+                }
+                EntityType::Fish => {
+                    build_fish_mesh(
                         entity,
                         sky,
                         block,
@@ -1016,6 +1040,152 @@ fn build_cow_mesh(
     );
 }
 
+fn build_squid_mesh(
+    entity: &ClientEntity,
+    sky: u8,
+    block: u8,
+    layer: u32,
+    hurt_tint: f32,
+    body_roll: f32,
+    out: &mut Vec<EntityVertexGpu>,
+) {
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians())
+        * Quat::from_rotation_x(entity.pitch.to_radians());
+    let death_lift = (body_roll / 90.0) * 0.25;
+
+    // 1. Mantle Body: 12x16x12 at y=8..24
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 16.0 * S, 0.0),
+        Vec3::ZERO,
+        Vec3::new(-6.0 * S, 8.0 * S, -6.0 * S),
+        Vec3::new(6.0 * S, 24.0 * S, 6.0 * S),
+        (0.0, 0.0, 12.0, 16.0, 12.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 2. 8 Tentacles: 2x16x2 radially arranged around y=8, waving with swim cycle
+    let wave_angle = (entity.walk_time * 5.0).sin() * 22.0 + 12.0;
+    for i in 0..8 {
+        let theta = (i as f32) * (std::f32::consts::TAU / 8.0);
+        let cos_th = theta.cos();
+        let sin_th = theta.sin();
+
+        let attach_x = cos_th * 3.5 * S;
+        let attach_z = sin_th * 3.5 * S;
+        let pivot = Vec3::new(attach_x, 8.0 * S, attach_z);
+
+        let rot = Vec3::new(wave_angle * sin_th, 0.0, -wave_angle * cos_th);
+
+        emit_cuboid(
+            entity.pos,
+            body_quat,
+            death_lift,
+            pivot,
+            rot,
+            Vec3::new(attach_x - 1.0 * S, -8.0 * S, attach_z - 1.0 * S),
+            Vec3::new(attach_x + 1.0 * S, 8.0 * S, attach_z + 1.0 * S),
+            (48.0, 0.0, 2.0, 16.0, 2.0),
+            sky,
+            block,
+            layer,
+            hurt_tint,
+            out,
+        );
+    }
+}
+
+fn build_fish_mesh(
+    entity: &ClientEntity,
+    sky: u8,
+    block: u8,
+    layer: u32,
+    hurt_tint: f32,
+    body_roll: f32,
+    out: &mut Vec<EntityVertexGpu>,
+) {
+    let body_quat = Quat::from_rotation_y((-entity.yaw).to_radians())
+        * Quat::from_rotation_z(body_roll.to_radians())
+        * Quat::from_rotation_x(entity.pitch.to_radians());
+    let death_lift = (body_roll / 90.0) * 0.15;
+
+    // 1. Main Body: 2x4x7 at y=0..4, z=-3..4
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 2.0 * S, 0.0),
+        Vec3::ZERO,
+        Vec3::new(-S, 0.0, -3.0 * S),
+        Vec3::new(1.0 * S, 4.0 * S, 4.0 * S),
+        (0.0, 0.0, 2.0, 4.0, 7.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 2. Nose: 2x3x1 at y=0..3, z=4..5
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 2.0 * S, 0.0),
+        Vec3::ZERO,
+        Vec3::new(-S, 0.0, 4.0 * S),
+        Vec3::new(1.0 * S, 3.0 * S, 5.0 * S),
+        (0.0, 0.0, 2.0, 3.0, 1.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 3. Tail Fin: swishing yaw animation at z=-7..-3
+    let swish_yaw = (entity.walk_time * 12.0).sin() * 26.0;
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 2.0 * S, -3.0 * S),
+        Vec3::new(0.0, swish_yaw, 0.0),
+        Vec3::new(-0.25 * S, 0.0, -7.0 * S),
+        Vec3::new(0.25 * S, 4.0 * S, -3.0 * S),
+        (20.0, 0.0, 1.0, 4.0, 4.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+
+    // 4. Dorsal Fin: top ridge at y=4..6, z=-2..2
+    emit_cuboid(
+        entity.pos,
+        body_quat,
+        death_lift,
+        Vec3::new(0.0, 2.0 * S, 0.0),
+        Vec3::ZERO,
+        Vec3::new(-0.25 * S, 4.0 * S, -2.0 * S),
+        Vec3::new(0.25 * S, 6.0 * S, 2.0 * S),
+        (20.0, 10.0, 1.0, 2.0, 4.0),
+        sky,
+        block,
+        layer,
+        hurt_tint,
+        out,
+    );
+}
+
 // ----------------------------------------------------------------------------
 // Low-level cuboid face emitter
 // ----------------------------------------------------------------------------
@@ -1403,5 +1573,53 @@ mod tests {
         let mut vertices = Vec::new();
         store.build_mesh(|_| (15, 0), &mut vertices);
         assert_eq!(vertices.len(), 36);
+    }
+
+    #[test]
+    fn test_squid_and_fish_mesh_generation() {
+        let mut store = ClientEntityStore::new();
+
+        store.on_spawn(S2cSpawnEntity {
+            net_id: 101,
+            entity_type: EntityType::Squid.to_u8(),
+            x: 0.0,
+            y: 60.0,
+            z: 0.0,
+            yaw: 45.0,
+            pitch: 10.0,
+            head_yaw: 45.0,
+            health: 10.0,
+            max_health: 10.0,
+        });
+
+        store.on_spawn(S2cSpawnEntity {
+            net_id: 102,
+            entity_type: EntityType::Fish.to_u8(),
+            x: 5.0,
+            y: 60.0,
+            z: 5.0,
+            yaw: 90.0,
+            pitch: 0.0,
+            head_yaw: 90.0,
+            health: 6.0,
+            max_health: 6.0,
+        });
+
+        assert_eq!(store.count(), 2);
+        store.update(0.1);
+
+        let mut vertices = Vec::new();
+        store.build_mesh(|_| (15, 0), &mut vertices);
+
+        // Squid: 1 mantle + 8 tentacles = 9 cuboids * 36 = 324 vertices
+        // Fish: 1 body + 1 nose + 1 tail + 1 dorsal = 4 cuboids * 36 = 144 vertices
+        // Total = 468 vertices
+        assert_eq!(vertices.len(), 324 + 144);
+
+        // Check layers: squid vertices have layer 3, fish vertices have layer 4
+        let squid_verts = vertices.iter().filter(|v| v.layer == 3).count();
+        let fish_verts = vertices.iter().filter(|v| v.layer == 4).count();
+        assert_eq!(squid_verts, 324);
+        assert_eq!(fish_verts, 144);
     }
 }

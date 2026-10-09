@@ -190,7 +190,7 @@ impl SettingsScreen {
 
         match self.active_tab {
             SettingsTab::Video => {
-                let total_unscrolled_h = 328.0;
+                let total_unscrolled_h = 356.0;
                 let visible_h = height_gui - 36.0;
                 self.max_scroll_y = (total_unscrolled_h - visible_h).max(0.0);
                 self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y);
@@ -434,6 +434,21 @@ impl SettingsScreen {
                     col_w,
                     22.0,
                     underwater_str,
+                ));
+
+                let ssr_val = if self.settings.video.ssr {
+                    on_str
+                } else {
+                    off_str
+                };
+                let ssr_str = format!("Water SSR: {ssr_val}");
+                self.toggle_buttons.push(MenuButton::new(
+                    215,
+                    col1_x,
+                    card3_row_y + row_h * 4.0,
+                    col_w,
+                    22.0,
+                    ssr_str,
                 ));
             }
             SettingsTab::Audio => {
@@ -839,6 +854,9 @@ impl SettingsScreen {
                         self.settings.video.underwater_effects =
                             !self.settings.video.underwater_effects;
                     }
+                    215 => {
+                        self.settings.video.ssr = !self.settings.video.ssr;
+                    }
                     210 => {
                         self.settings.audio.voice_chat_enabled =
                             !self.settings.audio.voice_chat_enabled;
@@ -1025,7 +1043,7 @@ impl SettingsScreen {
                     card_x,
                     card3_y,
                     card_w,
-                    116.0,
+                    142.0,
                     "SHADERS & POST-PROCESSING",
                     font,
                     scale,

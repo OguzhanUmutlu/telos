@@ -1621,5 +1621,29 @@ pub fn core_items() -> Vec<(&'static str, ItemDef)> {
                 item_type: ItemTypeDef::Generic,
             },
         ),
+        (
+            "ink_sac",
+            ItemDef {
+                name: "Ink Sac".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "cod",
+            ItemDef {
+                name: "Raw Cod".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
+        (
+            "cooked_cod",
+            ItemDef {
+                name: "Cooked Cod".into(),
+                max_stack_size: 64,
+                item_type: ItemTypeDef::Generic,
+            },
+        ),
     ]
 }

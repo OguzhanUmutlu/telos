@@ -31,6 +31,10 @@ pub enum EntityType {
     Item = 4,
     /// Airborne or embedded projectile arrow.
     Arrow = 5,
+    /// Cephalopod aquatic mob.
+    Squid = 6,
+    /// Passive aquatic fish mob.
+    Fish = 7,
 }
 
 impl EntityType {
@@ -44,6 +48,8 @@ impl EntityType {
             3 => Some(Self::Cow),
             4 => Some(Self::Item),
             5 => Some(Self::Arrow),
+            6 => Some(Self::Squid),
+            7 => Some(Self::Fish),
             _ => None,
         }
     }
@@ -64,6 +70,8 @@ impl EntityType {
             Self::Cow => "Cow",
             Self::Item => "Item",
             Self::Arrow => "Arrow",
+            Self::Squid => "Squid",
+            Self::Fish => "Fish",
         }
     }
 
@@ -94,6 +102,14 @@ impl EntityType {
             Self::Arrow => EntityAabb {
                 half_size: Vec3::new(0.15, 0.15, 0.15),
                 y_offset: 0.15,
+            },
+            Self::Squid => EntityAabb {
+                half_size: Vec3::new(0.4, 0.475, 0.4),
+                y_offset: 0.475,
+            },
+            Self::Fish => EntityAabb {
+                half_size: Vec3::new(0.2, 0.125, 0.2),
+                y_offset: 0.125,
             },
         }
     }
@@ -764,6 +780,81 @@ impl MobBundle {
             attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
         }
     }
+
+    /// Creates a new Squid mob bundle.
+    #[must_use]
+    pub fn new_squid(net_id: u32, pos: DVec3, seed: u64) -> Self {
+        Self {
+            net: NetEntity {
+                net_id,
+                entity_type: EntityType::Squid,
+            },
+            pos: Position(pos),
+            rot: Rotation::default(),
+            vel: Velocity::default(),
+            aabb: EntityType::Squid.default_aabb(),
+            health: Health::new(10.0),
+            combat: CombatTracker::default(),
+            hurt_time: HurtTime::default(),
+            mob: Mob::new_passive(seed),
+            path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
+        }
+    }
+
+    /// Creates a new Fish mob bundle.
+    #[must_use]
+    pub fn new_fish(net_id: u32, pos: DVec3, seed: u64) -> Self {
+        Self {
+            net: NetEntity {
+                net_id,
+                entity_type: EntityType::Fish,
+            },
+            pos: Position(pos),
+            rot: Rotation::default(),
+            vel: Velocity::default(),
+            aabb: EntityType::Fish.default_aabb(),
+            health: Health::new(6.0),
+            combat: CombatTracker::default(),
+            hurt_time: HurtTime::default(),
+            mob: Mob::new_passive(seed),
+            path_follower: PathFollower::default(),
+            attack_cooldown: AttackCooldown::new(u32::MAX, 0.0, 0.0),
+        }
+    }
+}
+
+/// Component marking an aquatic mob with swimming physics, undulating thrust, and suffocation.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct AquaticMob {
+    /// Entity archetype classification.
+    pub entity_type: EntityType,
+    /// Periodic swimming impulse timer.
+    pub swim_timer: u16,
+    /// Swim interval cycle in simulation ticks.
+    pub swim_interval: u16,
+    /// Ticks mob has spent out of water.
+    pub dry_ticks: u32,
+    /// Whether the mob is currently immersed in water.
+    pub in_water: bool,
+}
+
+impl AquaticMob {
+    /// Creates a new aquatic mob state for the specified entity type.
+    #[must_use]
+    pub const fn new(entity_type: EntityType) -> Self {
+        let swim_interval = match entity_type {
+            EntityType::Squid => 45,
+            _ => 30,
+        };
+        Self {
+            entity_type,
+            swim_timer: 0,
+            swim_interval,
+            dry_ticks: 0,
+            in_water: true,
+        }
+    }
 }
 
 /// System that executes artificial intelligence state machines and waypoint steering for all active mobs.
@@ -784,7 +875,7 @@ pub fn mob_ai_system(
             &Position,
             Option<&mut AttackCooldown>,
         ),
-        Without<SimulationFrozen>,
+        (Without<SimulationFrozen>, Without<AquaticMob>),
     >,
     players: Option<Res<PlayerPositions>>,
 ) {
@@ -1160,8 +1251,12 @@ pub fn mob_ai_system(
 }
 
 /// System that applies physics velocity integration, gravity, and drag to entities.
+#[allow(clippy::type_complexity)]
 pub fn mob_movement_system(
-    mut query: Query<(&mut Position, &mut Velocity), Without<SimulationFrozen>>,
+    mut query: Query<
+        (&mut Position, &mut Velocity),
+        (Without<SimulationFrozen>, Without<AquaticMob>),
+    >,
 ) {
     for (mut pos, mut vel) in &mut query {
         // Integrate horizontal and vertical velocity
@@ -1175,6 +1270,94 @@ pub fn mob_movement_system(
         // Apply horizontal drag/friction
         vel.0.x *= 0.6;
         vel.0.z *= 0.6;
+    }
+}
+
+/// System that handles 3D aquatic swimming physics, fluid drag, buoyancy, and dry land suffocation/flopping.
+#[allow(
+    clippy::type_complexity,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+pub fn aquatic_movement_system(
+    mut query: Query<
+        (
+            &mut Position,
+            &mut Velocity,
+            &mut Rotation,
+            &mut AquaticMob,
+            &mut Health,
+        ),
+        Without<SimulationFrozen>,
+    >,
+) {
+    for (mut pos, mut vel, mut rot, mut aquatic, mut health) in &mut query {
+        if aquatic.in_water {
+            aquatic.dry_ticks = 0;
+            aquatic.swim_timer = (aquatic.swim_timer + 1) % aquatic.swim_interval;
+
+            // Periodic swim impulse / thrust
+            if aquatic.swim_timer == 1 {
+                let mut rng =
+                    pos.0.x.to_bits() ^ pos.0.z.to_bits() ^ (u64::from(aquatic.swim_interval));
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let yaw_rad = ((rng & 0xFFFF) as f32 / 65535.0) * std::f32::consts::TAU;
+                let pitch_rad = (((rng >> 16) & 0xFFFF) as f32 / 65535.0 - 0.5) * 0.6;
+
+                rot.yaw = yaw_rad.to_degrees() - 90.0;
+                rot.pitch = pitch_rad.to_degrees();
+
+                let thrust_speed = match aquatic.entity_type {
+                    EntityType::Squid => 0.22,
+                    _ => 0.18,
+                };
+
+                let cos_p = pitch_rad.cos();
+                vel.0.x += yaw_rad.cos() * cos_p * thrust_speed;
+                vel.0.y += pitch_rad.sin() * thrust_speed + 0.02;
+                vel.0.z += yaw_rad.sin() * cos_p * thrust_speed;
+            }
+
+            // Neutral buoyancy with gentle fluid drag
+            vel.0.x *= 0.88;
+            vel.0.y = (vel.0.y * 0.88).clamp(-0.5, 0.5);
+            vel.0.z *= 0.88;
+
+            pos.0.x += f64::from(vel.0.x);
+            pos.0.y += f64::from(vel.0.y);
+            pos.0.z += f64::from(vel.0.z);
+        } else {
+            // Out of water (dry land flopping and suffocation)
+            aquatic.dry_ticks += 1;
+
+            pos.0.x += f64::from(vel.0.x);
+            pos.0.y += f64::from(vel.0.y);
+            pos.0.z += f64::from(vel.0.z);
+
+            vel.0.y = (vel.0.y - 0.08).max(-2.0);
+            vel.0.x *= 0.5;
+            vel.0.z *= 0.5;
+
+            // Fish flop periodically on land
+            if aquatic.entity_type == EntityType::Fish && aquatic.dry_ticks % 15 == 0 {
+                let mut rng = u64::from(aquatic.dry_ticks);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let hop_dir = ((rng & 0xFFFF) as f32 / 65535.0) * std::f32::consts::TAU;
+                vel.0.x += hop_dir.cos() * 0.12;
+                vel.0.y = 0.22;
+                vel.0.z += hop_dir.sin() * 0.12;
+                rot.yaw += 45.0;
+            }
+
+            // Suffocation damage after dry threshold
+            let dry_threshold = match aquatic.entity_type {
+                EntityType::Squid => 300,
+                _ => 100,
+            };
+            if aquatic.dry_ticks > dry_threshold && aquatic.dry_ticks % 20 == 0 {
+                health.reduce(1.0);
+            }
+        }
     }
 }
 
@@ -1212,13 +1395,49 @@ mod tests {
         assert_eq!(EntityType::from_u8(3), Some(EntityType::Cow));
         assert_eq!(EntityType::from_u8(4), Some(EntityType::Item));
         assert_eq!(EntityType::from_u8(5), Some(EntityType::Arrow));
-        assert_eq!(EntityType::from_u8(6), None);
+        assert_eq!(EntityType::from_u8(6), Some(EntityType::Squid));
+        assert_eq!(EntityType::from_u8(7), Some(EntityType::Fish));
+        assert_eq!(EntityType::from_u8(8), None);
         assert_eq!(EntityType::Zombie.to_u8(), 1);
         assert_eq!(EntityType::Item.to_u8(), 4);
         assert_eq!(EntityType::Arrow.to_u8(), 5);
+        assert_eq!(EntityType::Squid.to_u8(), 6);
+        assert_eq!(EntityType::Fish.to_u8(), 7);
         assert_eq!(EntityType::Pig.name(), "Pig");
+        assert_eq!(EntityType::Squid.name(), "Squid");
+        assert_eq!(EntityType::Fish.name(), "Fish");
         assert_eq!(EntityType::Item.name(), "Item");
         assert_eq!(EntityType::Arrow.name(), "Arrow");
+    }
+
+    #[test]
+    fn test_aquatic_mob_swimming_and_suffocation() {
+        let mut world = bevy_ecs::world::World::new();
+        let squid = MobBundle::new_squid(1, DVec3::new(0.0, 60.0, 0.0), 42);
+        let mut aquatic = AquaticMob::new(EntityType::Squid);
+        aquatic.in_water = true;
+        let e = world.spawn((squid, aquatic)).id();
+
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(aquatic_movement_system);
+
+        // Step 1: swim thrust triggers at timer == 1
+        schedule.run(&mut world);
+        let aq = world.get::<AquaticMob>(e).unwrap();
+        assert_eq!(aq.swim_timer, 1);
+        assert_eq!(aq.dry_ticks, 0);
+
+        // Now test dry land suffocation
+        world.get_mut::<AquaticMob>(e).unwrap().in_water = false;
+        world.get_mut::<AquaticMob>(e).unwrap().dry_ticks = 301;
+        let initial_health = world.get::<Health>(e).unwrap().cur;
+
+        // Run until damage tick (modulo 20 == 0 at tick 320)
+        for _ in 0..19 {
+            schedule.run(&mut world);
+        }
+        let after_health = world.get::<Health>(e).unwrap().cur;
+        assert!(after_health < initial_health, "Expected suffocation damage");
     }
 
     #[test]

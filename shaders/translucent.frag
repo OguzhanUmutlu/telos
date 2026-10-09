@@ -135,7 +135,7 @@ void main() {
 
         vec3 water_color = tex_color.rgb * fluid_tint * absorption * total_light;
         vec3 final_rgb = mix(water_color, sky_reflection * total_light, fresnel * 0.65) + spec_color;
-        float final_alpha = clamp(mix(alpha, 0.90, fresnel), 0.0, 1.0);
+        float final_alpha = 0.75;
 
         out_color = vec4(final_rgb, final_alpha);
     }

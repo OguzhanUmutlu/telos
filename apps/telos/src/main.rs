@@ -6513,6 +6513,9 @@ impl App {
                     if self.is_underwater && self.game_settings.video.underwater_effects {
                         flags |= 32;
                     }
+                    if self.game_settings.video.ssr {
+                        flags |= 64;
+                    }
                 }
                 if self.game_settings.video.tonemapping {
                     flags |= 4;
@@ -12191,7 +12194,7 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
     copy_to_layer_at(&mut pixel_data, 5, 0, 0, &inv_bg_img);
 
     // Layer 6: Item Icons Atlas (256x256 holding 16x16 icons for registered items)
-    let item_textures: [(u32, &str, [u8; 4]); 54] = [
+    let item_textures: [(u32, &str, [u8; 4]); 60] = [
         (1, "textures/block/stone.png", [128, 128, 128, 255]),
         (2, "textures/block/dirt.png", [134, 96, 67, 255]),
         (3, "textures/block/grass_block_side.png", [90, 160, 60, 255]),
@@ -12262,6 +12265,12 @@ fn bake_ui_textures() -> (Vec<u8>, Vec<TextureMipRegion>, BitmapFont) {
         ),
         (89, "textures/item/golden_leggings.png", [240, 210, 60, 255]),
         (90, "textures/item/golden_boots.png", [240, 210, 60, 255]),
+        (91, "textures/block/anvil.png", [80, 80, 80, 255]),
+        (92, "textures/item/book.png", [120, 80, 50, 255]),
+        (93, "textures/item/enchanted_book.png", [160, 100, 200, 255]),
+        (94, "textures/item/ink_sac.png", [20, 20, 25, 255]),
+        (95, "textures/item/cod.png", [180, 150, 120, 255]),
+        (96, "textures/item/cooked_cod.png", [190, 130, 90, 255]),
     ];
 
     let copy_icon =
@@ -12882,7 +12891,7 @@ fn load_and_upload_weather_textures(gpu_context: &GpuContext) -> Result<GpuTextu
 )]
 fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextureArray> {
     const ENTITY_RES: u32 = 64;
-    const LAYER_COUNT: u32 = 3;
+    const LAYER_COUNT: u32 = 5;
 
     let mut pixel_data = vec![0u8; (ENTITY_RES * ENTITY_RES * 4 * LAYER_COUNT) as usize];
 
@@ -12995,6 +13004,65 @@ fn load_and_upload_entity_textures(gpu_context: &GpuContext) -> Result<GpuTextur
         img
     };
     copy_to_layer(&mut pixel_data, 2, &cow_img);
+
+    // Layer 3: Squid
+    let squid_img = if let Some(img) = stack
+        .find_texture("textures/entity/squid/squid.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
+            img
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                img.data[idx] = 35;
+                img.data[idx + 1] = 45;
+                img.data[idx + 2] = 60;
+                img.data[idx + 3] = 255;
+            }
+        }
+        img
+    };
+    copy_to_layer(&mut pixel_data, 3, &squid_img);
+
+    // Layer 4: Cod (Fish)
+    let fish_img = if let Some(img) = stack
+        .find_texture("textures/entity/fish/cod.png")
+        .and_then(|p| telos_assets::RgbaImage::from_file_exact(&p).ok())
+    {
+        if img.width != ENTITY_RES || img.height != ENTITY_RES {
+            img.rescale(ENTITY_RES, ENTITY_RES)
+        } else {
+            img
+        }
+    } else {
+        let mut img = telos_assets::RgbaImage::new(ENTITY_RES, ENTITY_RES);
+        for y in 0..ENTITY_RES {
+            for x in 0..ENTITY_RES {
+                let idx = ((y * ENTITY_RES + x) * 4) as usize;
+                if y > 40 {
+                    // Light belly
+                    img.data[idx] = 210;
+                    img.data[idx + 1] = 200;
+                    img.data[idx + 2] = 185;
+                    img.data[idx + 3] = 255;
+                } else {
+                    // Brown/silver back
+                    img.data[idx] = 165;
+                    img.data[idx + 1] = 145;
+                    img.data[idx + 2] = 115;
+                    img.data[idx + 3] = 255;
+                }
+            }
+        }
+        img
+    };
+    copy_to_layer(&mut pixel_data, 4, &fish_img);
 
     let regions: Vec<TextureMipRegion> = (0..LAYER_COUNT)
         .map(|layer| TextureMipRegion {

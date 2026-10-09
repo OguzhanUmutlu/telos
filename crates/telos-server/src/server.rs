@@ -42,7 +42,7 @@ use telos_sim::command::{
 use telos_sim::event::{EventQueue, GameEvent};
 use telos_sim::{
     ARMOR_SLOTS, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_PICKUP_RADIUS,
-    AiState, ArrowEntity, ArrowStepOutcome, AttackCooldown, AttributeKind, Attributes,
+    AiState, AquaticMob, ArrowEntity, ArrowStepOutcome, AttackCooldown, AttributeKind, Attributes,
     BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
     CombatTracker, DamageType, EffectInstance, EnchantmentKind, EntityType, Experience, GameMode,
     Health, Hunger, HurtTime, ITEM_ARROW, ITEM_BOW, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS,
@@ -487,18 +487,23 @@ impl Server {
             .default_world()
             .seed()
             .wrapping_add(u64::from(net_id));
-        let bundle = match entity_type {
-            EntityType::Pig => MobBundle::new_pig(net_id, pos, seed),
-            EntityType::Cow => MobBundle::new_cow(net_id, pos, seed),
+        let (bundle, is_aquatic) = match entity_type {
+            EntityType::Pig => (MobBundle::new_pig(net_id, pos, seed), false),
+            EntityType::Cow => (MobBundle::new_cow(net_id, pos, seed), false),
+            EntityType::Squid => (MobBundle::new_squid(net_id, pos, seed), true),
+            EntityType::Fish => (MobBundle::new_fish(net_id, pos, seed), true),
             EntityType::Zombie | EntityType::Player | EntityType::Item | EntityType::Arrow => {
-                MobBundle::new_zombie(net_id, pos, seed)
+                (MobBundle::new_zombie(net_id, pos, seed), false)
             }
         };
         let health = bundle.health.cur;
-        let entity = self
-            .ecs_world
-            .spawn((bundle, Attributes::player_default(), StatusEffects::new()))
-            .id();
+        let mut entity_builder =
+            self.ecs_world
+                .spawn((bundle, Attributes::player_default(), StatusEffects::new()));
+        if is_aquatic {
+            entity_builder.insert(AquaticMob::new(entity_type));
+        }
+        let entity = entity_builder.id();
 
         self.tracked_mobs.insert(net_id, entity);
         self.mob_positions.insert(net_id, pos);
@@ -920,6 +925,8 @@ impl Server {
             EntityType::Zombie => (5, vec![("rotten_flesh", count_1_to_2)]),
             EntityType::Pig => (2, vec![("porkchop", count_1_to_3)]),
             EntityType::Cow => (2, vec![("beef", count_1_to_3), ("leather", count_0_to_2)]),
+            EntityType::Squid => (2, vec![("ink_sac", count_1_to_3)]),
+            EntityType::Fish => (1, vec![("cod", 1)]),
             EntityType::Player | EntityType::Item | EntityType::Arrow => (0, Vec::new()),
         };
 
@@ -1686,9 +1693,28 @@ impl Server {
             );
 
             // Spawning conditions:
+            // Aquatic (Squid/Fish): water columns
             // Hostile (Zombie): dark caves (sky_light <= 4 && block_light <= 7) or night time (block_light <= 7)
             // Passive (Pig/Cow): daylight (sky_light >= 10 && !is_night)
-            if (sky_light <= 4 || is_night) && block_light <= 7 {
+            let block_at_surf = self
+                .worlds
+                .default_world_mut()
+                .get_block(BlockPos::new(spawn_x, surface_y, spawn_z));
+            let is_water = self.registries.block_registry().is_water(block_at_surf);
+
+            if is_water {
+                let mob_type = if (hash >> 33) & 1 == 0 {
+                    EntityType::Squid
+                } else {
+                    EntityType::Fish
+                };
+                let water_spawn_pos = DVec3::new(
+                    f64::from(spawn_x) + 0.5,
+                    f64::from(surface_y) - 0.5,
+                    f64::from(spawn_z) + 0.5,
+                );
+                self.spawn_mob(mob_type, water_spawn_pos);
+            } else if (sky_light <= 4 || is_night) && block_light <= 7 {
                 self.spawn_mob(EntityType::Zombie, spawn_pos);
             } else if sky_light >= 10 && !is_night {
                 let mob_type = if (hash >> 32) & 1 == 0 {
@@ -5372,6 +5398,36 @@ impl Server {
         // Update 3D A* navigation paths for active mobs
         let default_world = self.worlds.default_world();
         telos_sim::update_mob_navigation_paths(default_world, &mut self.ecs_world);
+
+        // Update aquatic mob water immersion status
+        {
+            let positions: Vec<(bevy_ecs::entity::Entity, BlockPos)> = {
+                let mut aquatic_query =
+                    self.ecs_world
+                        .query::<(bevy_ecs::entity::Entity, &Position, &AquaticMob)>();
+                aquatic_query
+                    .iter(&self.ecs_world)
+                    .map(|(entity, pos, _)| {
+                        (
+                            entity,
+                            BlockPos::new(
+                                pos.0.x.floor() as i32,
+                                pos.0.y.floor() as i32,
+                                pos.0.z.floor() as i32,
+                            ),
+                        )
+                    })
+                    .collect()
+            };
+
+            for (entity, block_pos) in positions {
+                let block_id = self.worlds.default_world_mut().get_block(block_pos);
+                let in_water = self.registries.block_registry().is_water(block_id);
+                if let Some(mut aquatic) = self.ecs_world.get_mut::<AquaticMob>(entity) {
+                    aquatic.in_water = in_water;
+                }
+            }
+        }
 
         self.sim_schedule.run(&mut self.ecs_world);
 

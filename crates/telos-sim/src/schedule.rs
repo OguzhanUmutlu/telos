@@ -2,7 +2,9 @@
 
 use crate::attributes::{CombatTracker, Health};
 use crate::effect::status_effect_system;
-use crate::entity::{mob_ai_system, mob_hurt_decay_system, mob_movement_system};
+use crate::entity::{
+    aquatic_movement_system, mob_ai_system, mob_hurt_decay_system, mob_movement_system,
+};
 use crate::hunger::{Hunger, SimParams, tick_hunger};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::{ScheduleLabel, SystemSet};
@@ -58,7 +60,7 @@ pub fn build_sim_schedule() -> Schedule {
     );
 
     schedule.add_systems(mob_ai_system.in_set(TickSet::Ai));
-    schedule.add_systems(mob_movement_system.in_set(TickSet::Movement));
+    schedule.add_systems((mob_movement_system, aquatic_movement_system).in_set(TickSet::Movement));
     schedule.add_systems((combat_tracker_system, mob_hurt_decay_system).in_set(TickSet::Combat));
     schedule.add_systems((hunger_system, status_effect_system).in_set(TickSet::Status));
 

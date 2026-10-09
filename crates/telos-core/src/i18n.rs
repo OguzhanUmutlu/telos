@@ -558,6 +558,11 @@ impl LanguageCatalog {
             ("item.telos.golden_chestplate", "Golden Chestplate"),
             ("item.telos.golden_leggings", "Golden Leggings"),
             ("item.telos.golden_boots", "Golden Boots"),
+            ("item.telos.ink_sac", "Ink Sac"),
+            ("item.telos.cod", "Raw Cod"),
+            ("item.telos.cooked_cod", "Cooked Cod"),
+            ("entity.telos.squid", "Squid"),
+            ("entity.telos.fish", "Fish"),
         ];
 
         for (k, v) in en_pairs {

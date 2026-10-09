@@ -81,6 +81,9 @@ pub struct VideoSettings {
     /// Enable realistic underwater optics and post-processing.
     #[serde(default = "default_true")]
     pub underwater_effects: bool,
+    /// Enable screen-space water reflections (SSR).
+    #[serde(default = "default_true")]
+    pub ssr: bool,
 }
 
 impl Default for VideoSettings {
@@ -102,6 +105,7 @@ impl Default for VideoSettings {
             tonemapping: true,
             fxaa: true,
             underwater_effects: true,
+            ssr: true,
         }
     }
 }
@@ -283,6 +287,7 @@ mod tests {
                 tonemapping: true,
                 fxaa: true,
                 underwater_effects: true,
+                ssr: true,
             },
             audio: AudioSettings {
                 master_volume: 5.0,

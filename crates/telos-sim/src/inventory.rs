@@ -177,6 +177,12 @@ pub const ITEM_ANVIL: u32 = 91;
 pub const ITEM_BOOK: u32 = 92;
 /// Enchanted Book item identifier (93).
 pub const ITEM_ENCHANTED_BOOK: u32 = 93;
+/// Ink sac item identifier (94).
+pub const ITEM_INK_SAC: u32 = 94;
+/// Raw cod item identifier (95).
+pub const ITEM_COD: u32 = 95;
+/// Cooked cod item identifier (96).
+pub const ITEM_COOKED_COD: u32 = 96;
 
 /// Returns true if the item is a sword.
 #[must_use]

@@ -1983,10 +1983,10 @@ impl C2sPlayerCommand {
                 let y = f64::from_le_bytes(cursor[9..17].try_into().unwrap());
                 let z = f64::from_le_bytes(cursor[17..25].try_into().unwrap());
                 *cursor = &cursor[25..];
-                if mob_type == 0 || mob_type > 3 {
+                if mob_type == 0 || mob_type > 7 {
                     return Err(ProtocolError::InvalidValue {
                         field: "player_command.spawn_mob.mob_type",
-                        reason: "Mob type must be 1..=3".to_string(),
+                        reason: "Mob type must be 1..=7".to_string(),
                     });
                 }
                 if !x.is_finite() || !y.is_finite() || !z.is_finite() {

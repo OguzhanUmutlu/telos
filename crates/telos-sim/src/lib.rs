@@ -74,13 +74,13 @@ pub use enchantment::{
 };
 pub use entity::{
     ARROW_AIR_DRAG, ARROW_DESPAWN_FLYING_TICKS, ARROW_DESPAWN_STUCK_TICKS, ARROW_GRAVITY,
-    ARROW_PICKUP_RADIUS, AiState, ArrowEntity, ArrowStepOutcome, AttackCooldown,
+    ARROW_PICKUP_RADIUS, AiState, AquaticMob, ArrowEntity, ArrowStepOutcome, AttackCooldown,
     BOW_FULL_CHARGE_TICKS, BOW_MAX_RELEASE_SPEED, BOW_MIN_CHARGE_TICKS, BOW_MIN_RELEASE_SPEED,
     EntityAabb, EntityType, HurtTime, ITEM_DESPAWN_TICKS, ITEM_MERGE_RADIUS, ITEM_PICKUP_RADIUS,
     ItemEntity, Mob, MobBundle, MobKind, NetEntity, PLAYER_DROP_PICKUP_DELAY, PathFollower,
     PlayerPositions, Position, Rotation, SimulationFrozen, TargetablePlayer, Velocity,
-    has_line_of_sight, merge_item_stacks, mob_ai_system, mob_hurt_decay_system,
-    mob_movement_system, tick_arrow_physics_step, tick_item_physics_step,
+    aquatic_movement_system, has_line_of_sight, merge_item_stacks, mob_ai_system,
+    mob_hurt_decay_system, mob_movement_system, tick_arrow_physics_step, tick_item_physics_step,
 };
 pub use event::{EventFilter, EventQueue, GameEvent};
 pub use experience::{
@@ -96,9 +96,9 @@ pub use inventory::{
     ARMOR_BOOTS_SLOT, ARMOR_CHESTPLATE_SLOT, ARMOR_HELMET_SLOT, ARMOR_LEGGINGS_SLOT, ARMOR_SLOTS,
     CHEST_CONTAINER_SLOTS, CRAFTING_INPUT_SLOTS, CRAFTING_RESULT_SLOT, ChestInventory, ClickButton,
     ClickMode, DUAL_CONTAINER_SLOTS, HOTBAR_SLOTS, ITEM_ANVIL, ITEM_ARROW, ITEM_BOOK, ITEM_BOW,
-    ITEM_CHARCOAL, ITEM_CHEST, ITEM_COOKED_BEEF, ITEM_COOKED_PORKCHOP, ITEM_CRAFTING_TABLE,
-    ITEM_ENCHANTED_BOOK, ITEM_FURNACE, ITEM_GLASS_BOTTLE, ITEM_GOLDEN_BOOTS,
-    ITEM_GOLDEN_CHESTPLATE, ITEM_GOLDEN_HELMET, ITEM_GOLDEN_LEGGINGS, ITEM_IRON_AXE,
+    ITEM_CHARCOAL, ITEM_CHEST, ITEM_COD, ITEM_COOKED_BEEF, ITEM_COOKED_COD, ITEM_COOKED_PORKCHOP,
+    ITEM_CRAFTING_TABLE, ITEM_ENCHANTED_BOOK, ITEM_FURNACE, ITEM_GLASS_BOTTLE, ITEM_GOLDEN_BOOTS,
+    ITEM_GOLDEN_CHESTPLATE, ITEM_GOLDEN_HELMET, ITEM_GOLDEN_LEGGINGS, ITEM_INK_SAC, ITEM_IRON_AXE,
     ITEM_IRON_BOOTS, ITEM_IRON_CHESTPLATE, ITEM_IRON_HELMET, ITEM_IRON_HOE, ITEM_IRON_LEGGINGS,
     ITEM_IRON_PICKAXE, ITEM_IRON_SHOVEL, ITEM_IRON_SWORD, ITEM_LEATHER_BOOTS,
     ITEM_LEATHER_CHESTPLATE, ITEM_LEATHER_HELMET, ITEM_LEATHER_LEGGINGS, ITEM_POTION,

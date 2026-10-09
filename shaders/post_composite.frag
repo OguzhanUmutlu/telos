@@ -23,7 +23,7 @@ layout(push_constant) uniform PostCompositePushConstants {
     vec3 u_sun_dir;
     float u_view_distance;
     float u_fog_density;
-    uint u_flags; // bit 0: ssao, bit 1: volumetric_fog, bit 2: tonemapping, bit 3: vignette, bit 4: shadows, bit 5: underwater
+    uint u_flags; // bit 0: ssao, bit 1: volumetric_fog, bit 2: tonemapping, bit 3: vignette, bit 4: shadows, bit 5: underwater, bit 6: ssr
     vec2 u_screen_size;
 };
 
@@ -205,6 +205,84 @@ void main() {
         vec2 vig_uv = (v_uv - 0.5) * 2.0;
         float underwater_vig = clamp(1.0 - dot(vig_uv, vig_uv) * 0.35, 0.0, 1.0);
         color *= mix(vec3(0.65, 0.85, 0.98), vec3(1.0), underwater_vig);
+    }
+
+    // Dynamic underwater sunlight caustics visible through water surface
+    if ((u_flags & 32u) == 0u && scene_sample.a < 0.95 && !is_sky) {
+        float sun_elev = sin((u_time_of_day / 24000.0) * 6.2831853 - 1.5707963);
+        if (sun_elev > 0.0) {
+            float caustic_time = u_time_of_day * 0.06;
+            vec2 cp = world_pos.xz;
+            float c1 = sin(cp.x * 2.4 + cp.y * 1.9 + caustic_time * 1.3);
+            float c2 = cos(cp.x * 1.8 - cp.y * 2.3 - caustic_time * 1.1);
+            float c3 = sin((cp.x + cp.y) * 3.1 + caustic_time * 1.7);
+            float caustic = max(0.0, c1 + c2 + c3 - 0.9) * 0.25 * clamp(sun_elev * 2.5, 0.0, 1.0);
+            caustic *= clamp(1.0 - dist / 48.0, 0.0, 1.0);
+            color += vec3(0.18, 0.36, 0.46) * caustic;
+        }
+    }
+
+    // Bit 6: Screen-Space Water Reflections (SSR)
+    if ((u_flags & 64u) != 0u && (u_flags & 32u) == 0u && scene_sample.a < 0.95 && !is_sky) {
+        float wave_time = u_time_of_day * 0.05;
+        vec2 p = world_pos.xz;
+        float dx = cos(p.x * 1.5 + wave_time * 1.2) * 1.5 * cos(p.y * 1.2 + wave_time * 0.9) * 0.035
+                 + cos((p.x + p.y) * 2.3 + wave_time * 1.8) * 2.3 * 0.02
+                 + cos(p.x * 3.8 - wave_time * 2.4) * 3.8 * 0.01;
+        float dz = -sin(p.x * 1.5 + wave_time * 1.2) * sin(p.y * 1.2 + wave_time * 0.9) * 1.2 * 0.035
+                 + cos((p.x + p.y) * 2.3 + wave_time * 1.8) * 2.3 * 0.02
+                 + cos(p.y * 3.6 + wave_time * 2.1) * 3.6 * 0.01;
+        vec3 N = normalize(vec3(-dx * 1.2, 1.0, -dz * 1.2));
+
+        vec3 V = ray_dir; // from camera towards water surface
+        vec3 R = reflect(V, N);
+
+        if (R.y > 0.001) {
+            mat4 view_proj = inverse(u_inv_view_proj);
+            vec3 hit_color = vec3(0.0);
+            float hit_weight = 0.0;
+
+            float step_size = 0.45;
+            vec3 current_pos = world_pos + N * 0.15;
+
+            for (int i = 0; i < 14; ++i) {
+                float t = float(i + 1);
+                float step_len = step_size * (1.0 + t * 0.35);
+                current_pos += R * step_len;
+
+                vec4 proj = view_proj * vec4(current_pos, 1.0);
+                if (proj.w <= 0.001) break;
+
+                vec3 ndc = proj.xyz / proj.w;
+                vec2 march_uv = ndc.xy * 0.5 + 0.5;
+
+                if (march_uv.x < 0.005 || march_uv.x > 0.995 || march_uv.y < 0.005 || march_uv.y > 0.995 || ndc.z < 0.0 || ndc.z > 1.0) {
+                    break;
+                }
+
+                float scene_depth = texture(u_depth, march_uv).r;
+                float depth_diff = scene_depth - ndc.z;
+                float thickness = 0.018 * (1.0 + t * 0.08);
+
+                if (depth_diff >= 0.0 && depth_diff <= thickness) {
+                    vec4 sample_hit = texture(u_scene_color, march_uv);
+                    if (sample_hit.a >= 0.95 || scene_depth <= 0.0001) {
+                        vec2 edge = smoothstep(0.0, 0.12, march_uv) * smoothstep(1.0, 0.88, march_uv);
+                        float edge_fade = edge.x * edge.y;
+                        float dist_fade = clamp(1.0 - float(i) / 14.0, 0.0, 1.0);
+                        hit_color = sample_hit.rgb;
+                        hit_weight = edge_fade * dist_fade;
+                        break;
+                    }
+                }
+            }
+
+            if (hit_weight > 0.0) {
+                float NdotV = clamp(dot(N, -V), 0.0, 1.0);
+                float fresnel = 0.04 + 0.96 * pow(1.0 - NdotV, 5.0);
+                color = mix(color, hit_color, clamp(fresnel * hit_weight * 0.85, 0.0, 0.95));
+            }
+        }
     }
 
     // Bit 2: Filmic ACES Tonemapping

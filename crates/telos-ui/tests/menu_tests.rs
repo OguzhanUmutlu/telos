@@ -525,3 +525,50 @@ fn test_settings_screen_underwater_effects_toggle() {
     );
     assert!(screen.settings.video.underwater_effects);
 }
+
+#[test]
+fn test_settings_screen_ssr_toggle() {
+    use telos_core::i18n::LanguageCatalog;
+    use telos_ui::menu::settings_screen::{SettingsScreen, SettingsTab};
+
+    let catalog = LanguageCatalog::with_default_embedded();
+    let mut screen = SettingsScreen::new(GameSettings::default());
+    screen.active_tab = SettingsTab::Video;
+    screen.update_layout_i18n(800.0, 600.0, &catalog);
+
+    // ssr defaults to true
+    assert!(screen.settings.video.ssr);
+
+    // Locate button 215 (Water SSR toggle)
+    let ssr_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 215)
+        .expect("SSR toggle button 215 not found")
+        .clone();
+
+    assert!(ssr_btn.label.contains("ON"));
+
+    // Click to toggle off
+    screen.handle_mouse_click_i18n(ssr_btn.x + 5.0, ssr_btn.y + 5.0, 800.0, 600.0, &catalog);
+    assert!(!screen.settings.video.ssr);
+
+    // Re-check layout
+    let updated_btn = screen
+        .toggle_buttons
+        .iter()
+        .find(|b| b.id == 215)
+        .expect("SSR toggle button 215 not found")
+        .clone();
+    assert!(updated_btn.label.contains("OFF"));
+
+    // Click to toggle back on
+    screen.handle_mouse_click_i18n(
+        updated_btn.x + 5.0,
+        updated_btn.y + 5.0,
+        800.0,
+        600.0,
+        &catalog,
+    );
+    assert!(screen.settings.video.ssr);
+}
